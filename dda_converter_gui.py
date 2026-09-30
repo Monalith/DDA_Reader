@@ -47,6 +47,7 @@ except ImportError:
 import dda_core
 from dda_core import DDAParser
 from dda_device import DDADevice, DDARunInfo, HAS_USB
+from dda_merge import merge_dda, MergeError
 
 
 IS_MAC = sys.platform == "darwin"
@@ -880,6 +881,18 @@ class DDAConverterApp(QMainWindow):
         batch_layout.addLayout(act_layout)
 
         exp_layout.addWidget(batch_box)
+
+        # Merge Sessions
+        merge_box = QGroupBox("🔗 Merge Sessions (combine several .dda runs into one file)", tab_export)
+        merge_layout = QHBoxLayout(merge_box)
+        btn_merge = QPushButton("🔗 Select .dda Files & Merge...", merge_box)
+        btn_merge.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_merge.clicked.connect(self._merge_files)
+        merge_layout.addWidget(btn_merge)
+        lbl_merge = QLabel("Runs are ordered by Run number; each run is trimmed to whole seconds and appended without gaps.", merge_box)
+        lbl_merge.setWordWrap(True)
+        merge_layout.addWidget(lbl_merge, 1)
+        exp_layout.addWidget(merge_box)
         exp_layout.addStretch()
 
         self.tabs.addTab(tab_export, " Export Hub ")
@@ -1107,6 +1120,37 @@ class DDAConverterApp(QMainWindow):
         self.chk_json.setChecked(False)
         self.chk_csv.setChecked(False)
         self.chk_gpx.setChecked(False)
+
+    def _merge_files(self):
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "Select .dda Files to Merge (2 or more)", "",
+            "Ducati DDA Files (*.dda);;All Files (*)")
+        if len(files) < 2:
+            if files:
+                QMessageBox.warning(self, "Merge", "Select at least two .dda files.")
+            return
+        default_out = os.path.join(os.path.dirname(files[0]), "merged.dda")
+        out, _ = QFileDialog.getSaveFileName(self, "Save Merged .dda As", default_out,
+                                             "Ducati DDA Files (*.dda)")
+        if not out:
+            return
+        try:
+            report = merge_dda(files, out)
+        except (MergeError, OSError) as e:
+            self._log(f"  [-] Merge failed: {e}")
+            QMessageBox.critical(self, "Merge Failed", str(e))
+            return
+        self._log(f"[+] Merged {len(report.files)} runs -> {out}")
+        self._log(f"    Total: {report.seconds // 60}m {report.seconds % 60:02d}s, "
+                  f"trimmed {report.trimmed_bytes} bytes of partial seconds")
+        for f in report.files:
+            self._log(f"    - {os.path.basename(f)}")
+        ans = QMessageBox.question(self, "Merge Complete",
+                                   f"Merged {len(report.files)} runs ({report.seconds // 60}m {report.seconds % 60:02d}s).\n\n"
+                                   f"Load the merged file now?")
+        if ans == QMessageBox.StandardButton.Yes:
+            self.file_entry.setText(out)
+            self._parse_file()
 
     def _batch_convert(self):
         do_html = self.chk_html.isChecked()

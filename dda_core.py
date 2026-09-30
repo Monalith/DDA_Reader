@@ -36,6 +36,22 @@ def haversine_distance_m(lat1, lon1, lat2, lon2):
     return 2.0 * R * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
 
 
+def _gps_gap_is_slot_aligned(gap: int) -> bool:
+    """
+    True when `gap` bytes between two GPS fixes matches the DDA+ stream layout:
+    k slots of 33 bytes at 10 Hz plus 6 extra bytes (distance + lap markers) per
+    whole second, where the extra bytes may fall before or after the fix (+-3).
+    Used to join GPS chains split by a spatial jump (merged runs, GPS re-lock).
+    """
+    if gap < 33:
+        return False
+    k = round(gap / 33.6)
+    for s in range(max(0, k // 10 - 1), k // 10 + 2):
+        if abs(gap - (33 * k + 6 * s)) <= 3:
+            return True
+    return False
+
+
 def smooth_gps_series(raw_lats, raw_lons, raw_speeds, window_size=5):
     """
     Applies Gaussian moving window smoothing to GPS coordinates.
@@ -368,6 +384,7 @@ class DDAParser:
         # Trace continuous spatial chains:
         visited = set()
         longest_gps_chain = []
+        chains = []
 
         for off in sorted(cand_map.keys()):
             if off in visited:
@@ -389,6 +406,30 @@ class DDAParser:
                             break
                 if not next_found:
                     break
+            chains.append(chain)
+
+        # Join structurally contiguous chains across a spatial jump (e.g. a merged
+        # file where one run ends and the next starts elsewhere on the circuit).
+        # Only long chains are joined so isolated false positives stay excluded.
+        MIN_JOIN_LEN = 50
+        big = [c for c in chains if len(c) >= MIN_JOIN_LEN]
+        joined = []
+        if big:
+            anchor = max(big, key=len)
+            a_lon = sorted(p[1] for p in anchor)[len(anchor) // 2]
+            a_lat = sorted(p[2] for p in anchor)[len(anchor) // 2]
+            # Keep only chains near the main circuit (drops byte-alias false
+            # positives) and drop overlapping alias chains, then join in order.
+            near = [c for c in big
+                    if haversine_distance_m(a_lat, a_lon, c[0][2], c[0][1]) <= 20000.0]
+            for chain in sorted(near, key=lambda c: c[0][0]):
+                if joined and chain[0][0] <= joined[-1][-1][0]:
+                    continue
+                if joined and _gps_gap_is_slot_aligned(chain[0][0] - joined[-1][-1][0]):
+                    joined[-1] = joined[-1] + chain
+                else:
+                    joined.append(chain)
+        for chain in joined:
             if len(chain) > len(longest_gps_chain):
                 longest_gps_chain = chain
 
@@ -455,7 +496,13 @@ class DDAParser:
         speeds_list = []
         gps_rec_list = []
 
+        prev_off = None
         for off, lon, lat in longest_gps_chain:
+            if prev_off is not None and off - prev_off > 39:
+                # Jump over fixes missing between joined chains (run boundary /
+                # GPS re-acquisition): keep the clock honest, 33.6 bytes per 0.1 s.
+                current_time += 0.10 * (round((off - prev_off) / 33.6) - 1)
+            prev_off = off
             alt_raw = struct.unpack_from("<H", payload, off - 2)[0]
             
             spd1_raw = struct.unpack_from("<H", payload, off - 12)[0] if off >= 12 else 0

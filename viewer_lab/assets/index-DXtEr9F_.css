@@ -1,0 +1,1 @@
+:root{--bg:#0e1116;--panel:#151a21;--panel-2:#1b2129;--border:#262d37;--fg:#e6e9ef;--fg-dim:#8b95a5;--accent:#ff6a00;--accent-2:#3da5ff;--good:#3ddc84;--bad:#ff4d4f;color:var(--fg);background:var(--bg);font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif;font-size:13px}html,body,#root{height:100%;margin:0}body{background:var(--bg)}.num{font-variant-numeric:tabular-nums}

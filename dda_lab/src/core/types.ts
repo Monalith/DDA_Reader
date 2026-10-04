@@ -110,12 +110,30 @@ export interface Session {
   meta: { track: string; rider: string; note: string };
 }
 
+/** Optional fixed axis range; null/undefined bound = automatic. */
+export interface AxisRange {
+  min?: number | null;
+  max?: number | null;
+}
+
+export interface ChartPanelConfig {
+  id: string;
+  channels: { name: string; axis: 'L' | 'R'; width?: number }[];
+  /** Left / right Y axis ranges (auto when absent). */
+  yL?: AxisRange;
+  yR?: AxisRange;
+  /** X axis: linked to the shared zoom (default) or an independent range. */
+  x?: { linked: boolean; min?: number | null; max?: number | null };
+  /** Default line width for the panel (px). */
+  lineWidth?: number;
+}
+
 export interface Workspace {
   version: 1;
   xAxis: 'time' | 'distance';
   unitMph: boolean;
   splitPct: number;
-  panels: { id: string; channels: { name: string; axis: 'L' | 'R' }[] }[];
+  panels: ChartPanelConfig[];
   mathChannels: { name: string; unit: string; expr: string; color: string }[];
   mapLayers: Record<string, boolean>;
 }

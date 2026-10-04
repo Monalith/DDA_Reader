@@ -10,11 +10,21 @@ const clone = <T>(v: T): T => structuredClone(v);
 const PanelChannelSchema = z.object({
   name: z.string(),
   axis: z.enum(['L', 'R']).default('L'),
+  width: z.number().min(0.25).max(10).optional(),
+});
+
+const AxisRangeSchema = z.object({
+  min: z.number().nullable().optional(),
+  max: z.number().nullable().optional(),
 });
 
 const PanelSchema = z.object({
   id: z.string(),
   channels: z.array(PanelChannelSchema).default([]),
+  yL: AxisRangeSchema.optional(),
+  yR: AxisRangeSchema.optional(),
+  x: z.object({ linked: z.boolean().default(true), min: z.number().nullable().optional(), max: z.number().nullable().optional() }).optional(),
+  lineWidth: z.number().min(0.25).max(10).optional(),
 });
 
 const MathChannelSchema = z.object({

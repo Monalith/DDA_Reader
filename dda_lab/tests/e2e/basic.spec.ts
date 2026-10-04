@@ -34,3 +34,27 @@ test('chart hover moves the cursor and updates the cursor panel', async ({ page 
   await page.getByRole('tab', { name: /cursor/i }).click();
   await expect(page.locator('[data-testid="cursor-panel"]')).toContainText(/speed/i);
 });
+
+test('per-panel settings: fixed Y range, unlinked X and line width', async ({ page }) => {
+  await page.goto('/');
+  await page.getByTestId('open-files').setInputFiles(SAMPLE);
+  await expect(page.locator('.status')).toContainText(/laps/, { timeout: 30_000 });
+  await page.getByTestId('panel-gear-p1').click();
+  const dlg = page.getByTestId('panel-settings-p1');
+  await expect(dlg).toBeVisible();
+  await dlg.getByTestId('ps-p1-yl-min').fill('0');
+  await dlg.getByTestId('ps-p1-yl-max').fill('300');
+  await dlg.getByTestId('ps-p1-xlinked').uncheck();
+  await dlg.getByTestId('ps-p1-x-min').fill('100');
+  await dlg.getByTestId('ps-p1-x-max').fill('900');
+  await dlg.getByTestId('ps-p1-width').fill('3');
+  // uPlot draws axes on canvas, so assert the persisted settings and the badge
+  const firstPanel = page.locator('.chart-panel').first();
+  await expect(firstPanel.locator('.chan-pill.dim')).toHaveText('custom');
+  await expect(dlg.getByTestId('ps-p1-yl-max')).toHaveValue('300');
+  await expect(dlg.getByTestId('ps-p1-x-max')).toHaveValue('900');
+  await expect(dlg.getByTestId('ps-p1-width')).toHaveValue('3');
+  await expect(firstPanel.locator('.uplot canvas')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(dlg).toBeHidden();
+});

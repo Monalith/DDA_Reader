@@ -5,6 +5,7 @@ import type { Workspace } from '../core/types';
 import { activeTrack, useLab } from '../state/store';
 import { allChannelNames } from '../state/selectors';
 import ChartPanel from './ChartPanel';
+import PanelSettings from './PanelSettings';
 import { focusRangeLabel, stepTurnIndex, turnFocusRange, turnOptionLabel } from './focus';
 
 type Panel = Workspace['panels'][number];
@@ -51,6 +52,8 @@ export default function ChartStack() {
     update([...panels, { id: `p${Date.now()}`, channels: [{ name: 'speed', axis: 'L' }] }]);
 
   const removePanel = (id: string) => update(panels.filter((p) => p.id !== id));
+  const [settingsFor, setSettingsFor] = useState<string | null>(null);
+  const updatePanel = (next: Panel) => update(panels.map((p) => (p.id === next.id ? next : p)));
 
   const removeChannel = (id: string, name: string) =>
     update(panels.map((p) => (p.id === id ? { ...p, channels: p.channels.filter((c) => c.name !== name) } : p)));
@@ -170,9 +173,23 @@ export default function ChartStack() {
                 {axis}
               </button>
               <span className="spacer" style={{ flex: '1 1 auto' }} />
+              {(panel.yL || panel.yR || panel.x?.linked === false || panel.lineWidth != null) && (
+                <span className="chan-pill dim" title="Custom scale / width">custom</span>
+              )}
+              <button
+                className={`btn-mini ${settingsFor === panel.id ? 'on' : ''}`}
+                data-testid={`panel-gear-${panel.id}`}
+                onClick={() => setSettingsFor(settingsFor === panel.id ? null : panel.id)}
+                title="Panel settings: Y range, X range, line width"
+              >
+                ⚙
+              </button>
               <button className="btn-mini" onClick={() => removePanel(panel.id)} title="Remove panel">
                 ⨉
               </button>
+              {settingsFor === panel.id && (
+                <PanelSettings panel={panel} xAxis={xAxis} onChange={updatePanel} onClose={() => setSettingsFor(null)} />
+              )}
             </div>
             <ChartPanel panel={panel} />
           </div>

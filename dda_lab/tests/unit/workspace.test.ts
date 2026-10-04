@@ -57,3 +57,25 @@ describe('workspace', () => {
     expect(JSON.parse(json).version).toBe(1);
   });
 });
+
+describe('panel scale / width settings', () => {
+  it('round-trips axis ranges, independent x and line widths', async () => {
+    const { parseWorkspace, serializeWorkspace } = await import('../../src/core/workspace');
+    const { DEFAULT_WORKSPACE } = await import('../../src/core/types');
+    const ws = structuredClone(DEFAULT_WORKSPACE);
+    ws.panels[0] = {
+      id: 'p1',
+      channels: [{ name: 'speed', axis: 'L', width: 3 }, { name: 'rpm', axis: 'R' }],
+      yL: { min: 0, max: 300 },
+      yR: { min: null, max: 14000 },
+      x: { linked: false, min: 500, max: 1200 },
+      lineWidth: 2,
+    };
+    const back = parseWorkspace(serializeWorkspace(ws));
+    expect(back.panels[0]).toEqual(ws.panels[0]);
+  });
+  it('rejects absurd line widths', async () => {
+    const { parseWorkspace } = await import('../../src/core/workspace');
+    expect(() => parseWorkspace(JSON.stringify({ version: 1, panels: [{ id: 'p', channels: [], lineWidth: 50 }] }))).toThrow();
+  });
+});

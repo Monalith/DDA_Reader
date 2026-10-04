@@ -11,6 +11,27 @@ const NEAR_ROWS = 40;
 
 type Panel = Workspace['panels'][number];
 
+/** uPlot range function honouring fixed bounds; undefined/null bound = auto with 5 % padding. */
+function axisRange(r: Panel['yL']): uPlot.Scale['range'] {
+  return (_u: uPlot, dataMin: number | null, dataMax: number | null) => {
+    let lo = dataMin ?? 0;
+    let hi = dataMax ?? 1;
+    if (hi === lo) {
+      lo -= 1;
+      hi += 1;
+    }
+    const pad = (hi - lo) * 0.05;
+    const min = r?.min ?? lo - pad;
+    const max = r?.max ?? hi + pad;
+    return [Math.min(min, max), Math.max(min, max)] as [number, number];
+  };
+}
+
+function lineWidthFor(panel: Panel, channel: string): number {
+  const ch = panel.channels.find((c) => c.name === channel);
+  return ch?.width ?? panel.lineWidth ?? 1.5;
+}
+
 function isRefLine(line: OverlayLine, ref: LapRef | undefined): boolean {
   return !!ref && ref.sessionId === line.sessionId && ref.lap === line.lap;
 }
@@ -104,8 +125,9 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
         xAxis,
         hasR ? 'R' : '-',
         lines.map((l) => `${l.key}|${l.axis}|${l.color}|${isRefLine(l, refLap) ? 'r' : 'n'}`).join(';'),
+        JSON.stringify([panel.yL, panel.yR, panel.lineWidth, panel.channels.map((c) => c.width ?? null)]),
       ].join('#'),
-    [xAxis, hasR, lines, refLap],
+    [xAxis, hasR, lines, refLap, panel],
   );
 
   const updateLegend = (idx: number | null | undefined) => {
@@ -159,8 +181,8 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
       },
       scales: {
         x: { time: false },
-        L: {},
-        ...(hasR ? { R: {} } : {}),
+        L: { range: axisRange(panel.yL) },
+        ...(hasR ? { R: { range: axisRange(panel.yR) } } : {}),
       },
       axes: [
         {
@@ -203,7 +225,7 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
           label: l.label,
           scale: l.axis,
           stroke: l.color,
-          width: isRefLine(l, refLap) ? 2.5 : 1.5,
+          width: lineWidthFor(panel, l.channel) + (isRefLine(l, refLap) ? 1 : 0),
           spanGaps: true,
           points: { show: false },
         })),
@@ -315,10 +337,6 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
     if (!u) return;
     const xs = u.data[0] as ArrayLike<number>;
     if (!xs || xs.length === 0) return;
-    if (xRange) {
-      u.setScale('x', { min: xRange[0], max: xRange[1] });
-      return;
-    }
     // full extent (x is not necessarily monotonic: lap distance can wrap at the gate)
     let min = Infinity;
     let max = -Infinity;
@@ -328,8 +346,21 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
       if (v < min) min = v;
       if (v > max) max = v;
     }
+    const linked = panel.x?.linked ?? true;
+    if (!linked) {
+      const lo = panel.x?.min ?? null;
+      const hi = panel.x?.max ?? null;
+      const a = lo ?? min;
+      const b = hi ?? max;
+      if (a < b) u.setScale('x', { min: a, max: b });
+      return;
+    }
+    if (xRange) {
+      u.setScale('x', { min: xRange[0], max: xRange[1] });
+      return;
+    }
     if (min < max) u.setScale('x', { min, max });
-  }, [xRange, data]);
+  }, [xRange, data, panel.x]);
 
   // ---- cursor coming from elsewhere (map click, other panels) -----------
   useEffect(() => {

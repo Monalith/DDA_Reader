@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react';
 import uPlot from 'uplot';
+import { attachXInteractions } from './chartInteractions';
 import type { Session, Workspace } from '../core/types';
 import { activeTrack, useLab, type CursorPos, type LapRef } from '../state/store';
 import { cursorIdxFromX, findLap, overlaySeries, xFromIdx, type OverlayLine } from '../state/selectors';
@@ -116,6 +117,8 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
   unitRef.current = unitMph;
   trackRef.current = track;
   cursorRef.current = cursor;
+  const panelRef = useRef(panel);
+  panelRef.current = panel;
 
   const hasR = lines.some((l) => l.axis === 'R');
   // Chart is rebuilt only when its structure changes; otherwise setData/setScale is used.
@@ -303,8 +306,40 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
     const u = new uPlot(opts, data, host);
     uRef.current = u;
 
-    const onDblClick = () => useLab.getState().setXRange(null);
+    const extentOf = (): [number, number] => {
+      const xs = u.data[0] as ArrayLike<number>;
+      let min = Infinity;
+      let max = -Infinity;
+      for (let i = 0; i < xs.length; i++) {
+        const v = xs[i];
+        if (!Number.isFinite(v)) continue;
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+      return min < max ? [min, max] : [0, 1];
+    };
+    const setRange = (r: [number, number] | null) => {
+      const st = useLab.getState();
+      const cur = st.workspace.panels.find((p) => p.id === panelRef.current.id);
+      if (cur && cur.x?.linked === false) {
+        st.setWorkspace({
+          panels: st.workspace.panels.map((p) => (p.id === cur.id ? { ...p, x: { linked: false, min: r ? r[0] : null, max: r ? r[1] : null } } : p)),
+        });
+      } else {
+        st.setXRange(r);
+      }
+    };
+    const onDblClick = () => setRange(null);
     u.over.addEventListener('dblclick', onDblClick);
+    const detachX = attachXInteractions(u, {
+      get: () => {
+        const sc = u.scales.x;
+        return sc.min != null && sc.max != null ? [sc.min, sc.max] : extentOf();
+      },
+      extent: extentOf,
+      set: (r) => setRange(r),
+      reset: () => setRange(null),
+    });
 
     const ro = new ResizeObserver(() => {
       const w = host.clientWidth;
@@ -314,6 +349,7 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
 
     return () => {
       ro.disconnect();
+      detachX();
       u.over.removeEventListener('dblclick', onDblClick);
       u.destroy();
       if (uRef.current === u) uRef.current = null;

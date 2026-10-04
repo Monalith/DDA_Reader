@@ -79,6 +79,8 @@ export interface LabState {
   setTrack(t: TrackModel): void;
   setLapMeta(sessionId: string, lap: number, patch: Partial<LapMeta>): void;
   removeLapFromWorkspace(sessionId: string, lap: number): void;
+  /** Delete a lap from its session entirely (table, workspace, reference). */
+  deleteLap(sessionId: string, lap: number): void;
   /** Place the start/finish line at a map point; rebuilds sector gates and re-detects every lap. */
   setStartLine(at: LngLat, bearing?: number): void;
   updateTurns(turns: Turn[]): void;
@@ -310,6 +312,28 @@ export const useLab = create<LabState>((set, get) => ({
       const k = lapKey(sessionId, lap);
       const cur = st.lapMeta[k] ?? defaultLapMeta(st, sessionId, lap);
       return { lapMeta: { ...st.lapMeta, [k]: { ...cur, ...patch } } };
+    });
+  },
+  deleteLap(sessionId, lap) {
+    const st = get();
+    const session = st.sessions.find((s) => s.id === sessionId);
+    if (!session) return;
+    session.laps = session.laps.filter((l) => l.n !== lap);
+    if (!session.laps.some((l) => l.isBest)) {
+      const flying = session.laps.filter((l) => l.kind === 'flying');
+      const best = flying.sort((a, b) => a.timeS - b.timeS)[0];
+      if (best) best.isBest = true;
+    }
+    const meta = { ...st.lapMeta };
+    delete meta[lapKey(sessionId, lap)];
+    const refLap = st.refLap?.sessionId === sessionId && st.refLap.lap === lap ? undefined : st.refLap;
+    const track = activeTrack(st);
+    set({
+      lapMeta: meta,
+      refLap,
+      selectedLaps: st.selectedLaps.filter((l) => !(l.sessionId === sessionId && l.lap === lap)),
+      cursor: st.cursor?.sessionId === sessionId ? null : st.cursor,
+      sessions: st.sessions.map((s) => (s.id === sessionId ? refreshSession(s, track, st.workspace.mathChannels, refOf({ ...st, refLap })) : s)),
     });
   },
   removeLapFromWorkspace(sessionId, lap) {

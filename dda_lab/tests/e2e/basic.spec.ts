@@ -58,3 +58,31 @@ test('per-panel settings: fixed Y range, unlinked X and line width', async ({ pa
   await page.keyboard.press('Escape');
   await expect(dlg).toBeHidden();
 });
+
+test('lap can be deleted from the session; wheel and middle-drag change the chart range', async ({ page }) => {
+  await page.goto('/');
+  await page.getByTestId('open-files').setInputFiles(SAMPLE);
+  await expect(page.locator('.status')).toContainText(/laps/, { timeout: 30_000 });
+  const rows = page.locator('table.lap-table tbody tr');
+  const before = await rows.count();
+  await page.locator('[data-testid^="lap-del-"]').nth(1).click();
+  await expect(rows).toHaveCount(before - 1);
+
+  // wheel over the first chart zooms in → focus range appears
+  const chart = page.locator('.uplot').first();
+  const box = await chart.boundingBox();
+  if (!box) throw new Error('no chart');
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.wheel(0, -600);
+  await expect(page.getByTestId('focus-range')).not.toContainText('whole lap');
+  const text1 = await page.getByTestId('focus-range').textContent();
+  // middle-drag pans
+  await page.mouse.move(box.x + box.width * 0.6, box.y + box.height / 2);
+  await page.mouse.down({ button: 'middle' });
+  await page.mouse.move(box.x + box.width * 0.3, box.y + box.height / 2, { steps: 5 });
+  await page.mouse.up({ button: 'middle' });
+  await expect(page.getByTestId('focus-range')).not.toHaveText(text1 ?? '');
+  // double-click resets
+  await page.mouse.dblclick(box.x + box.width / 2, box.y + box.height / 2);
+  await expect(page.getByTestId('focus-range')).toContainText('whole lap');
+});

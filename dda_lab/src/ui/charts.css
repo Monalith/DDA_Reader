@@ -248,3 +248,5 @@ table.lap-table tbody tr.out td, table.lap-table tbody tr.in td { color: var(--f
 .ps-check { gap: 8px; }
 .ps-foot { margin-top: 8px; display: flex; justify-content: flex-end; }
 .chan-pill.dim { opacity: 0.6; }
+.lap-del { background: transparent; border: 0; color: var(--fg-dim); font-size: 12px; padding: 0 4px; line-height: 1; }
+.lap-del:hover { color: var(--bad); }

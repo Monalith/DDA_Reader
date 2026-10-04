@@ -68,6 +68,7 @@ export default function LapTable() {
   const unitMph = useLab((s) => s.workspace.unitMph);
   const toggleLap = useLab((s) => s.toggleLap);
   const selectOnlyLap = useLab((s) => s.selectOnlyLap);
+  const deleteLap = useLab((s) => s.deleteLap);
   const setRefLap = useLab((s) => s.setRefLap);
 
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: 'lap', dir: 1 });
@@ -96,6 +97,13 @@ export default function LapTable() {
 
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLDivElement>) => {
+      if ((e.key === 'Delete' || e.key === 'Backspace') && sorted[focusIdx]) {
+        e.preventDefault();
+        const r = sorted[focusIdx];
+        deleteLap(r.sessionId, r.lap.n);
+        setFocusIdx(Math.max(0, Math.min(focusIdx, sorted.length - 2)));
+        return;
+      }
       if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
       e.preventDefault();
       if (!sorted.length) return;
@@ -106,7 +114,7 @@ export default function LapTable() {
       const tr = scrollRef.current?.querySelectorAll('tbody tr')[next];
       (tr as HTMLElement | undefined)?.scrollIntoView({ block: 'nearest' });
     },
-    [focusIdx, sorted, selectOnlyLap],
+    [focusIdx, sorted, selectOnlyLap, deleteLap],
   );
 
   const header = (key: SortKey, label: string, cls = '') => (
@@ -157,6 +165,7 @@ export default function LapTable() {
                 <th>S3</th>
                 <th>Δbest</th>
                 {header('vmax', `Vmax (${vUnit})`)}
+                <th className="c" title="Delete lap" />
               </tr>
             </thead>
             <tbody>
@@ -215,6 +224,19 @@ export default function LapTable() {
                       {fmtDelta(r.deltaS)}
                     </td>
                     <td>{Number.isFinite(vmax) ? vmax.toFixed(1) : '–'}</td>
+                    <td className="c">
+                      <button
+                        className="lap-del"
+                        data-testid={`lap-del-${r.sessionId}-${r.lap.n}`}
+                        title="Delete this lap from the session (Delete key on a selected row)"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteLap(r.sessionId, r.lap.n);
+                        }}
+                      >
+                        ✕
+                      </button>
+                    </td>
                   </tr>
                 );
               })}

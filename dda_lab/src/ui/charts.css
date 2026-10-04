@@ -195,3 +195,36 @@ table.lap-table tbody tr.out td, table.lap-table tbody tr.in td { color: var(--f
 }
 .chart-legend .lg b { color: var(--fg); font-weight: 600; }
 .uplot, .u-wrap { font-variant-numeric: tabular-nums; }
+
+/* ---- "Focus" toolbar group (ChartStack) ---- */
+.focus-group {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.focus-group > select {
+  font: inherit;
+  font-size: 11px;
+  padding: 1px 4px;
+  color: var(--fg);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+.focus-group > select:disabled,
+.focus-group .btn-mini:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.focus-label {
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+}
+.focus-range {
+  color: var(--accent, #ff6a00);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}

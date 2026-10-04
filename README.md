@@ -258,8 +258,9 @@ sector gates and the cursor bike.
   (time-aligned with an offset slider). Several sessions at once, lap overlays in distance or time.
 - **Channel processing:** source select (wheel / GPS / blend), scale + offset, moving-average /
   Savitzky-Golay / Butterworth filters, GPS-lag correction (auto by cross-correlation).
-- **Math channels:** `rpm / speed`, `deriv(speed)`, `where(lean > 45, 1, 0)` … (safe expression
-  engine, no eval).
+- **Math channels:** ~60 functions (filters, calculus, rolling stats, per-lap stats, events) plus
+  one-click presets; full guide in [docs/MATH_GUIDE.md](docs/MATH_GUIDE.md) (also in-app, Math → Guide).
+- **Focus:** pick a turn (or drag on a chart) to zoom every chart and the map to that section.
 - **Reports:** sector table + theoretical best, turn table (entry/apex/exit speed, max lean, brake
   and throttle-on distance), histograms, G-G, lean×TPS, time-loss summary; CSV / PNG export.
 - **Schema import:** drop a coach's track drawing (PNG/JPG/PDF); the bridge asks your local

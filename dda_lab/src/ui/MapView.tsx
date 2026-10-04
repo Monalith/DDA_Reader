@@ -16,8 +16,9 @@ import { applyAffine } from '../core/affine';
 import { bearingDeg, haversineM } from '../core/geo';
 import { turnMetrics } from '../core/track';
 import type { Gate, LngLat, SchemaLayer, TrackModel, TurnMetrics } from '../core/types';
-import { selectedLapEntries } from '../state/selectors';
+import { lapX, selectedLapEntries } from '../state/selectors';
 import { activeTrack, useLab, lapMetaOf } from '../state/store';
+import { backgroundColorByZoom, inRangeSegments, rasterOpacityByZoom, zoomRadius, zoomWidth } from './focus';
 import {
   IMAGE_CORNERS,
   centerlineGeoJson,
@@ -48,6 +49,11 @@ const LAYER_KEYS = [
 const EMPTY = { type: 'FeatureCollection' as const, features: [] };
 const CLICK_RADIUS_M = 25;
 const TEXT_FONT = ['Open Sans Regular', 'Arial Unicode MS Regular'];
+/** Deepest real Esri World Imagery level in rural areas; past it MapLibre overzooms. */
+const ESRI_MAX_TILE_Z = 18;
+const MAP_MAX_ZOOM = 22;
+/** fitBounds debounce so a chart drag-selection does not thrash the camera. */
+const FOLLOW_DEBOUNCE_MS = 150;
 
 const BASE_STYLE: StyleSpecification = {
   version: 8,
@@ -57,7 +63,10 @@ const BASE_STYLE: StyleSpecification = {
       type: 'raster',
       tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
       tileSize: 256,
-      maxzoom: 19,
+      // Stop requesting tiles at the deepest level that really exists: beyond it
+      // the service answers with a grey "Map data not yet available" placeholder,
+      // whereas MapLibre's own overzoom just scales the z18 tile up.
+      maxzoom: ESRI_MAX_TILE_Z,
       attribution: 'Esri, Maxar, Earthstar Geographics',
     },
     osm: {
@@ -69,9 +78,21 @@ const BASE_STYLE: StyleSpecification = {
     },
   },
   layers: [
-    { id: 'bg', type: 'background', paint: { 'background-color': '#0e1116' } },
-    { id: 'esri', type: 'raster', source: 'esri', layout: { visibility: 'visible' } },
-    { id: 'osm', type: 'raster', source: 'osm', layout: { visibility: 'none' } },
+    { id: 'bg', type: 'background', paint: { 'background-color': backgroundColorByZoom() } },
+    {
+      id: 'esri',
+      type: 'raster',
+      source: 'esri',
+      layout: { visibility: 'visible' },
+      paint: { 'raster-opacity': rasterOpacityByZoom() },
+    },
+    {
+      id: 'osm',
+      type: 'raster',
+      source: 'osm',
+      layout: { visibility: 'none' },
+      paint: { 'raster-opacity': rasterOpacityByZoom() },
+    },
   ],
 };
 
@@ -108,6 +129,10 @@ export default function MapView() {
   // "🏁 Start line": armed for one click, then shows a sticky confirmation.
   const [startLineMode, setStartLineMode] = useState(false);
   const [startLineMsg, setStartLineMsg] = useState<string | null>(null);
+  // "🔍 Follow focus": auto-fit the camera to the charts' x range.
+  const [followFocus, setFollowFocus] = useState(true);
+  const focusIdsRef = useRef<string[]>([]);
+  const fitTimerRef = useRef<number | null>(null);
 
   const sessions = useLab((s) => s.sessions);
   const selectedLaps = useLab((s) => s.selectedLaps);
@@ -123,6 +148,8 @@ export default function MapView() {
   const setCursor = useLab((s) => s.setCursor);
   const setWorkspace = useLab((s) => s.setWorkspace);
   const setTrack = useLab((s) => s.setTrack);
+  const xRange = useLab((s) => s.xRange);
+  const xAxis = useLab((s) => s.workspace.xAxis);
 
   const track = useMemo(() => activeTrack({ tracks, activeTrackId }), [tracks, activeTrackId]);
   const entries = useMemo(() => selectedLapEntries({ sessions, selectedLaps }), [sessions, selectedLaps]);
@@ -149,6 +176,7 @@ export default function MapView() {
       style: BASE_STYLE,
       center: [0, 20],
       zoom: 1.4,
+      maxZoom: MAP_MAX_ZOOM,
       attributionControl: { compact: true },
     });
     mapRef.current = map;
@@ -174,6 +202,11 @@ export default function MapView() {
       for (const m of gateMarkersRef.current) m.remove();
       gateMarkersRef.current = [];
       traceIdsRef.current = [];
+      focusIdsRef.current = [];
+      if (fitTimerRef.current != null) {
+        clearTimeout(fitTimerRef.current);
+        fitTimerRef.current = null;
+      }
       mapRef.current = null;
       map.remove();
     };
@@ -218,7 +251,7 @@ export default function MapView() {
             type: 'line',
             source: id,
             layout: { 'line-cap': 'round', 'line-join': 'round' },
-            paint: { 'line-color': ['get', 'color'], 'line-width': 3 },
+            paint: { 'line-color': ['get', 'color'], 'line-width': zoomWidth(3, 6) },
           },
           map.getLayer('markers-apex') ? 'markers-apex' : undefined,
         );
@@ -226,6 +259,101 @@ export default function MapView() {
       setVis(map, id, mapLayers.trace !== false);
     }
   }, [ready, entries, colorBy, lapMeta, mapLayers.trace]);
+
+  // ---------- focus highlight (the in-range part of each trace) ----------
+  // Only the distance axis maps an x range onto a stretch of tarmac.
+  const focusActive = xRange != null && xAxis === 'distance';
+
+  const focusGeo = useMemo(() => {
+    if (!focusActive || !xRange) return [];
+    const out: Array<{ id: string; traceId: string; data: GeoJSON.FeatureCollection }> = [];
+    for (const e of entries) {
+      const lng = e.s.channels.get('gps_lon')?.data;
+      const lat = e.s.channels.get('gps_lat')?.data;
+      if (!lng || !lat) continue;
+      const xs = lapX(e.s, e.lap, 'distance');
+      const color = lapMetaOf(useLab.getState(), e.s.id, e.lap.n).color;
+      const last = Math.min(e.lap.endIdx, lng.length - 1, lat.length - 1);
+      const features: Array<GeoJSON.Feature<GeoJSON.LineString>> = [];
+      for (const [a, b] of inRangeSegments(xs, xRange)) {
+        const coords: Array<[number, number]> = [];
+        for (let i = e.lap.startIdx + a; i <= Math.min(e.lap.startIdx + b, last); i++) {
+          if (!Number.isFinite(lng[i]) || !Number.isFinite(lat[i])) continue;
+          coords.push([lng[i], lat[i]]);
+        }
+        if (coords.length > 1) {
+          features.push({ type: 'Feature', properties: { color }, geometry: { type: 'LineString', coordinates: coords } });
+        }
+      }
+      out.push({
+        id: `focus:${e.s.id}:${e.lap.n}`,
+        traceId: `trace:${e.s.id}:${e.lap.n}`,
+        data: { type: 'FeatureCollection', features },
+      });
+    }
+    return out;
+    // lapMeta participates through lapMetaOf(getState())
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusActive, xRange, entries, lapMeta]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    const want = new Set(focusGeo.map((g) => g.id));
+    for (const id of focusIdsRef.current) {
+      if (want.has(id)) continue;
+      if (map.getLayer(id)) map.removeLayer(id);
+      if (map.getSource(id)) map.removeSource(id);
+    }
+    focusIdsRef.current = [...want];
+
+    for (const g of focusGeo) {
+      const src = map.getSource<maplibregl.GeoJSONSource>(g.id);
+      if (src) {
+        void src.setData(g.data as GeoJSON.GeoJSON);
+      } else {
+        map.addSource(g.id, { type: 'geojson', data: g.data as GeoJSON.GeoJSON });
+        map.addLayer({
+          id: g.id,
+          type: 'line',
+          source: g.id,
+          layout: { 'line-cap': 'round', 'line-join': 'round' },
+          paint: { 'line-color': ['get', 'color'], 'line-width': zoomWidth(6, 12), 'line-opacity': 0.35 },
+        });
+      }
+      // the halo belongs *under* the thin trace it highlights
+      if (map.getLayer(g.traceId)) map.moveLayer(g.id, g.traceId);
+      setVis(map, g.id, mapLayers.trace !== false);
+    }
+  }, [ready, focusGeo, mapLayers.trace]);
+
+  // ---------- camera follows the focus (debounced) ----------
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready || !followFocus || !focusGeo.length) return;
+    const bounds = new maplibregl.LngLatBounds();
+    let any = false;
+    for (const g of focusGeo) {
+      for (const f of g.data.features) {
+        for (const c of (f.geometry as GeoJSON.LineString).coordinates) {
+          bounds.extend(c as [number, number]);
+          any = true;
+        }
+      }
+    }
+    if (!any) return;
+    if (fitTimerRef.current != null) clearTimeout(fitTimerRef.current);
+    fitTimerRef.current = window.setTimeout(() => {
+      fitTimerRef.current = null;
+      mapRef.current?.fitBounds(bounds, { padding: 60, maxZoom: 19.5, duration: 400 });
+    }, FOLLOW_DEBOUNCE_MS);
+    return () => {
+      if (fitTimerRef.current != null) {
+        clearTimeout(fitTimerRef.current);
+        fitTimerRef.current = null;
+      }
+    };
+  }, [ready, followFocus, focusGeo]);
 
   // ---------- track model + schema ----------
   useEffect(() => {
@@ -478,6 +606,15 @@ export default function MapView() {
           Fit
         </button>
         <button
+          className={`map-btn ${followFocus ? 'active' : ''}`}
+          data-testid="map-follow-focus"
+          aria-pressed={followFocus}
+          onClick={() => setFollowFocus((v) => !v)}
+          title="Zoom the map to the charts' focus range"
+        >
+          🔍 Follow focus
+        </button>
+        <button
           className={`map-btn ${measure ? 'active' : ''}`}
           data-testid="map-measure"
           onClick={() => {
@@ -683,7 +820,7 @@ function addDataLayers(map: maplibregl.Map): void {
     id: 'centerline-line',
     type: 'line',
     source: 'centerline',
-    paint: { 'line-color': '#ffffff', 'line-width': 2, 'line-opacity': 0.8 },
+    paint: { 'line-color': '#ffffff', 'line-width': zoomWidth(2, 4), 'line-opacity': 0.8 },
   });
   map.addLayer({
     id: 'gates-line',
@@ -691,7 +828,7 @@ function addDataLayers(map: maplibregl.Map): void {
     source: 'gates',
     paint: {
       'line-color': ['case', ['==', ['get', 'type'], 'sf'], '#ffffff', '#3da5ff'],
-      'line-width': 3,
+      'line-width': zoomWidth(3, 6),
     },
   });
   map.addLayer({
@@ -733,7 +870,7 @@ function addDataLayers(map: maplibregl.Map): void {
     source: 'markers',
     filter: ['==', ['get', 'kind'], 'apex'],
     paint: {
-      'circle-radius': 5,
+      'circle-radius': zoomRadius(5, 9),
       'circle-color': '#ffffff',
       'circle-stroke-color': '#0e1116',
       'circle-stroke-width': 1.5,
@@ -745,7 +882,7 @@ function addDataLayers(map: maplibregl.Map): void {
     source: 'markers',
     filter: ['==', ['get', 'kind'], 'brake'],
     paint: {
-      'circle-radius': 5,
+      'circle-radius': zoomRadius(5, 9),
       'circle-color': '#ff4d4f',
       'circle-stroke-color': '#0e1116',
       'circle-stroke-width': 1.5,
@@ -757,7 +894,7 @@ function addDataLayers(map: maplibregl.Map): void {
     source: 'markers',
     filter: ['==', ['get', 'kind'], 'throttle'],
     paint: {
-      'circle-radius': 5,
+      'circle-radius': zoomRadius(5, 9),
       'circle-color': '#3ddc84',
       'circle-stroke-color': '#0e1116',
       'circle-stroke-width': 1.5,
@@ -772,7 +909,7 @@ function addDataLayers(map: maplibregl.Map): void {
     layout: {
       'text-field': ['get', 'label'],
       'text-font': TEXT_FONT,
-      'text-size': 13,
+      'text-size': zoomRadius(13, 20),
       'text-offset': [0, -1],
       'text-allow-overlap': true,
     },

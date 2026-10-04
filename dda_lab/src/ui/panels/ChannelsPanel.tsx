@@ -1,7 +1,23 @@
 import { useMemo, useState } from 'react';
 import { autoGpsLag } from '../../core/processing';
+import { presetsForChannel } from '../../core/presets';
 import { DEFAULT_PROC, type Channel, type ChannelKind, type ChannelProc, type Session } from '../../core/types';
 import { useLab } from '../../state/store';
+
+/** Short human summary of a channel's processing, shown as a badge in the row. */
+function procSummary(proc: ChannelProc): string {
+  const parts: string[] = [];
+  if (proc.source === 'gps') parts.push('GPS');
+  else if (proc.source === 'blend') parts.push('blend');
+  const f = proc.filter;
+  if (f && f.type === 'butter') parts.push(`butter ${f.cutoffHz ?? 2} Hz`);
+  else if (f && f.type === 'ma') parts.push(`ma ${f.n ?? 5}`);
+  else if (f && f.type === 'sg') parts.push(`sg ${f.n ?? 9}`);
+  if (proc.invert) parts.push('inv');
+  if (proc.scale !== 1 || proc.offset !== 0) parts.push(`×${proc.scale}${proc.offset ? ` ${proc.offset > 0 ? '+' : ''}${proc.offset}` : ''}`);
+  if (proc.gpsLagS) parts.push(`lag ${proc.gpsLagS}s`);
+  return parts.length ? parts.join(' · ') : 'raw';
+}
 
 const KIND_ORDER: ChannelKind[] = ['raw', 'derived', 'math', 'external'];
 const KIND_LABEL: Record<ChannelKind, string> = {
@@ -201,6 +217,7 @@ function ProcEditor({ session, ch }: { session: Session; ch: Channel }) {
 export default function ChannelsPanel() {
   const sessions = useLab((s) => s.sessions);
   const selectedLaps = useLab((s) => s.selectedLaps);
+  const { setChannelProc, applyProcToAll } = useLab.getState();
   const [pick, setPick] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
 
@@ -249,25 +266,72 @@ export default function ChannelsPanel() {
           <div key={kind}>
             <div className="ch-group-title">{KIND_LABEL[kind]}</div>
             <div className="ch-list">
-              {(groups.get(kind) ?? []).map((ch) => (
-                <div key={ch.name}>
-                  <div className="ch-row" data-testid={`ch-row-${ch.name}`}>
-                    <span className="bp-swatch" style={{ background: ch.color || session.color }} />
-                    <span>{ch.name}</span>
-                    <span className="unit">{ch.unit}</span>
-                    <span className="bp-badge">{KIND_LABEL[ch.kind]}</span>
-                    <button
-                      className="bp-btn"
-                      title="Processing"
-                      data-testid={`ch-gear-${ch.name}`}
-                      onClick={() => setOpen((o) => (o === ch.name ? null : ch.name))}
-                    >
-                      ⚙
-                    </button>
+              {(groups.get(kind) ?? []).map((ch) => {
+                const presets = presetsForChannel(ch.name);
+                const summary = procSummary(ch.proc);
+                return (
+                  <div key={ch.name}>
+                    <div className="ch-row" data-testid={`ch-row-${ch.name}`}>
+                      <span className="bp-swatch" style={{ background: ch.color || session.color }} />
+                      <span className="cname">{ch.name}</span>
+                      <span className="unit">{ch.unit}</span>
+                      <span className="bp-badge">{KIND_LABEL[ch.kind]}</span>
+                      <select
+                        className="bp-select mini"
+                        data-testid={`ch-preset-${ch.name}`}
+                        value=""
+                        title="Quick filter preset"
+                        onChange={(e) => {
+                          const preset = presets.find((p) => p.id === e.target.value);
+                          e.currentTarget.value = '';
+                          if (!preset) return;
+                          const merged: ChannelProc = {
+                            ...ch.proc,
+                            ...preset.proc,
+                            filter: { ...(preset.proc.filter ?? ch.proc.filter) },
+                          };
+                          setChannelProc(session.id, ch.name, merged);
+                        }}
+                      >
+                        <option value="">Quick filter…</option>
+                        {presets.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.label}
+                          </option>
+                        ))}
+                      </select>
+                      <span
+                        className={`bp-badge proc${summary === 'raw' ? '' : ' on'}`}
+                        data-testid={`ch-proc-${ch.name}`}
+                        title="Current processing"
+                      >
+                        {summary}
+                      </span>
+                      {sessions.length > 1 && (
+                        <button
+                          className="bp-btn"
+                          data-testid={`ch-row-apply-all-${ch.name}`}
+                          title="Copy this channel's processing to every loaded session"
+                          onClick={() => applyProcToAll(ch.name, { ...ch.proc, filter: { ...ch.proc.filter } })}
+                        >
+                          Apply to all sessions
+                        </button>
+                      )}
+                      <button
+                        className="bp-btn"
+                        title="Processing"
+                        data-testid={`ch-gear-${ch.name}`}
+                        onClick={() => setOpen((o) => (o === ch.name ? null : ch.name))}
+                      >
+                        ⚙
+                      </button>
+                    </div>
+                    {open === ch.name && (
+                      <ProcEditor key={`${session.id}:${ch.name}:${summary}`} session={session} ch={ch} />
+                    )}
                   </div>
-                  {open === ch.name && <ProcEditor key={`${session.id}:${ch.name}`} session={session} ch={ch} />}
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         ))}

@@ -1,10 +1,11 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import 'uplot/dist/uPlot.min.css';
 import './charts.css';
 import type { Workspace } from '../core/types';
-import { useLab } from '../state/store';
+import { activeTrack, useLab } from '../state/store';
 import { allChannelNames } from '../state/selectors';
 import ChartPanel from './ChartPanel';
+import { focusRangeLabel, stepTurnIndex, turnFocusRange, turnOptionLabel } from './focus';
 
 type Panel = Workspace['panels'][number];
 
@@ -15,9 +16,34 @@ export default function ChartStack() {
   const setWorkspace = useLab((s) => s.setWorkspace);
   const xRange = useLab((s) => s.xRange);
   const setXRange = useLab((s) => s.setXRange);
+  const track = useLab(activeTrack);
 
   const names = useMemo(() => allChannelNames(sessions), [sessions]);
   const [axisFor, setAxisFor] = useState<Record<string, 'L' | 'R'>>({});
+
+  // ---- focus on a turn ---------------------------------------------------
+  const turns = track?.turns ?? [];
+  const byDistance = xAxis === 'distance';
+  const focusDisabled = !byDistance || turns.length === 0;
+  const focusTitle = !byDistance
+    ? 'Switch X axis to Distance to focus on turns'
+    : turns.length === 0
+      ? 'No turns detected on the active track'
+      : 'Zoom every chart to one turn';
+  // index into `turns`, or null for the whole lap
+  const [turnIdx, setTurnIdx] = useState<number | null>(null);
+
+  // A drag-select or "Reset zoom" elsewhere no longer matches a turn window.
+  useEffect(() => {
+    if (xRange == null) setTurnIdx(null);
+  }, [xRange]);
+
+  const focusOn = (idx: number | null) => {
+    setTurnIdx(idx);
+    const turn = idx == null ? undefined : turns[idx];
+    setXRange(turn ? turnFocusRange(turn) : null);
+  };
+  const step = (dir: 1 | -1) => focusOn(stepTurnIndex(turnIdx, turns.length, dir));
 
   const update = (next: Panel[]) => setWorkspace({ panels: next });
 
@@ -58,11 +84,51 @@ export default function ChartStack() {
           {panels.length} panel{panels.length === 1 ? '' : 's'} · x: {xAxis}
         </span>
         <span className="spacer" style={{ flex: '1 1 auto' }} />
-        {xRange && (
-          <button className="btn-mini" onClick={() => setXRange(null)} title="Reset the x zoom">
-            Reset zoom
+
+        <span className="focus-group" data-testid="focus-group">
+          <span className="focus-label">Focus</span>
+          <button
+            className="btn-mini"
+            data-testid="focus-prev"
+            disabled={focusDisabled}
+            title={focusDisabled ? focusTitle : 'Previous turn'}
+            onClick={() => step(-1)}
+          >
+            ◀ prev turn
           </button>
-        )}
+          <select
+            data-testid="focus-turn"
+            aria-label="Focus on turn"
+            disabled={focusDisabled}
+            title={focusTitle}
+            value={turnIdx == null ? '' : String(turnIdx)}
+            onChange={(e) => focusOn(e.target.value === '' ? null : Number(e.target.value))}
+          >
+            <option value="">— whole lap —</option>
+            {turns.map((t, i) => (
+              <option key={t.n} value={String(i)}>
+                {turnOptionLabel(t)}
+              </option>
+            ))}
+          </select>
+          <button
+            className="btn-mini"
+            data-testid="focus-next"
+            disabled={focusDisabled}
+            title={focusDisabled ? focusTitle : 'Next turn'}
+            onClick={() => step(1)}
+          >
+            next turn ▶
+          </button>
+          <span className="focus-range" data-testid="focus-range">
+            {focusRangeLabel(xRange, xAxis)}
+          </span>
+          {xRange && (
+            <button className="btn-mini" onClick={() => setXRange(null)} title="Reset the x zoom">
+              Reset zoom
+            </button>
+          )}
+        </span>
       </div>
 
       {panels.map((panel) => {

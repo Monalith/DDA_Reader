@@ -169,3 +169,68 @@ describe('orderByDependencies', () => {
     expect(() => orderByDependencies([{ name: 'a', expr: 'a + 1' }])).toThrow(/cycle: a -> a/);
   });
 });
+
+describe('extended function library', () => {
+  const n = 100;
+  const ramp = Float32Array.from({ length: n }, (_, i) => i); // 0..99
+  const speed = Float32Array.from({ length: n }, (_, i) => 36 + i * 3.6); // km/h: +1 m/s per sample = 10 m/s²
+  const env: EvalEnv = {
+    get: (name) => (name === 'ramp' ? ramp : name === 'speed' ? speed : (() => { throw new Error('unknown ' + name); })()),
+    dtS: 0.1,
+    lapStarts: [0, 50],
+  };
+  const run = (src: string) => evaluate(parseExpr(src), env);
+
+  it('constants are not dependencies and evaluate', () => {
+    expect(dependencies(parseExpr('ramp * pi + g'))).toEqual(['ramp']);
+    expect(run('ramp * 0 + pi')[0]).toBeCloseTo(Math.PI, 5);
+  });
+  it('trig / unit helpers', () => {
+    expect(run('rad2deg(atan2(ramp * 0 + 1, ramp * 0 + 1))')[0]).toBeCloseTo(45, 4);
+    expect(run('kmh2ms(speed)')[0]).toBeCloseTo(10, 4);
+    expect(run('clamp(ramp, 10, 20)')[0]).toBe(10);
+    expect(run('clamp(ramp, 10, 20)')[99]).toBe(20);
+    expect(run('mod(ramp, 7)')[9]).toBe(2);
+  });
+  it('accel_g from a km/h speed ramp', () => {
+    const a = run('accel_g(speed)');
+    expect(a[50]).toBeCloseTo(10 / 9.80665, 3);
+  });
+  it('rolling statistics and median', () => {
+    expect(run('rolling_max(ramp, 5)')[10]).toBe(12);
+    expect(run('rolling_min(ramp, 5)')[10]).toBe(8);
+    expect(run('median(ramp, 5)')[10]).toBe(10);
+    expect(run('rolling_std(ramp, 5)')[10]).toBeCloseTo(Math.sqrt(2), 5);
+  });
+  it('lowpass keeps a constant, highpass removes it', () => {
+    const c = run('lowpass(ramp * 0 + 5, 1)');
+    expect(c[50]).toBeCloseTo(5, 3);
+    expect(run('highpass(ramp * 0 + 5, 1)')[50]).toBeCloseTo(0, 3);
+    expect(run('sg(ramp, 7)')[50]).toBeCloseTo(50, 3);
+  });
+  it('whole-channel and per-lap statistics', () => {
+    expect(run('mean(ramp)')[0]).toBeCloseTo(49.5, 5);
+    expect(run('cmax(ramp)')[0]).toBe(99);
+    expect(run('lap_mean(ramp)')[10]).toBeCloseTo(24.5, 5);
+    expect(run('lap_mean(ramp)')[60]).toBeCloseTo(74.5, 5);
+    expect(run('lap_first(ramp)')[60]).toBe(50);
+    expect(run('lap_last(ramp)')[10]).toBe(49);
+    expect(run('lap_time(ramp)')[55]).toBeCloseTo(0.5, 5);
+    expect(run('lap_progress(ramp)')[99]).toBeCloseTo(1, 5);
+  });
+  it('events: rising, falling, hold', () => {
+    const r = run('rising(ramp >= 20)');
+    expect(r[20]).toBe(1);
+    expect(r[21]).toBe(0);
+    expect(run('falling(ramp < 20)')[20]).toBe(1);
+    const h = run('hold(ramp == 20, 0.5)');
+    expect(h[24]).toBe(1);
+    expect(h[26]).toBe(0);
+  });
+  it('diff, cumsum, lag, nanfill', () => {
+    expect(run('diff(ramp)')[5]).toBe(1);
+    expect(run('cumsum(ramp * 0 + 1)')[9]).toBe(10);
+    expect(run('lag(ramp, 3)')[10]).toBe(7);
+    expect(run('nanfill(lag(ramp, 3), -1)')[0]).toBe(-1);
+  });
+});

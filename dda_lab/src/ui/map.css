@@ -306,3 +306,8 @@
     transform: rotate(360deg);
   }
 }
+
+/* "🔍 Follow focus" must not wrap mid-label when the toolbar gets tight. */
+.map-btn[data-testid='map-follow-focus'] {
+  white-space: nowrap;
+}

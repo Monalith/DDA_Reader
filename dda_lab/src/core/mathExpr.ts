@@ -1,3 +1,4 @@
+import { butterworthLowpass, savitzkyGolay } from './filters';
 // Safe math-channel expression engine: hand-written tokenizer + recursive-descent
 // parser + vectorized evaluator. No eval(), no Function().
 //
@@ -40,19 +41,69 @@ export type BinOp =
 
 /** Arity of every supported function (`-1` = 1 or 2 args). */
 const FUNCTIONS: Record<string, number> = {
-  abs: 1,
-  sqrt: 1,
-  min: 2,
-  max: 2,
-  pow: 2,
-  deriv: 1,
-  integ: 1,
-  smooth: 2,
-  shift: 2,
-  lap_min: 1,
-  lap_max: 1,
-  where: 3,
+  // elementwise
+  abs: 1, sqrt: 1, sign: 1, floor: 1, ceil: 1, round: 1, exp: 1, log: 1, log10: 1,
+  sin: 1, cos: 1, tan: 1, asin: 1, acos: 1, atan: 1, atan2: 2, hypot: 2,
+  min: 2, max: 2, pow: 2, mod: 2, clamp: 3, where: 3, isnan: 1, nanfill: 2,
+  deg2rad: 1, rad2deg: 1, kmh2ms: 1, ms2kmh: 1,
+  // calculus / time
+  deriv: 1, integ: 1, diff: 1, cumsum: 1, shift: 2, lag: 2, accel_g: 1,
+  // rolling windows (ch, nSamples)
+  smooth: 2, rolling_mean: 2, rolling_min: 2, rolling_max: 2, rolling_std: 2, median: 2,
+  // filters
+  lowpass: 2, highpass: 2, sg: 2,
+  // whole-channel statistics (broadcast scalars)
+  mean: 1, std: 1, cmin: 1, cmax: 1,
+  // per-lap statistics
+  lap_min: 1, lap_max: 1, lap_mean: 1, lap_sum: 1, lap_first: 1, lap_last: 1, lap_time: 1, lap_progress: 1,
+  // events
+  rising: 1, falling: 1, hold: 2,
 };
+
+/** Named constants usable as identifiers. */
+export const CONSTANTS: Record<string, number> = { pi: Math.PI, e: Math.E, g: 9.80665 };
+
+/** Human-readable function reference, grouped — rendered by the in-app guide. */
+export const FUNCTION_DOCS: { group: string; items: { sig: string; doc: string }[] }[] = [
+  { group: 'Elementwise', items: [
+    { sig: 'abs(x) sqrt(x) sign(x) floor(x) ceil(x) round(x)', doc: 'Basic math on every sample.' },
+    { sig: 'exp(x) log(x) log10(x)', doc: 'Exponential and logarithms.' },
+    { sig: 'sin(x) cos(x) tan(x) asin(x) acos(x) atan(x) atan2(y, x)', doc: 'Trigonometry in radians; use deg2rad()/rad2deg().' },
+    { sig: 'min(a, b) max(a, b) pow(a, b) mod(a, b) hypot(a, b) clamp(x, lo, hi)', doc: 'Two-argument helpers; scalars broadcast.' },
+    { sig: 'where(cond, a, b)', doc: 'a where cond is true (non-zero), else b. Comparisons give 1/0.' },
+    { sig: 'isnan(x) nanfill(x, v)', doc: 'Detect or replace missing samples (NaN).' },
+    { sig: 'deg2rad(x) rad2deg(x) kmh2ms(x) ms2kmh(x)', doc: 'Unit conversions.' },
+  ] },
+  { group: 'Calculus & time', items: [
+    { sig: 'deriv(ch)', doc: 'Time derivative per second (central difference). deriv(speed) is km/h per s.' },
+    { sig: 'accel_g(speed_kmh)', doc: 'Longitudinal acceleration in g from a km/h speed channel.' },
+    { sig: 'integ(ch) cumsum(ch)', doc: 'Running integral over time (unit·s) / running sum of samples.' },
+    { sig: 'diff(ch)', doc: 'Sample-to-sample difference.' },
+    { sig: 'shift(ch, seconds) lag(ch, samples)', doc: 'Move a channel later in time (negative = earlier).' },
+  ] },
+  { group: 'Rolling windows (n = samples, 10 per second)', items: [
+    { sig: 'smooth(ch, n) rolling_mean(ch, n)', doc: 'Centred moving average.' },
+    { sig: 'rolling_min(ch, n) rolling_max(ch, n) rolling_std(ch, n) median(ch, n)', doc: 'Other centred window statistics.' },
+  ] },
+  { group: 'Filters', items: [
+    { sig: 'lowpass(ch, hz)', doc: '2nd-order zero-phase Butterworth low-pass, cutoff in Hz (try 0.5–3).' },
+    { sig: 'highpass(ch, hz)', doc: 'ch − lowpass(ch, hz): keeps the fast part (vibration, chatter).' },
+    { sig: 'sg(ch, n)', doc: 'Savitzky-Golay smoothing, odd window of n samples.' },
+  ] },
+  { group: 'Statistics', items: [
+    { sig: 'mean(ch) std(ch) cmin(ch) cmax(ch)', doc: 'Whole-channel value, broadcast to every sample.' },
+    { sig: 'lap_min(ch) lap_max(ch) lap_mean(ch) lap_sum(ch) lap_first(ch) lap_last(ch)', doc: 'Per-lap statistics, constant inside each lap.' },
+    { sig: 'lap_time(ch) lap_progress(ch)', doc: 'Seconds since lap start / 0–1 progress through the lap (argument only fixes the length).' },
+  ] },
+  { group: 'Events', items: [
+    { sig: 'rising(cond) falling(cond)', doc: '1 on the sample where cond becomes true / false, else 0.' },
+    { sig: 'hold(cond, seconds)', doc: '1 while cond was true within the last N seconds.' },
+  ] },
+  { group: 'Constants & operators', items: [
+    { sig: 'pi e g', doc: '3.14159…, 2.71828…, 9.80665 m/s².' },
+    { sig: '+ − * / ^   < <= > >= == !=   && || !', doc: 'Arithmetic, comparison (1/0) and logic. Parentheses group.' },
+  ] },
+];
 
 // ---------------------------------------------------------------- tokenizer
 
@@ -255,7 +306,7 @@ export function dependencies(ast: Ast): string[] {
   const walk = (n: Ast): void => {
     switch (n.kind) {
       case 'ident':
-        if (!seen.has(n.name)) {
+        if (!(n.name in CONSTANTS) && !seen.has(n.name)) {
           seen.add(n.name);
           out.push(n.name);
         }
@@ -430,6 +481,185 @@ function callFn(name: string, args: Val[], n: number, env: EvalEnv): Val {
       for (let i = 0; i < n; i++) out[i] = c[i] !== 0 && !Number.isNaN(c[i]) ? a[i] : b[i];
       return out;
     }
+    case 'sign': return map1(args[0], n, Math.sign);
+    case 'floor': return map1(args[0], n, Math.floor);
+    case 'ceil': return map1(args[0], n, Math.ceil);
+    case 'round': return map1(args[0], n, Math.round);
+    case 'exp': return map1(args[0], n, Math.exp);
+    case 'log': return map1(args[0], n, Math.log);
+    case 'log10': return map1(args[0], n, Math.log10);
+    case 'sin': return map1(args[0], n, Math.sin);
+    case 'cos': return map1(args[0], n, Math.cos);
+    case 'tan': return map1(args[0], n, Math.tan);
+    case 'asin': return map1(args[0], n, Math.asin);
+    case 'acos': return map1(args[0], n, Math.acos);
+    case 'atan': return map1(args[0], n, Math.atan);
+    case 'atan2': return map2(args[0], args[1], n, Math.atan2);
+    case 'hypot': return map2(args[0], args[1], n, Math.hypot);
+    case 'mod': return map2(args[0], args[1], n, (a, b) => ((a % b) + b) % b);
+    case 'deg2rad': return map1(args[0], n, (x) => (x * Math.PI) / 180);
+    case 'rad2deg': return map1(args[0], n, (x) => (x * 180) / Math.PI);
+    case 'kmh2ms': return map1(args[0], n, (x) => x / 3.6);
+    case 'ms2kmh': return map1(args[0], n, (x) => x * 3.6);
+    case 'isnan': return map1(args[0], n, (x) => bool(Number.isNaN(x)));
+    case 'nanfill': return map2(args[0], args[1], n, (x, v) => (Number.isNaN(x) ? v : x));
+    case 'clamp': {
+      const x = broadcast(args[0], n);
+      const lo = broadcast(args[1], n);
+      const hi = broadcast(args[2], n);
+      const out = new Float32Array(n);
+      for (let i = 0; i < n; i++) out[i] = Math.min(hi[i], Math.max(lo[i], x[i]));
+      return out;
+    }
+    case 'accel_g': {
+      const d = callFn('deriv', [args[0]], n, env) as Float32Array;
+      return map1(d, n, (x) => x / 3.6 / 9.80665);
+    }
+    case 'diff': {
+      const v = broadcast(args[0], n);
+      const out = new Float32Array(n);
+      out[0] = NaN;
+      for (let i = 1; i < n; i++) out[i] = v[i] - v[i - 1];
+      return out;
+    }
+    case 'cumsum': {
+      const v = broadcast(args[0], n);
+      const out = new Float32Array(n);
+      let acc = 0;
+      for (let i = 0; i < n; i++) {
+        if (Number.isFinite(v[i])) acc += v[i];
+        out[i] = acc;
+      }
+      return out;
+    }
+    case 'lag': {
+      const v = broadcast(args[0], n);
+      const k = Math.round(scalarOf(args[1], 'lag(ch, samples): samples'));
+      const out = new Float32Array(n);
+      for (let i = 0; i < n; i++) {
+        const j = i - k;
+        out[i] = j >= 0 && j < n ? v[j] : NaN;
+      }
+      return out;
+    }
+    case 'rolling_mean':
+      return callFn('smooth', args, n, env);
+    case 'rolling_min':
+    case 'rolling_max':
+    case 'rolling_std':
+    case 'median': {
+      const v = broadcast(args[0], n);
+      const win = Math.max(1, Math.round(scalarOf(args[1], `${name}(ch, n): n`)));
+      const half = Math.floor(win / 2);
+      const out = new Float32Array(n);
+      const buf: number[] = [];
+      for (let i = 0; i < n; i++) {
+        buf.length = 0;
+        for (let j = i - half; j <= i + half; j++) if (j >= 0 && j < n && Number.isFinite(v[j])) buf.push(v[j]);
+        if (!buf.length) {
+          out[i] = NaN;
+          continue;
+        }
+        if (name === 'rolling_min') out[i] = Math.min(...buf);
+        else if (name === 'rolling_max') out[i] = Math.max(...buf);
+        else if (name === 'median') {
+          buf.sort((a, b) => a - b);
+          const m = buf.length >> 1;
+          out[i] = buf.length % 2 ? buf[m] : (buf[m - 1] + buf[m]) / 2;
+        } else {
+          const mu = buf.reduce((a, b) => a + b, 0) / buf.length;
+          out[i] = Math.sqrt(buf.reduce((a, b) => a + (b - mu) * (b - mu), 0) / buf.length);
+        }
+      }
+      return out;
+    }
+    case 'lowpass': {
+      const v = broadcast(args[0], n);
+      const hz = scalarOf(args[1], 'lowpass(ch, hz): hz');
+      return butterworthLowpass(Float32Array.from(v), hz, 1 / env.dtS);
+    }
+    case 'highpass': {
+      const v = broadcast(args[0], n);
+      const lp = butterworthLowpass(Float32Array.from(v), scalarOf(args[1], 'highpass(ch, hz): hz'), 1 / env.dtS);
+      const out = new Float32Array(n);
+      for (let i = 0; i < n; i++) out[i] = v[i] - lp[i];
+      return out;
+    }
+    case 'sg': {
+      const v = broadcast(args[0], n);
+      let win = Math.max(3, Math.round(scalarOf(args[1], 'sg(ch, n): n')));
+      if (win % 2 === 0) win += 1;
+      return savitzkyGolay(Float32Array.from(v), win, 2);
+    }
+    case 'mean':
+    case 'std':
+    case 'cmin':
+    case 'cmax': {
+      const v = broadcast(args[0], n);
+      let sum = 0, cnt = 0, mn = Infinity, mx = -Infinity;
+      for (let i = 0; i < n; i++) {
+        const x = v[i];
+        if (!Number.isFinite(x)) continue;
+        sum += x; cnt++; if (x < mn) mn = x; if (x > mx) mx = x;
+      }
+      if (!cnt) return NaN;
+      if (name === 'cmin') return mn;
+      if (name === 'cmax') return mx;
+      const mu = sum / cnt;
+      if (name === 'mean') return mu;
+      let ss = 0;
+      for (let i = 0; i < n; i++) if (Number.isFinite(v[i])) ss += (v[i] - mu) * (v[i] - mu);
+      return Math.sqrt(ss / cnt);
+    }
+    case 'lap_mean':
+    case 'lap_sum':
+    case 'lap_first':
+    case 'lap_last':
+    case 'lap_time':
+    case 'lap_progress': {
+      const v = broadcast(args[0], n);
+      const out = new Float32Array(n);
+      for (const [a, b] of lapSegments(n, env.lapStarts)) {
+        if (name === 'lap_time' || name === 'lap_progress') {
+          const len = Math.max(1, b - a - 1);
+          for (let i = a; i < b; i++) out[i] = name === 'lap_time' ? (i - a) * env.dtS : (i - a) / len;
+          continue;
+        }
+        let sum = 0, cnt = 0, first = NaN, last = NaN;
+        for (let i = a; i < b; i++) {
+          const x = v[i];
+          if (!Number.isFinite(x)) continue;
+          if (Number.isNaN(first)) first = x;
+          last = x; sum += x; cnt++;
+        }
+        const val = name === 'lap_mean' ? (cnt ? sum / cnt : NaN) : name === 'lap_sum' ? sum : name === 'lap_first' ? first : last;
+        for (let i = a; i < b; i++) out[i] = val;
+      }
+      return out;
+    }
+    case 'rising':
+    case 'falling': {
+      const c = broadcast(args[0], n);
+      const out = new Float32Array(n);
+      const truthy = (x: number) => x !== 0 && !Number.isNaN(x);
+      for (let i = 1; i < n; i++) {
+        const prev = truthy(c[i - 1]);
+        const cur = truthy(c[i]);
+        out[i] = bool(name === 'rising' ? !prev && cur : prev && !cur);
+      }
+      return out;
+    }
+    case 'hold': {
+      const c = broadcast(args[0], n);
+      const k = Math.max(0, Math.round(scalarOf(args[1], 'hold(cond, seconds): seconds') / env.dtS));
+      const out = new Float32Array(n);
+      let lastTrue = -Infinity;
+      for (let i = 0; i < n; i++) {
+        if (c[i] !== 0 && !Number.isNaN(c[i])) lastTrue = i;
+        out[i] = bool(i - lastTrue <= k);
+      }
+      return out;
+    }
     default:
       throw new Error(`Unknown function: ${name}`);
   }
@@ -462,7 +692,7 @@ export function evaluate(ast: Ast, env: EvalEnv): Float32Array {
       case 'num':
         return node.value;
       case 'ident':
-        return channel(node.name);
+        return node.name in CONSTANTS ? CONSTANTS[node.name] : channel(node.name);
       case 'unary':
         return node.op === '-'
           ? map1(ev(node.arg), n, (x) => -x)

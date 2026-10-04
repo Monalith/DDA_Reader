@@ -1,5 +1,5 @@
 import type { Lap, Session, Workspace } from '../core/types';
-import type { LabState, LapRef } from './store';
+import { lapMetaOf, type LabState, type LapRef } from './store';
 
 export interface OverlayLine {
   key: string;
@@ -63,11 +63,12 @@ export function selectedLapEntries(state: Pick<LabState, 'sessions' | 'selectedL
 
 /** Series for one chart panel: one line per selected lap per channel. */
 export function overlaySeries(
-  state: Pick<LabState, 'sessions' | 'selectedLaps' | 'workspace'>,
+  state: Pick<LabState, 'sessions' | 'selectedLaps' | 'workspace'> & Partial<Pick<LabState, 'lapMeta'>>,
   panel: Workspace['panels'][number],
 ): OverlayLine[] {
   const entries = selectedLapEntries(state);
   const multi = new Set(entries.map((e) => e.s.id)).size > 1;
+  const metaState = { sessions: state.sessions, lapMeta: state.lapMeta ?? {} };
   const lines: OverlayLine[] = [];
   entries.forEach(({ s, lap }, li) => {
     const perSession = entries.filter((e) => e.s.id === s.id);
@@ -78,11 +79,13 @@ export function overlaySeries(
       const ch = s.channels.get(pc.name);
       if (!ch) return;
       const y = ch.data.slice(lap.startIdx, lap.endIdx + 1);
-      const base = ch.color && panel.channels.length > 1 ? ch.color : s.color;
+      const meta = lapMetaOf(metaState, s.id, lap.n);
+      const hasMeta = Boolean(state.lapMeta?.[`${s.id}:${lap.n}`]);
+      const base = ch.color && panel.channels.length > 1 ? ch.color : meta.color;
       lines.push({
         key: `${s.id}:${lap.n}:${pc.name}`,
-        label: `${lapLabel(s, lap, multi)} ${pc.name}`,
-        color: panel.channels.length > 1 && ci > 0 ? shade(base, 0.7) : shade(base, factor),
+        label: `${hasMeta ? meta.name : lapLabel(s, lap, multi)} ${pc.name}`,
+        color: panel.channels.length > 1 && ci > 0 ? shade(base, 0.7) : hasMeta ? base : shade(base, factor),
         x,
         y,
         axis: pc.axis,

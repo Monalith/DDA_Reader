@@ -3,6 +3,7 @@ import { makeTimeBase, resampleLinear, resampleStep } from './resample';
 import { computeDerived } from './derived';
 import { lapsFromMarkers } from './laps';
 import { ddaReaderCsvToSession } from './csvImport';
+import { parseBundle, type ParsedBundle } from './bundle';
 import { DDA_NAME_MAP, DEFAULT_PROC, type Channel, type Lap, type Session, type TrackModel } from './types';
 
 const STEP_CHANNELS = new Set(['gear', 'lap_mark', 'int1', 'int2', 'dist']);
@@ -133,6 +134,17 @@ export function sessionFromDdaReaderJson(j: DdaReaderJson, name: string, color: 
       note: j.header?.session_note ?? '',
     },
   };
+}
+
+export function isBundleFile(file: File): boolean {
+  return file.name.toLowerCase().endsWith('.lab.json');
+}
+
+/** A .lab.json bundle: one standalone session per stored lap, plus track and workspace. */
+export async function loadBundleFromFile(file: File, track?: TrackModel): Promise<ParsedBundle> {
+  const parsed = parseBundle(await file.text(), newSessionId);
+  for (const { session } of parsed.sessions) computeDerived(session, parsed.track ?? track);
+  return parsed;
 }
 
 export async function loadSessionFromFile(file: File, color: string, track?: TrackModel): Promise<Session> {

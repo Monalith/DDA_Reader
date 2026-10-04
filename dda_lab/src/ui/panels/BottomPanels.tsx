@@ -1,4 +1,6 @@
 import { useLab, type LabState } from '../../state/store';
+import LapsPanel from './LapsPanel';
+import TrackPanel from './TrackPanel';
 import ChannelsPanel from './ChannelsPanel';
 import MathPanel from './MathPanel';
 import ReportsPanel from './ReportsPanel';
@@ -7,6 +9,8 @@ import CursorPanel from './CursorPanel';
 import './panels.css';
 
 const TABS: Array<{ id: LabState['bottomTab']; label: string }> = [
+  { id: 'laps', label: 'Laps' },
+  { id: 'track', label: 'Track' },
   { id: 'channels', label: 'Channels' },
   { id: 'math', label: 'Math' },
   { id: 'reports', label: 'Reports' },
@@ -41,6 +45,8 @@ export default function BottomPanels() {
         </span>
       </nav>
       <div className="bp-body" role="tabpanel" data-testid={`bp-panel-${tab}`}>
+        {tab === 'laps' && <LapsPanel />}
+        {tab === 'track' && <TrackPanel />}
         {tab === 'channels' && <ChannelsPanel />}
         {tab === 'math' && <MathPanel />}
         {tab === 'reports' && <ReportsPanel />}

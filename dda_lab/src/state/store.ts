@@ -4,13 +4,18 @@ import { applyProc } from '../core/processing';
 import { evaluate, orderByDependencies, parseExpr, type EvalEnv } from '../core/mathExpr';
 import { detectLaps } from '../core/laps';
 import { applyDeltaT, applySectorTimes, applyTrackLapDist } from './derivedExtras';
+import { defaultSectorGates } from '../core/track';
+import { bearingDeg } from '../core/geo';
 import {
   DEFAULT_PROC,
   DEFAULT_WORKSPACE,
   type Channel,
   type ChannelProc,
+  type Gate,
   type Lap,
+  type LngLat,
   type Session,
+  type Turn,
   type TrackModel,
   type Workspace,
 } from '../core/types';
@@ -24,6 +29,13 @@ export interface CursorPos {
   sessionId: string;
   idx: number;
 }
+
+export interface LapMeta {
+  name: string;
+  color: string;
+}
+
+export const lapKey = (sessionId: string, lap: number): string => `${sessionId}:${lap}`;
 
 export interface MathDef {
   name: string;
@@ -39,13 +51,15 @@ export interface LabState {
   tracks: TrackModel[];
   activeTrackId?: string;
   selectedLaps: LapRef[];
+  /** User-editable name/colour per workspace lap, keyed by lapKey(). */
+  lapMeta: Record<string, LapMeta>;
   refLap?: LapRef;
   cursor: CursorPos | null;
   xRange: [number, number] | null;
   workspace: Workspace;
   mapColorBy: 'speed' | 'tps' | 'lean' | 'brake' | 'solid';
   mapMaximized: boolean;
-  bottomTab: 'channels' | 'math' | 'reports' | 'external' | 'cursor';
+  bottomTab: 'laps' | 'track' | 'channels' | 'math' | 'reports' | 'external' | 'cursor';
   statusMessage: string | null;
 
   addSession(s: Session): void;
@@ -63,6 +77,11 @@ export interface LabState {
   removeMathChannel(name: string): void;
   addExternalChannels(sessionId: string, channels: Channel[]): void;
   setTrack(t: TrackModel): void;
+  setLapMeta(sessionId: string, lap: number, patch: Partial<LapMeta>): void;
+  removeLapFromWorkspace(sessionId: string, lap: number): void;
+  /** Place the start/finish line at a map point; rebuilds sector gates and re-detects every lap. */
+  setStartLine(at: LngLat, bearing?: number): void;
+  updateTurns(turns: Turn[]): void;
   setMapColorBy(c: LabState['mapColorBy']): void;
   setMapMaximized(v: boolean): void;
   setBottomTab(t: LabState['bottomTab']): void;
@@ -152,18 +171,28 @@ function refreshAll(st: Pick<LabState, 'sessions' | 'refLap' | 'tracks' | 'activ
   return st.sessions.map((s) => refreshSession(s, track, st.workspace.mathChannels, ref));
 }
 
+export function defaultLapMeta(st: Pick<LabState, 'sessions'>, sessionId: string, lap: number): LapMeta {
+  const s = st.sessions.find((x) => x.id === sessionId);
+  return { name: s ? `${s.name} L${lap}` : `L${lap}`, color: s?.color ?? '#ffffff' };
+}
+
+export function lapMetaOf(st: Pick<LabState, 'sessions' | 'lapMeta'>, sessionId: string, lap: number): LapMeta {
+  return st.lapMeta[lapKey(sessionId, lap)] ?? defaultLapMeta(st, sessionId, lap);
+}
+
 export const useLab = create<LabState>((set, get) => ({
   sessions: [],
   tracks: [],
   activeTrackId: undefined,
   selectedLaps: [],
+  lapMeta: {},
   refLap: undefined,
   cursor: null,
   xRange: null,
   workspace: DEFAULT_WORKSPACE,
   mapColorBy: 'speed',
   mapMaximized: false,
-  bottomTab: 'channels',
+  bottomTab: 'laps',
   statusMessage: null,
 
   addSession(s) {
@@ -275,6 +304,60 @@ export const useLab = create<LabState>((set, get) => ({
       activeTrackId: t.id,
       sessions: refreshAll(st, t),
     });
+  },
+  setLapMeta(sessionId, lap, patch) {
+    set((st) => {
+      const k = lapKey(sessionId, lap);
+      const cur = st.lapMeta[k] ?? defaultLapMeta(st, sessionId, lap);
+      return { lapMeta: { ...st.lapMeta, [k]: { ...cur, ...patch } } };
+    });
+  },
+  removeLapFromWorkspace(sessionId, lap) {
+    set((st) => {
+      const meta = { ...st.lapMeta };
+      delete meta[lapKey(sessionId, lap)];
+      return {
+        selectedLaps: st.selectedLaps.filter((l) => !(l.sessionId === sessionId && l.lap === lap)),
+        lapMeta: meta,
+      };
+    });
+  },
+  setStartLine(at, bearing) {
+    const st = get();
+    const track = activeTrack(st);
+    if (!track) return;
+    // Snap to the nearest centerline vertex so a click beside the tarmac still
+    // yields a gate the laps actually cross; heading = centerline direction there.
+    let best = 0;
+    let bestD = Infinity;
+    for (let i = 0; i < track.centerline.length; i++) {
+      const dx = (track.centerline[i][0] - at[0]) * Math.cos((at[1] * Math.PI) / 180);
+      const dy = track.centerline[i][1] - at[1];
+      const d = dx * dx + dy * dy;
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    }
+    const snapped: LngLat = track.centerline[best];
+    const nx = (best + 1) % track.centerline.length;
+    const b = bearing ?? bearingDeg(track.centerline[best], track.centerline[nx]);
+    const sf: Gate = { ...track.startFinish, at: snapped, bearingDeg: b };
+    const sectors = defaultSectorGates(track.centerline, track.cumDistM, sf, Math.max(2, track.sectors.length + 1));
+    const next: TrackModel = { ...track, startFinish: sf, sectors };
+    for (const s of st.sessions) s.laps = [];
+    const tracks = [...st.tracks.filter((x) => x.id !== next.id), next];
+    const sessions = refreshAll({ ...st, tracks, activeTrackId: next.id }, next);
+    // keep workspace laps whose number still exists
+    const selectedLaps = st.selectedLaps.filter((r) => sessions.find((s) => s.id === r.sessionId)?.laps.some((l) => l.n === r.lap));
+    set({ tracks, activeTrackId: next.id, sessions, selectedLaps, cursor: null });
+  },
+  updateTurns(turns) {
+    const st = get();
+    const track = activeTrack(st);
+    if (!track) return;
+    const next: TrackModel = { ...track, turns: turns.map((t, i) => ({ ...t, n: i + 1 })) };
+    set({ tracks: [...st.tracks.filter((x) => x.id !== next.id), next], sessions: refreshAll({ ...st, tracks: [next], activeTrackId: next.id }, next) });
   },
   setMapColorBy(c) {
     set({ mapColorBy: c });

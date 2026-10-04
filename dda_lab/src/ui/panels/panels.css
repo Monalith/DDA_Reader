@@ -188,3 +188,15 @@
 .ext-col { display: flex; align-items: center; gap: 4px; }
 .ext-col .cname { width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ext-preview canvas { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; }
+
+/* ---- track ------------------------------------------------------------ */
+.tp-wrap { display: flex; flex-direction: column; gap: 6px; }
+.tp-head { gap: 8px; }
+.tp-name { width: 180px; }
+.tp-hint { color: var(--fg-dim); font-size: 11px; }
+.tp-turns { width: auto; }
+.tp-turns td { padding: 1px 4px; }
+.tp-turns td .bp-btn { padding: 1px 6px; font-size: 11px; }
+.tp-turns .bp-select { padding: 1px 3px; }
+.tp-turns .bp-input { padding: 1px 4px; }
+.tp-foot { gap: 8px; }

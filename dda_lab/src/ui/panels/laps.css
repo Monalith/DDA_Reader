@@ -1,0 +1,88 @@
+/* ---- laps panel (workspace laps) -------------------------------------- */
+.laps-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.laps-toolbar { gap: 6px; }
+.bp-spacer-flex { flex: 1; }
+
+.bp-btn.tiny {
+  padding: 0 5px;
+  line-height: 18px;
+  font-size: 11px;
+}
+
+/* ---- import picker ---------------------------------------------------- */
+.laps-pickers {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.laps-picker {
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--accent);
+  border-radius: 4px;
+  background: var(--panel-2);
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.laps-picker-head { gap: 8px; }
+.laps-picker-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 2px 10px;
+  max-height: 120px;
+  overflow: auto;
+}
+.laps-picker-item {
+  display: grid;
+  grid-template-columns: 16px 34px 52px 1fr 1fr;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+.laps-picker-item:hover { background: var(--panel); }
+.laps-picker-item .kind { color: var(--fg-dim); font-size: 11px; }
+.laps-picker-item .num { text-align: right; }
+.laps-picker-item .dim { color: var(--fg-dim); }
+
+/* ---- workspace lap table --------------------------------------------- */
+.laps-table { width: 100%; }
+.laps-table tbody tr:focus {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.laps-table td.c,
+.laps-table th.c { text-align: center; }
+.laps-table td.dim { color: var(--fg-dim); }
+
+.laps-color {
+  width: 20px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: transparent;
+  cursor: pointer;
+  vertical-align: middle;
+}
+.laps-color::-webkit-color-swatch-wrapper { padding: 1px; }
+.laps-color::-webkit-color-swatch { border: 0; border-radius: 2px; }
+
+.laps-name {
+  width: 100%;
+  min-width: 140px;
+  padding: 1px 4px;
+}
+
+.laps-order {
+  white-space: nowrap;
+}
+.laps-order .bp-btn + .bp-btn { margin-left: 2px; }

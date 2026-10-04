@@ -58,6 +58,7 @@ function fmtVal(line: OverlayLine, v: number | null | undefined, unitMph: boolea
 export default function ChartPanel({ panel }: { panel: Panel }) {
   const sessions = useLab((s) => s.sessions);
   const selectedLaps = useLab((s) => s.selectedLaps);
+  const lapMeta = useLab((s) => s.lapMeta);
   const workspace = useLab((s) => s.workspace);
   const refLap = useLab((s) => s.refLap);
   const cursor = useLab((s) => s.cursor);
@@ -68,8 +69,8 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
   const unitMph = workspace.unitMph;
 
   const lines = useMemo(
-    () => overlaySeries({ sessions, selectedLaps, workspace }, panel),
-    [sessions, selectedLaps, workspace, panel],
+    () => overlaySeries({ sessions, selectedLaps, workspace, lapMeta }, panel),
+    [sessions, selectedLaps, workspace, lapMeta, panel],
   );
   const data = useMemo(() => joinLines(lines), [lines]);
 
@@ -269,7 +270,7 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
               ctx.moveTo(px, top);
               ctx.lineTo(px, top + height);
               ctx.stroke();
-              ctx.fillText(`T${turn.n}`, px + 2 * devicePixelRatio, top + 10 * devicePixelRatio);
+              ctx.fillText(turn.name || `T${turn.n}`, px + 2 * devicePixelRatio, top + 10 * devicePixelRatio);
             }
             ctx.restore();
           },

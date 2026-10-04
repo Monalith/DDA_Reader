@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { loadSessionFromFile } from '../core/sessionLoader';
+import { isBundleFile, loadBundleFromFile, loadSessionFromFile } from '../core/sessionLoader';
 import { parseWorkspace, serializeWorkspace } from '../core/workspace';
 import { activeTrack, SESSION_COLORS, useLab } from '../state/store';
 import { ensureTrackForSession } from '../state/trackActions';
@@ -27,6 +27,18 @@ export default function TopBar() {
     setBusy(true);
     try {
       for (const f of Array.from(files)) {
+        if (isBundleFile(f)) {
+          setStatus(`Loading bundle ${f.name}…`);
+          const b = await loadBundleFromFile(f, activeTrack(useLab.getState()));
+          if (b.track) useLab.getState().setTrack(b.track);
+          useLab.setState({ workspace: b.workspace });
+          for (const { session, name, color: c } of b.sessions) {
+            addSession(session);
+            useLab.getState().setLapMeta(session.id, session.laps[0].n, { name, color: c });
+          }
+          setStatus(`${f.name}: ${b.sessions.length} laps restored`);
+          continue;
+        }
         const color = SESSION_COLORS[useLab.getState().sessions.length % SESSION_COLORS.length];
         setStatus(`Loading ${f.name}…`);
         const s = await loadSessionFromFile(f, color, activeTrack(useLab.getState()));
@@ -62,7 +74,7 @@ export default function TopBar() {
       <button className="btn primary" onClick={() => fileRef.current?.click()} disabled={busy} data-testid="open-files-btn">
         {busy ? 'Loading…' : '📂 Open sessions'}
       </button>
-      <input ref={fileRef} type="file" multiple accept=".dda,.json,.csv" hidden data-testid="open-files" onChange={(e) => onFiles(e.target.files)} />
+      <input ref={fileRef} type="file" multiple accept=".dda,.json,.csv,.lab.json" hidden data-testid="open-files" onChange={(e) => onFiles(e.target.files)} />
       <div className="chips">
         {sessions.map((s) => (
           <span className="chip" key={s.id} style={{ borderColor: s.color }}>

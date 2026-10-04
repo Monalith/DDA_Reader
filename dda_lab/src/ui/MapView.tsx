@@ -17,7 +17,7 @@ import { bearingDeg, haversineM } from '../core/geo';
 import { turnMetrics } from '../core/track';
 import type { Gate, LngLat, SchemaLayer, TrackModel, TurnMetrics } from '../core/types';
 import { selectedLapEntries } from '../state/selectors';
-import { activeTrack, useLab } from '../state/store';
+import { activeTrack, useLab, lapMetaOf } from '../state/store';
 import {
   IMAGE_CORNERS,
   centerlineGeoJson,
@@ -105,6 +105,9 @@ export default function MapView() {
   const [measurePts, setMeasurePts] = useState<LngLat[]>([]);
   const [gateEdit, setGateEdit] = useState(false);
   const [schemaOpen, setSchemaOpen] = useState(false);
+  // "🏁 Start line": armed for one click, then shows a sticky confirmation.
+  const [startLineMode, setStartLineMode] = useState(false);
+  const [startLineMsg, setStartLineMsg] = useState<string | null>(null);
 
   const sessions = useLab((s) => s.sessions);
   const selectedLaps = useLab((s) => s.selectedLaps);
@@ -112,6 +115,7 @@ export default function MapView() {
   const activeTrackId = useLab((s) => s.activeTrackId);
   const mapLayers = useLab((s) => s.workspace.mapLayers);
   const colorBy = useLab((s) => s.mapColorBy);
+  const lapMeta = useLab((s) => s.lapMeta);
   const setMapColorBy = useLab((s) => s.setMapColorBy);
   const maximized = useLab((s) => s.mapMaximized);
   const setMapMaximized = useLab((s) => s.setMapMaximized);
@@ -202,7 +206,7 @@ export default function MapView() {
 
     for (const e of entries) {
       const id = `trace:${e.s.id}:${e.lap.n}`;
-      const data = traceGeoJson(e.s, e.lap, colorBy);
+      const data = traceGeoJson(e.s, e.lap, colorBy, lapMetaOf(useLab.getState(), e.s.id, e.lap.n).color);
       const src = map.getSource<maplibregl.GeoJSONSource>(id);
       if (src) {
         void src.setData(data);
@@ -221,7 +225,7 @@ export default function MapView() {
       }
       setVis(map, id, mapLayers.trace !== false);
     }
-  }, [ready, entries, colorBy, mapLayers.trace]);
+  }, [ready, entries, colorBy, lapMeta, mapLayers.trace]);
 
   // ---------- track model + schema ----------
   useEffect(() => {
@@ -321,6 +325,8 @@ export default function MapView() {
       if (e.key !== 'Escape') return;
       clearMeasure();
       setLayersOpen(false);
+      setStartLineMode(false);
+      setStartLineMsg(null);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -333,6 +339,13 @@ export default function MapView() {
     const onClick = (ev: maplibregl.MapMouseEvent) => {
       const p: LngLat = [ev.lngLat.lng, ev.lngLat.lat];
       if (mapBus.deliver(p)) return;
+      if (startLineMode) {
+        // bearing left undefined: the store derives it from the centerline
+        useLab.getState().setStartLine(p);
+        setStartLineMode(false);
+        setStartLineMsg('Start/finish moved — laps recomputed');
+        return;
+      }
       if (measure) {
         setMeasurePts((prev) => (prev.length >= 2 ? [p] : [...prev, p]));
         return;
@@ -345,14 +358,14 @@ export default function MapView() {
     return () => {
       map.off('click', onClick);
     };
-  }, [ready, measure, gateEdit, entries, setCursor]);
+  }, [ready, measure, gateEdit, startLineMode, entries, setCursor]);
 
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready) return;
     const canvas = map.getCanvas();
-    canvas.style.cursor = armed || measure ? 'crosshair' : '';
-  }, [ready, armed, measure]);
+    canvas.style.cursor = armed || measure || startLineMode ? 'crosshair' : '';
+  }, [ready, armed, measure, startLineMode]);
 
   // ---------- gate editing ----------
   useEffect(() => {
@@ -484,6 +497,20 @@ export default function MapView() {
         >
           Gates
         </button>
+        <button
+          className={`map-btn ${startLineMode ? 'active' : ''}`}
+          data-testid="map-start-line"
+          disabled={!track}
+          onClick={() => {
+            setStartLineMsg(null);
+            setMeasure(false);
+            setMeasurePts([]);
+            setStartLineMode((v) => !v);
+          }}
+          title="Click the map to move the start/finish line (Esc cancels)"
+        >
+          🏁 Start line
+        </button>
         <button className="map-btn" data-testid="schema-import" onClick={() => setSchemaOpen(true)}>
           Import schema
         </button>
@@ -523,13 +550,17 @@ export default function MapView() {
         </div>
       )}
 
-      {(measure || armed) && (
+      {(measure || armed || startLineMode || startLineMsg) && (
         <div className="map-status" data-testid="map-status">
           {armed
             ? 'Alignment: click the matching point on the map'
-            : measurePts.length === 2
-              ? `${fmtM(haversineM(measurePts[0], measurePts[1]))} — Esc clears`
-              : 'Measure: click two points (Esc cancels)'}
+            : startLineMode
+              ? 'Start line: click the map at the new start/finish (Esc cancels)'
+              : startLineMsg
+                ? startLineMsg
+                : measurePts.length === 2
+                  ? `${fmtM(haversineM(measurePts[0], measurePts[1]))} — Esc clears`
+                  : 'Measure: click two points (Esc cancels)'}
         </div>
       )}
 

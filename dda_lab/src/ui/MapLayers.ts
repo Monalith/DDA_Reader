@@ -93,6 +93,7 @@ export function traceGeoJson(
   s: Session,
   lap: Lap,
   colorBy: ColorBy,
+  solidColor?: string,
 ): FeatureCollection<LineString, TraceProps> {
   const lng = chan(s, 'gps_lon');
   const lat = chan(s, 'gps_lat');
@@ -122,7 +123,7 @@ export function traceGeoJson(
     const a: LngLat = [lng[i], lat[i]];
     const b: LngLat = [lng[i + 1], lat[i + 1]];
     if (!a.every(Number.isFinite) || !b.every(Number.isFinite)) continue;
-    let color = s.color;
+    let color = solidColor ?? s.color;
     if (colorBy === 'brake') color = value ? brakeColor(value[i]) : NEUTRAL;
     else if (colorBy !== 'solid' && value) {
       const v = colorBy === 'lean' ? Math.abs(value[i]) : value[i];
@@ -191,7 +192,7 @@ export function markersGeoJson(
 ): FeatureCollection<Point, MarkerProps> {
   const features: Array<Feature<Point, MarkerProps>> = [];
   for (const turn of t.turns) {
-    features.push(pointFeature(turn.apexGeo, { kind: 'turn', turn: turn.n, label: String(turn.n) }));
+    features.push(pointFeature(turn.apexGeo, { kind: 'turn', turn: turn.n, label: turn.name && turn.name !== `T${turn.n}` ? `${turn.n} ${turn.name}` : String(turn.n) }));
   }
 
   const lng = chan(s, 'gps_lon');

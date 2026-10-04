@@ -4,6 +4,7 @@ import { computeDerived } from './derived';
 import { lapsFromMarkers } from './laps';
 import { ddaReaderCsvToSession } from './csvImport';
 import { parseBundle, type ParsedBundle } from './bundle';
+import { isTelemetryJson, telemetryJsonToSession } from './telemetryJson';
 import { DDA_NAME_MAP, DEFAULT_PROC, type Channel, type Lap, type Session, type TrackModel } from './types';
 
 const STEP_CHANNELS = new Set(['gear', 'lap_mark', 'int1', 'int2', 'dist']);
@@ -156,7 +157,20 @@ export async function loadSessionFromFile(file: File, color: string, track?: Tra
     session = sessionFromParsed(parseDda(buf), base, color);
   } else if (ext === 'json') {
     const text = await file.text();
-    session = sessionFromDdaReaderJson(JSON.parse(text) as DdaReaderJson, base, color);
+    let j: unknown;
+    try {
+      j = JSON.parse(text);
+    } catch (e) {
+      throw new Error(`${file.name}: not valid JSON (${(e as Error).message})`);
+    }
+    if (isTelemetryJson(j)) {
+      session = telemetryJsonToSession(j, base, color, newSessionId);
+    } else if (j && typeof j === 'object' && Array.isArray((j as DdaReaderJson).records)) {
+      session = sessionFromDdaReaderJson(j as DdaReaderJson, base, color);
+    } else {
+      const keys = j && typeof j === 'object' ? Object.keys(j as object).slice(0, 8).join(', ') : typeof j;
+      throw new Error(`${file.name}: unknown JSON layout (keys: ${keys}). Expected a DDA_Reader export (records[]) or a telemetry file (telemetri_1m[]).`);
+    }
   } else if (ext === 'csv') {
     const text = await file.text();
     session = ddaReaderCsvToSession(text, base);

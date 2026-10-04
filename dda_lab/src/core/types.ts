@@ -99,6 +99,16 @@ export interface TrackModel {
   schema?: SchemaLayer;
 }
 
+/** Turn geometry carried by an imported file (e.g. a track-map telemetry JSON). */
+export interface TurnHint {
+  name: string;
+  dir: 'L' | 'R';
+  apexGeo: LngLat;
+  startGeo: LngLat;
+  endGeo: LngLat;
+  brakeGeo?: LngLat;
+}
+
 export interface Session {
   id: string;
   name: string;
@@ -108,6 +118,11 @@ export interface Session {
   channels: Map<string, Channel>;
   laps: Lap[];
   meta: { track: string; rider: string; note: string };
+  /** Optional turn definitions and start/finish point from the source file. */
+  turnHints?: TurnHint[];
+  sfHint?: LngLat;
+  /** Laps came from the file itself (not from gates/beacon): keep them when the start line moves. */
+  lapsFromFile?: boolean;
 }
 
 /** Optional fixed axis range; null/undefined bound = automatic. */

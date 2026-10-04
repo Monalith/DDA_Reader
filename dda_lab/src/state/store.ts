@@ -4,7 +4,7 @@ import { applyProc } from '../core/processing';
 import { evaluate, orderByDependencies, parseExpr, type EvalEnv } from '../core/mathExpr';
 import { detectLaps } from '../core/laps';
 import { applyDeltaT, applySectorTimes, applyTrackLapDist } from './derivedExtras';
-import { defaultSectorGates } from '../core/track';
+import { defaultSectorGates, projectToTrack } from '../core/track';
 import { bearingDeg } from '../core/geo';
 import {
   DEFAULT_PROC,
@@ -84,6 +84,8 @@ export interface LabState {
   /** Place the start/finish line at a map point; rebuilds sector gates and re-detects every lap. */
   setStartLine(at: LngLat, bearing?: number): void;
   updateTurns(turns: Turn[]): void;
+  /** Replace the track's turns (and optionally the start line) with the hints carried by a session. */
+  applyTurnHints(sessionId: string): boolean;
   setMapColorBy(c: LabState['mapColorBy']): void;
   setMapMaximized(v: boolean): void;
   setBottomTab(t: LabState['bottomTab']): void;
@@ -369,7 +371,7 @@ export const useLab = create<LabState>((set, get) => ({
     const sf: Gate = { ...track.startFinish, at: snapped, bearingDeg: b };
     const sectors = defaultSectorGates(track.centerline, track.cumDistM, sf, Math.max(2, track.sectors.length + 1));
     const next: TrackModel = { ...track, startFinish: sf, sectors };
-    for (const s of st.sessions) s.laps = [];
+    for (const s of st.sessions) if (!s.lapsFromFile) s.laps = [];
     const tracks = [...st.tracks.filter((x) => x.id !== next.id), next];
     const sessions = refreshAll({ ...st, tracks, activeTrackId: next.id }, next);
     // keep workspace laps whose number still exists
@@ -382,6 +384,45 @@ export const useLab = create<LabState>((set, get) => ({
     if (!track) return;
     const next: TrackModel = { ...track, turns: turns.map((t, i) => ({ ...t, n: i + 1 })) };
     set({ tracks: [...st.tracks.filter((x) => x.id !== next.id), next], sessions: refreshAll({ ...st, tracks: [next], activeTrackId: next.id }, next) });
+  },
+  applyTurnHints(sessionId) {
+    const st = get();
+    const track = activeTrack(st);
+    const session = st.sessions.find((s) => s.id === sessionId);
+    if (!track || !session?.turnHints?.length) return false;
+    // move the start/finish first if the hint is clearly elsewhere (> 30 m)
+    if (session.sfHint) {
+      const cur = projectToTrack(track, track.startFinish.at).sM;
+      const hinted = projectToTrack(track, session.sfHint);
+      const L = track.lengthM;
+      const d = Math.abs(((hinted.sM - cur + L / 2) % L + L) % L - L / 2);
+      if (hinted.offM < 40 && d > 30) get().setStartLine(session.sfHint);
+    }
+    const tr = activeTrack(get())!;
+    const L = tr.lengthM;
+    const turns: Turn[] = [];
+    for (const h of session.turnHints) {
+      const a = projectToTrack(tr, h.startGeo);
+      const b = projectToTrack(tr, h.endGeo);
+      const ap = projectToTrack(tr, h.apexGeo);
+      if (a.offM > 60 || b.offM > 60 || ap.offM > 60) continue; // hint does not belong to this track
+      let s0 = a.sM;
+      let s1 = b.sM;
+      if (s1 < s0) s1 += L; // wraps past the start line
+      const [s0c, s1c] = s1 > L ? [s0, L] : [s0, s1];
+      turns.push({
+        n: turns.length + 1,
+        name: h.name,
+        dir: h.dir,
+        apexGeo: h.apexGeo,
+        radiusM: Math.max(10, (s1c - s0c) / Math.PI),
+        sRange: [s0c, s1c],
+      });
+    }
+    if (!turns.length) return false;
+    turns.sort((x, y) => x.sRange[0] - y.sRange[0]);
+    get().updateTurns(turns);
+    return true;
   },
   setMapColorBy(c) {
     set({ mapColorBy: c });

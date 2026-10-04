@@ -199,6 +199,19 @@ export default function TrackPanel() {
         <button className="bp-btn" data-testid="track-rebuild" onClick={rebuild} disabled={!sessions.some((s) => s.laps.length > 0)}>
           Rebuild from session
         </button>
+        {sessions.filter((s) => s.turnHints?.length).map((s) => (
+          <button
+            key={s.id}
+            className="bp-btn"
+            data-testid={`track-hints-${s.id}`}
+            title={`Replace turns with the ${s.turnHints!.length} turns defined in ${s.name}`}
+            onClick={() => {
+              if (useLab.getState().applyTurnHints(s.id)) saveTrackLocal(activeTrack(useLab.getState())!);
+            }}
+          >
+            Turns from {s.name}
+          </button>
+        ))}
         <button className="bp-btn" data-testid="track-save" onClick={() => saveTrackLocal(track)}>
           Save
         </button>

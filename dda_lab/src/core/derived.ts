@@ -203,6 +203,8 @@ export function computeDerived(s: Session, track?: TrackModel): void {
     for (let i = 0; i < n; i++) gpsSpeed[i] = sm[i];
   }
   setChannel(s, 'gps_speed', 'km/h', gpsSpeed);
+  // --- gps_smooth: GPS speed low-passed at 0.4 Hz (zero-phase Butterworth)
+  setChannel(s, 'gps_smooth', 'km/h', hasGps ? butterworthLowpass(gpsSpeed, 0.4, 1 / dt) : nanArray(n));
 
   // --- speed in m/s used by the dynamics (wheel speed preferred)
   const vMs = nanArray(n);

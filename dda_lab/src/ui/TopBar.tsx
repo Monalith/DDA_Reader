@@ -2,7 +2,7 @@ import { useRef, useState } from 'react';
 import { isBundleFile, loadBundleFromFile, loadSessionFromFile } from '../core/sessionLoader';
 import { parseWorkspace, serializeWorkspace } from '../core/workspace';
 import { activeTrack, SESSION_COLORS, useLab } from '../state/store';
-import { ensureTrackForSession } from '../state/trackActions';
+import { ensureTrackForSession, saveTrackLocal } from '../state/trackActions';
 
 function download(name: string, text: string, mime = 'application/json') {
   const a = document.createElement('a');
@@ -44,7 +44,12 @@ export default function TopBar() {
         const s = await loadSessionFromFile(f, color, activeTrack(useLab.getState()));
         addSession(s);
         ensureTrackForSession(s);
-        setStatus(`${f.name}: ${s.laps.length} laps, ${(s.t[s.t.length - 1] / 60).toFixed(1)} min`);
+        let extra = '';
+        if (s.turnHints?.length && useLab.getState().applyTurnHints(s.id)) {
+          saveTrackLocal(activeTrack(useLab.getState())!);
+          extra = ` · ${s.turnHints.length} turns applied to the track`;
+        }
+        setStatus(`${f.name}: ${s.laps.length} laps, ${(s.t[s.t.length - 1] / 60).toFixed(1)} min${extra}`);
       }
     } catch (e) {
       setStatus(`Error: ${(e as Error).message}`);

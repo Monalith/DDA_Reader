@@ -9,11 +9,124 @@
   --accent-2: #3da5ff;
   --good: #3ddc84;
   --bad: #ff4d4f;
+  --radius: 6px;
   font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
   font-size: 13px;
   color: var(--fg);
   background: var(--bg);
+  color-scheme: dark;
 }
-html, body, #root { margin: 0; height: 100%; }
+
+* { box-sizing: border-box; }
+html, body, #root { margin: 0; height: 100%; overflow: hidden; }
 body { background: var(--bg); }
 .num { font-variant-numeric: tabular-nums; }
+
+button, select, input, textarea {
+  font: inherit;
+  color: inherit;
+}
+button { cursor: pointer; }
+
+.app-root {
+  display: grid;
+  grid-template-rows: 44px 1fr;
+  height: 100%;
+}
+
+/* ---------- top bar ---------- */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.brand { display: flex; align-items: baseline; gap: 4px; margin-right: 8px; letter-spacing: 0.06em; }
+.brand-main { font-weight: 800; font-size: 16px; color: var(--accent); }
+.brand-sub { font-weight: 600; font-size: 12px; color: var(--fg-dim); }
+.spacer { flex: 1; }
+.status { color: var(--fg-dim); font-size: 12px; max-width: 360px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.track-badge { color: var(--fg-dim); font-size: 12px; padding: 3px 8px; border: 1px solid var(--border); border-radius: 999px; }
+
+.btn {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 5px 10px;
+  color: var(--fg);
+}
+.btn:hover { border-color: var(--fg-dim); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #111; font-weight: 600; }
+.btn.primary:disabled { opacity: 0.6; cursor: progress; }
+.btn.small { padding: 2px 7px; font-size: 12px; }
+
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.seg button { background: transparent; border: 0; padding: 4px 9px; color: var(--fg-dim); }
+.seg button.on { background: var(--panel-2); color: var(--fg); }
+
+.chips { display: flex; gap: 6px; flex-wrap: nowrap; overflow-x: auto; max-width: 45vw; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--border); border-left-width: 3px; border-radius: var(--radius);
+  padding: 2px 6px 2px 8px; white-space: nowrap; background: var(--panel-2);
+}
+.chip i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.chip small { color: var(--fg-dim); }
+.chip-x { background: transparent; border: 0; color: var(--fg-dim); font-size: 14px; line-height: 1; padding: 0 2px; }
+.chip-x:hover { color: var(--bad); }
+
+/* ---------- workspace grid ---------- */
+.workspace {
+  display: grid;
+  grid-template-columns: 62% 6px 1fr;
+  height: 100%;
+  min-height: 0;
+}
+.left-pane {
+  display: grid;
+  grid-template-rows: auto 1fr 260px;
+  min-height: 0;
+  min-width: 0;
+  background: var(--bg);
+}
+.workspace.map-max .left-pane, .workspace.map-max .splitter { display: none; }
+.right-pane { min-width: 0; min-height: 0; position: relative; background: #000; }
+.splitter { background: var(--border); cursor: col-resize; }
+.splitter:hover { background: var(--fg-dim); }
+
+/* ---------- shared panel chrome ---------- */
+.panel {
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.panel-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 8px;
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg-dim);
+  border-bottom: 1px solid var(--border);
+}
+.panel-body { min-height: 0; overflow: auto; }
+
+table.grid { border-collapse: collapse; width: 100%; font-size: 12px; }
+table.grid th, table.grid td { padding: 2px 6px; text-align: right; border-bottom: 1px solid var(--border); white-space: nowrap; }
+table.grid th { position: sticky; top: 0; background: var(--panel-2); color: var(--fg-dim); font-weight: 600; cursor: pointer; }
+table.grid td:first-child, table.grid th:first-child { text-align: left; }
+table.grid tr:hover td { background: var(--panel-2); }
+.good { color: var(--good); }
+.bad { color: var(--bad); }
+.dim { color: var(--fg-dim); }
+
+.empty-state {
+  display: flex; align-items: center; justify-content: center; height: 100%;
+  color: var(--fg-dim); font-size: 14px; text-align: center; padding: 20px;
+}
+
+input[type='number'], input[type='text'], select, textarea {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px;
+}
+input[type='range'] { accent-color: var(--accent); }

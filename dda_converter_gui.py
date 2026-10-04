@@ -10,6 +10,7 @@ Includes customizable batch directory conversion with selective output format ch
 
 import os
 import sys
+import subprocess
 import argparse
 import importlib
 import webbrowser
@@ -661,8 +662,14 @@ class DDAConverterApp(QMainWindow):
         btn_download_top.clicked.connect(self._open_device_downloader)
         hdr_layout.addWidget(btn_download_top)
 
-        btn_viewer_top = QPushButton("🚀 Open Interactive Viewer", hdr_frame)
-        btn_viewer_top.setObjectName("ViewerBtn")
+        btn_lab_top = QPushButton("🧪 Open DDA Lab", hdr_frame)
+        btn_lab_top.setObjectName("ViewerBtn")
+        btn_lab_top.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_lab_top.setToolTip("Professional analysis workspace (charts left, map right). Starts the local Claude bridge.")
+        btn_lab_top.clicked.connect(self._launch_lab)
+        hdr_layout.addWidget(btn_lab_top)
+
+        btn_viewer_top = QPushButton("🚀 Classic Viewer", hdr_frame)
         btn_viewer_top.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_viewer_top.clicked.connect(self._launch_viewer)
         hdr_layout.addWidget(btn_viewer_top)
@@ -1033,6 +1040,62 @@ class DDAConverterApp(QMainWindow):
             return records
         step = max(1, len(records) // max_rows)
         return records[::step]
+
+    # ------------------------------------------------------------------ DDA Lab
+    LAB_URL = "http://127.0.0.1:8777/lab/"
+
+    def _bridge_alive(self) -> bool:
+        try:
+            import urllib.request
+            with urllib.request.urlopen("http://127.0.0.1:8777/health", timeout=1.5) as r:
+                return r.status == 200
+        except Exception:
+            return False
+
+    def _start_bridge(self) -> bool:
+        """Start dda_lab_bridge.py (serves /lab and /analyze-schema) if not already running."""
+        if self._bridge_alive():
+            return True
+        here = os.path.dirname(os.path.abspath(__file__))
+        script = os.path.join(here, "dda_lab_bridge.py")
+        if not os.path.exists(script):
+            self._log("[-] dda_lab_bridge.py not found")
+            return False
+        try:
+            self._bridge_proc = subprocess.Popen(
+                [sys.executable, script], cwd=here,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            self._log(f"[-] Could not start bridge: {e}")
+            return False
+        import time
+        for _ in range(30):
+            time.sleep(0.2)
+            if self._bridge_alive():
+                self._log("[+] DDA Lab bridge running on 127.0.0.1:8777")
+                return True
+        self._log("[-] Bridge did not answer within 6 s")
+        return False
+
+    def _launch_lab(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        if not os.path.exists(os.path.join(here, "viewer_lab", "index.html")):
+            QMessageBox.warning(self, "DDA Lab", "viewer_lab/ build not found. Run `npm run build` in dda_lab/.")
+            return
+        if not self._start_bridge():
+            QMessageBox.critical(self, "DDA Lab", "Local bridge could not be started (see Processing Log).")
+            return
+        webbrowser.open(self.LAB_URL)
+        self._log(f"[+] Opened DDA Lab: {self.LAB_URL}")
+
+    def closeEvent(self, event):
+        proc = getattr(self, "_bridge_proc", None)
+        if proc and proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        super().closeEvent(event)
 
     def _launch_viewer(self):
         if not self.parser or not self.parser.records:

@@ -1,3 +1,5 @@
+import Layout from './ui/Layout';
+
 export default function App() {
-  return <div className="app-root">DDA Lab</div>;
+  return <Layout />;
 }

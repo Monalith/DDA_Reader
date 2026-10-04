@@ -8,3 +8,9 @@ libusb-package>=1.0.30.0
 # Packaging & Executable Bundling
 pyinstaller>=6.0.0
 
+
+# DDA Lab bridge (local Claude schema analysis)
+fastapi>=0.115
+uvicorn>=0.30
+python-multipart>=0.0.9
+pypdfium2>=4

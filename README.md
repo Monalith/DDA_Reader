@@ -240,3 +240,31 @@ DDA_Reader/
 ## 📄 License
 
 Open-source under the MIT License. Developed for motorcycle track-day enthusiasts, racers, and telemetry engineers.
+
+---
+
+## 🧪 DDA Lab (professional analysis workspace)
+
+`dda_lab/` is a MoTeC-i2-style analysis UI: analysis panels on the left (lap table with sector
+times, synchronized uPlot chart stack with turn markers, Channels / Math / Reports / External /
+Cursor panels), full-height satellite map on the right (MapLibre + Esri imagery, no API key) with
+the auto-derived track model: centerline, numbered turns, apex ▲ / brake ● / throttle ◆ markers,
+sector gates and the cursor bike.
+
+- **Open** from the desktop GUI with **🧪 Open DDA Lab** (starts the local bridge on
+  `127.0.0.1:8777` and serves the built app at `/lab/`), or run `python dda_lab_bridge.py` and
+  open http://127.0.0.1:8777/lab/.
+- **Inputs:** `.dda` (decoded in the browser), DDA_Reader `.json` / `.csv`, external CSV channels
+  (time-aligned with an offset slider). Several sessions at once, lap overlays in distance or time.
+- **Channel processing:** source select (wheel / GPS / blend), scale + offset, moving-average /
+  Savitzky-Golay / Butterworth filters, GPS-lag correction (auto by cross-correlation).
+- **Math channels:** `rpm / speed`, `deriv(speed)`, `where(lean > 45, 1, 0)` … (safe expression
+  engine, no eval).
+- **Reports:** sector table + theoretical best, turn table (entry/apex/exit speed, max lean, brake
+  and throttle-on distance), histograms, G-G, lean×TPS, time-loss summary; CSV / PNG export.
+- **Schema import:** drop a coach's track drawing (PNG/JPG/PDF); the bridge asks your local
+  `claude` CLI to extract apexes / racing line as JSON, you align it with 3 point pairs, and the
+  coach apexes are compared to the GPS-derived ones.
+
+Development: `cd dda_lab && npm i && npm run dev` (port 5190), `npm test`, `npm run e2e`,
+`npm run build` (writes `viewer_lab/`). Spec and plan live in `docs/superpowers/`.

@@ -1,0 +1,5 @@
+You are given an image of a race track schema (coach drawing). Return ONLY JSON matching:
+{"track_outline":[[x,y],...],"racing_line":[[x,y],...],"apexes":[{"turn":int|null,"x":..,"y":..,"label":str|null}],
+ "markers":[{"type":"brake"|"throttle"|"note","x":..,"y":..,"text":str|null}],"start_finish":{"x":..,"y":..}|null,
+ "turn_labels":[{"n":int,"x":..,"y":..}]}
+All x,y normalized 0..1 relative to image width/height, origin top-left. Trace the track outline with 60-200 points, the drawn racing line with 40-150 points, every marked apex, braking/throttle marks, start/finish line and turn numbers.

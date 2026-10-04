@@ -1,0 +1,60 @@
+// Workspace (de)serialization: zod schema mirroring `Workspace` from types.ts,
+// with every field defaulting to DEFAULT_WORKSPACE so older/partial
+// workspace.json files keep loading.
+
+import { z } from 'zod';
+import { DEFAULT_WORKSPACE, type Workspace } from './types';
+
+const clone = <T>(v: T): T => structuredClone(v);
+
+const PanelChannelSchema = z.object({
+  name: z.string(),
+  axis: z.enum(['L', 'R']).default('L'),
+});
+
+const PanelSchema = z.object({
+  id: z.string(),
+  channels: z.array(PanelChannelSchema).default([]),
+});
+
+const MathChannelSchema = z.object({
+  name: z.string(),
+  unit: z.string().default(''),
+  expr: z.string(),
+  color: z.string().default('#ffffff'),
+});
+
+const WorkspaceObject = z.object({
+  version: z.literal(1).default(1),
+  xAxis: z.enum(['time', 'distance']).default(DEFAULT_WORKSPACE.xAxis),
+  unitMph: z.boolean().default(DEFAULT_WORKSPACE.unitMph),
+  splitPct: z.number().min(5).max(95).default(DEFAULT_WORKSPACE.splitPct),
+  panels: z.array(PanelSchema).default(clone(DEFAULT_WORKSPACE.panels)),
+  mathChannels: z.array(MathChannelSchema).default(clone(DEFAULT_WORKSPACE.mathChannels)),
+  mapLayers: z.record(z.string(), z.boolean()).default(clone(DEFAULT_WORKSPACE.mapLayers)),
+});
+
+export const WorkspaceSchema = WorkspaceObject as unknown as z.ZodType<Workspace>;
+
+export function serializeWorkspace(w: Workspace): string {
+  return JSON.stringify(w, null, 2);
+}
+
+/** Parse workspace JSON, filling missing fields from DEFAULT_WORKSPACE. */
+export function parseWorkspace(json: string): Workspace {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(json);
+  } catch (e) {
+    throw new Error(`parseWorkspace: invalid JSON (${(e as Error).message})`);
+  }
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('parseWorkspace: expected a JSON object');
+  }
+  const version = (raw as { version?: unknown }).version;
+  if (version !== undefined && version !== 1) {
+    throw new Error(`parseWorkspace: unsupported workspace version ${String(version)}`);
+  }
+  const parsed = WorkspaceObject.parse(raw);
+  return clone(parsed) as Workspace;
+}

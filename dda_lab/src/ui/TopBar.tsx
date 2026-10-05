@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { isBundleFile, loadBundleFromFile, loadSessionFromFile } from '../core/sessionLoader';
+import { isBundle, loadBundleFromFile, loadSessionFromFile } from '../core/sessionLoader';
 import { parseWorkspace, serializeWorkspace } from '../core/workspace';
 import { activeTrack, SESSION_COLORS, useLab } from '../state/store';
 import { ensureTrackForSession, saveTrackLocal } from '../state/trackActions';
@@ -27,7 +27,7 @@ export default function TopBar() {
     setBusy(true);
     try {
       for (const f of Array.from(files)) {
-        if (isBundleFile(f)) {
+        if (await isBundle(f)) {
           setStatus(`Loading bundle ${f.name}…`);
           const b = await loadBundleFromFile(f, activeTrack(useLab.getState()));
           if (b.track) useLab.getState().setTrack(b.track);

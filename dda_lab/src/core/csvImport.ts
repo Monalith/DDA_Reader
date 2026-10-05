@@ -224,8 +224,15 @@ export function ddaReaderCsvToSession(text: string, name: string): Session {
   const header = rows[0];
   const idx = new Map<string, number>(header.map((h, i) => [h, i]));
   const timeIdx = idx.get('Time_s');
+  // "Export visible" writes one column per plotted lap+channel ("merged_all L53 speed") on a
+  // distance/time grid: a spreadsheet file, not a session.
+  if (header[0] === 'Distance_m' || (timeIdx === 0 && header.slice(1).some((h) => /\s/.test(h)))) {
+    throw new Error(
+      'This CSV is a chart export (⤓ Export visible) meant for spreadsheets. To reopen laps in DDA Lab use Laps → Export bundle (.lab.json), or Export CSV for per-lap files.',
+    );
+  }
   if (timeIdx === undefined) {
-    throw new Error('ddaReaderCsvToSession: missing Time_s column');
+    throw new Error('ddaReaderCsvToSession: missing Time_s column (expected a DDA_Reader or DDA Lab lap CSV)');
   }
   const body = rows.slice(1);
   const dec = sniff.decimal;
@@ -258,6 +265,35 @@ export function ddaReaderCsvToSession(text: string, name: string): Session {
     });
   }
 
+  // DDA Lab's own lap CSV (Laps → Export CSV): columns are canonical channel names
+  // (speed, rpm, gps_lat …) plus derived/math ones. Raw names become raw channels,
+  // anything else is kept as an external channel so nothing is lost.
+  let labExport = false;
+  for (let ci = 0; ci < header.length; ci++) {
+    const col = header[ci];
+    if (ci === timeIdx || col === 'Lap' || channels.has(col) || DDA_COLUMNS.some((s) => s.col === col)) continue;
+    if (!/^[a-z][a-z0-9_]*$/.test(col)) continue;
+    const spec = LAB_CHANNELS[col];
+    if (spec?.derived) continue; // recomputed from raw on load (gps_speed, long_g, lap_dist, d_* …)
+    const v = new Float32Array(body.length);
+    let finite = 0;
+    for (let i = 0; i < body.length; i++) {
+      v[i] = num(body[i][ci], dec);
+      if (Number.isFinite(v[i])) finite++;
+    }
+    if (!finite) continue;
+    labExport = true;
+    const data = col === 'gear' ? resampleStepLocal(tRel, v, t) : resampleLinearLocal(tRel, v, t);
+    channels.set(col, {
+      name: col,
+      unit: spec?.unit ?? '',
+      kind: spec ? 'raw' : 'external',
+      data,
+      raw: { t: tRel, v },
+      proc: { ...DEFAULT_PROC, filter: { ...DEFAULT_PROC.filter } },
+    });
+  }
+
   // Laps from the Lap column: a change of value starts a new lap.
   const lapIdx = idx.get('Lap');
   let laps: Lap[] = [];
@@ -266,6 +302,13 @@ export function ddaReaderCsvToSession(text: string, name: string): Session {
     for (let i = 0; i < body.length; i++) lapNative[i] = num(body[i][lapIdx], dec);
     const lapOn10Hz = resampleStepLocal(tRel, lapNative, t);
     laps = lapsFromLapColumn(lapOn10Hz, t);
+  } else if (labExport) {
+    // a DDA Lab lap CSV is exactly one lap
+    laps = [{ n: 1, startIdx: 0, endIdx: t.length - 1, timeS: durationS, sectorsS: [], isBest: true, kind: 'flying' }];
+  }
+
+  if (!channels.size) {
+    throw new Error(`No known channel columns in this CSV (header: ${header.slice(0, 6).join(', ')}…)`);
   }
 
   return {
@@ -277,8 +320,25 @@ export function ddaReaderCsvToSession(text: string, name: string): Session {
     channels,
     laps,
     meta: { track: '', rider: '', note: '' },
+    lapsFromFile: labExport && lapIdx === undefined ? true : undefined,
   };
 }
+
+/** Canonical DDA Lab channel names: unit, and whether the loader recomputes them. */
+const LAB_CHANNELS: Record<string, { unit: string; derived?: boolean }> = {
+  speed: { unit: 'km/h' }, rpm: { unit: 'rpm' }, tps: { unit: '%' }, dist: { unit: 'km' }, gear: { unit: '' },
+  lean: { unit: 'deg' }, tq_fast: { unit: '%' }, tq_slow: { unit: '%' }, gps_alt: { unit: 'm' },
+  gps_lon: { unit: 'deg' }, gps_lat: { unit: 'deg' }, lap_mark: { unit: 's' }, int1: { unit: 's' }, int2: { unit: 's' },
+  temp: { unit: '°C' }, dtc: { unit: '%' },
+  gps_speed: { unit: 'km/h', derived: true }, gps_smooth: { unit: 'km/h', derived: true }, long_g: { unit: 'g', derived: true },
+  lat_g: { unit: 'g', derived: true }, total_g: { unit: 'g', derived: true }, curvature: { unit: '1/m', derived: true },
+  radius: { unit: 'm', derived: true }, slip: { unit: '%', derived: true }, phase: { unit: '', derived: true },
+  lap_dist: { unit: 'm', derived: true }, total_dist: { unit: 'm', derived: true }, delta_t: { unit: 's', derived: true },
+  bearing: { unit: 'deg', derived: true },
+  d_speed: { unit: '', derived: true }, d_gps_speed: { unit: '', derived: true }, d_rpm: { unit: '', derived: true },
+  d_tps: { unit: '', derived: true }, d_lean: { unit: '', derived: true }, d_long_g: { unit: '', derived: true },
+  d_lat_g: { unit: '', derived: true }, d_gear: { unit: '', derived: true },
+};
 
 function lapsFromLapColumn(lapValues: Float32Array, t: Float64Array): Lap[] {
   const n = lapValues.length;

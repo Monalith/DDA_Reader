@@ -2,7 +2,7 @@
 // pick the reference, reorder, remove, and export the set as a bundle or per-lap CSVs.
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { lapToBundleLap, lapToCsv, makeBundle, type BundleLap } from '../../core/bundle';
-import { loadSessionFromFile } from '../../core/sessionLoader';
+import { isBundle, loadBundleFromFile, loadSessionFromFile } from '../../core/sessionLoader';
 import type { Lap, Session } from '../../core/types';
 import { activeTrack, lapMetaOf, SESSION_COLORS, useLab, type LapRef } from '../../state/store';
 import { ensureTrackForSession } from '../../state/trackActions';
@@ -81,6 +81,17 @@ export default function LapsPanel() {
         const st = useLab.getState();
         const color = SESSION_COLORS[st.sessions.length % SESSION_COLORS.length];
         setStatus(`Loading ${f.name}…`);
+        if (await isBundle(f)) {
+          // a bundle: its laps join the workspace directly with their saved names/colours
+          const b = await loadBundleFromFile(f, activeTrack(st));
+          if (b.track && !activeTrack(st)) useLab.getState().setTrack(b.track);
+          for (const { session, name, color: c } of b.sessions) {
+            addSession(session);
+            useLab.getState().setLapMeta(session.id, session.laps[0].n, { name, color: c });
+          }
+          setStatus(`${f.name}: ${b.sessions.length} lap${b.sessions.length === 1 ? '' : 's'} added to the workspace`);
+          continue;
+        }
         const s = await loadSessionFromFile(f, color, activeTrack(st));
         addSession(s);
         ensureTrackForSession(s);
@@ -180,7 +191,7 @@ export default function LapsPanel() {
         <input
           ref={fileRef}
           type="file"
-          accept=".dda,.json,.csv"
+          accept=".dda,.json,.csv,.lab.json"
           multiple
           hidden
           data-testid="laps-import-input"

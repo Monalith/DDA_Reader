@@ -141,6 +141,24 @@ export function isBundleFile(file: File): boolean {
   return file.name.toLowerCase().endsWith('.lab.json');
 }
 
+/** Content check: a DDA Lab bundle has `version` and a `laps` array (the name may have been changed). */
+export function looksLikeBundle(j: unknown): boolean {
+  return !!j && typeof j === 'object' && Array.isArray((j as { laps?: unknown }).laps) && 'version' in (j as object) && 'workspace' in (j as object);
+}
+
+/** True for a bundle by name, or by content for any other .json file. */
+export async function isBundle(file: File): Promise<boolean> {
+  if (isBundleFile(file)) return true;
+  if (!file.name.toLowerCase().endsWith('.json')) return false;
+  try {
+    const head = await file.slice(0, 4096).text();
+    if (!head.includes('"laps"') && !head.includes('"version"')) return false;
+    return looksLikeBundle(JSON.parse(await file.text()));
+  } catch {
+    return false;
+  }
+}
+
 /** A .lab.json bundle: one standalone session per stored lap, plus track and workspace. */
 export async function loadBundleFromFile(file: File, track?: TrackModel): Promise<ParsedBundle> {
   const parsed = parseBundle(await file.text(), newSessionId);
@@ -162,6 +180,9 @@ export async function loadSessionFromFile(file: File, color: string, track?: Tra
       j = JSON.parse(text);
     } catch (e) {
       throw new Error(`${file.name}: not valid JSON (${(e as Error).message})`);
+    }
+    if (looksLikeBundle(j)) {
+      throw new Error(`${file.name} is a DDA Lab bundle: open it with 📂 Open sessions (it restores its laps, track and layout).`);
     }
     if (isTelemetryJson(j)) {
       session = telemetryJsonToSession(j, base, color, newSessionId);

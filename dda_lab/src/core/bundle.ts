@@ -150,12 +150,21 @@ export function parseBundle(json: string, makeId: () => string = () => `b${Date.
   return { workspace, track, sessions };
 }
 
-/** One lap as a DDA_Reader-style CSV (10 Hz rows, all non-math channels). */
-export function lapToCsv(s: Session, lap: Lap): string {
-  const names = [...s.channels.values()].filter((c) => c.kind !== 'math').map((c) => c.name);
+/**
+ * One lap as a DDA_Reader-style CSV (10 Hz rows, every channel including math). With
+ * `visible`, only the rows inside the chart's x range (lap distance in m or lap time in s)
+ * are written, so the file matches what is on screen.
+ */
+export function lapToCsv(s: Session, lap: Lap, visible?: { xAxis: 'time' | 'distance'; range: [number, number] }): string {
+  const names = [...s.channels.values()].map((c) => c.name);
   const rows: (string | number)[][] = [['Time_s', ...names]];
   const t0 = s.t[lap.startIdx];
+  const lapDist = s.channels.get('lap_dist')?.data;
   for (let i = lap.startIdx; i <= lap.endIdx && i < s.t.length; i++) {
+    if (visible) {
+      const x = visible.xAxis === 'distance' && lapDist ? lapDist[i] : s.t[i] - t0;
+      if (!(x >= visible.range[0] && x <= visible.range[1])) continue;
+    }
     rows.push([Number((s.t[i] - t0).toFixed(2)), ...names.map((n) => s.channels.get(n)!.data[i])]);
   }
   return toCsv(rows);

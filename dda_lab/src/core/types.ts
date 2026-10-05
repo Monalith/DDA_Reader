@@ -28,6 +28,8 @@ export interface Channel {
   raw?: { t: Float64Array; v: Float32Array }; // native rate (e.g. RPM 50 Hz)
   proc: ChannelProc;
   expr?: string; // math channels
+  /** Provenance note, e.g. "estimated from GPS" for a channel the file did not contain. */
+  note?: string;
 }
 
 export interface Gate {

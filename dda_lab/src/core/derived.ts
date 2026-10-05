@@ -147,7 +147,12 @@ export function computeDerived(s: Session, track?: TrackModel): void {
   const dt = dtOf(s.t);
   const lonRaw = s.channels.get('gps_lon')?.data;
   const latRaw = s.channels.get('gps_lat')?.data;
-  const speedKmh = s.channels.get('speed')?.data;
+  // channels this function estimated on an earlier pass do not count as inputs
+  const own = (name: string): Float32Array | undefined => {
+    const c = s.channels.get(name);
+    return c && !c.note ? c.data : undefined;
+  };
+  const speedKmh = own('speed');
   const tps = s.channels.get('tps')?.data;
 
   const hasGps = !!lonRaw && !!latRaw;
@@ -329,4 +334,53 @@ export function computeDerived(s: Session, track?: TrackModel): void {
     }
   }
   setChannel(s, 'lap_dist', 'm', lapDist);
+
+  fillMissingChannels(s, { hasGps, gpsSpeed, vMs, curv, dt });
+}
+
+const ESTIMATED = 'estimated';
+
+function setEstimated(s: Session, name: string, unit: string, data: Float32Array, note: string): void {
+  s.channels.set(name, { name, unit, kind: 'derived', data, proc: { ...DEFAULT_PROC }, note: `${ESTIMATED}: ${note}` });
+}
+
+/**
+ * Channels a file may lack are estimated from what it has, so every run gets the same
+ * channel set after import: speed from GPS, dist by integrating speed, lean from the
+ * GPS curvature. Estimated channels carry `note` and are replaced when a later import
+ * of the same session provides the real thing.
+ */
+export function fillMissingChannels(
+  s: Session,
+  d: { hasGps: boolean; gpsSpeed: Float32Array; vMs: Float32Array; curv: Float32Array; dt: number },
+): void {
+  const n = s.t.length;
+  const missing = (name: string) => {
+    const c = s.channels.get(name);
+    return !c || !!c.note;
+  };
+  if (missing('speed') && d.hasGps && d.gpsSpeed.some(Number.isFinite)) {
+    setEstimated(s, 'speed', 'km/h', d.gpsSpeed.slice(), 'GPS ground speed (no wheel speed in the file)');
+  }
+  if (missing('dist') && d.vMs.some(Number.isFinite)) {
+    const out = nanArray(n);
+    let acc = 0;
+    for (let i = 0; i < n; i++) {
+      if (Number.isNaN(d.vMs[i])) continue;
+      if (i > 0) acc += d.vMs[i] * d.dt;
+      out[i] = acc / 1000;
+    }
+    setEstimated(s, 'dist', 'km', out, 'speed integrated over time');
+  }
+  if (missing('lean') && d.hasGps && d.vMs.some(Number.isFinite)) {
+    // steady-state lean: tan(φ) = v²·κ / g; DDA convention left = negative, curvature + = left.
+    // No curvature fit (dead straight) means κ = 0.
+    const raw = nanArray(n);
+    for (let i = 0; i < n; i++) {
+      if (Number.isNaN(d.vMs[i])) continue;
+      const k = Number.isNaN(d.curv[i]) ? 0 : d.curv[i];
+      raw[i] = (-Math.atan((d.vMs[i] * d.vMs[i] * k) / G) * 180) / Math.PI;
+    }
+    setEstimated(s, 'lean', 'deg', butterworthLowpass(raw, 1, d.dt > 0 ? 1 / d.dt : 10), 'from GPS curvature and speed (v²κ/g)');
+  }
 }

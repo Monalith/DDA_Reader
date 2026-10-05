@@ -3,7 +3,16 @@ import 'uplot/dist/uPlot.min.css';
 import './charts.css';
 import type { Workspace } from '../core/types';
 import { activeTrack, useLab } from '../state/store';
-import { allChannelNames } from '../state/selectors';
+import { allChannelNames, overlaySeries } from '../state/selectors';
+import { visibleCsv } from '../core/exportVisible';
+
+function download(name: string, text: string, mime = 'text/csv'): void {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type: mime }));
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
 import ChartPanel from './ChartPanel';
 import PanelSettings from './PanelSettings';
 import { focusRangeLabel, stepTurnIndex, turnFocusRange, turnOptionLabel } from './focus';
@@ -20,6 +29,25 @@ export default function ChartStack() {
   const track = useLab(activeTrack);
   const hasCursor = useLab((s) => s.cursor !== null);
   const nMarkers = useLab((s) => s.markers.length);
+  const nSelected = useLab((s) => s.selectedLaps.length);
+
+  /** CSV of exactly what the charts show: every line of every panel over the visible range. */
+  const exportVisible = () => {
+    const st = useLab.getState();
+    const csv = visibleCsv({
+      xAxis: st.workspace.xAxis,
+      range: st.xRange,
+      panels: st.workspace.panels.map((p) => ({ id: p.id, lines: overlaySeries(st, p) })),
+    });
+    if (!csv.trim()) {
+      st.setStatus('Nothing plotted to export');
+      return;
+    }
+    const d = new Date();
+    const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    download(`dda-lab-visible-${stamp}.csv`, csv);
+    st.setStatus(st.xRange ? 'Exported the visible range of every chart' : 'Exported every plotted lap (full range)');
+  };
 
   // ---- markers: button + "M" key place one at the cursor ----------------
   const placeMarker = () => {
@@ -122,6 +150,15 @@ export default function ChartStack() {
             values
           </button>
         )}
+        <button
+          className="btn-mini export-visible"
+          data-testid="export-visible"
+          disabled={!nSelected}
+          onClick={exportVisible}
+          title="CSV of exactly what the charts show: the plotted laps and channels, visible x range only"
+        >
+          ⤓ Export visible
+        </button>
         <span className="spacer" style={{ flex: '1 1 auto' }} />
 
         <span className="focus-group" data-testid="focus-group">

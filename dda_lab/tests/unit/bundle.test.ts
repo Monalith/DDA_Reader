@@ -45,7 +45,7 @@ describe('lab bundle', () => {
     const s = session();
     const csv = lapToCsv(s, s.laps[0]);
     const lines = csv.split('\n');
-    expect(lines[0]).toBe('Time_s,speed,rpm');
+    expect(lines[0]).toBe('Time_s,speed,rpm,math1'); // the CSV mirrors the screen: math channels included
     expect(lines).toHaveLength(21);
     expect(lines[1].startsWith('0,20,5010')).toBe(true);
   });

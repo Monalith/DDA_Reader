@@ -18,8 +18,9 @@ export interface SectorTable {
 }
 
 /** Sector matrix over the flying laps that have sector times. */
-export function sectorTable(s: Session): SectorTable {
-  const laps = plausibleFlyingLaps(s.laps).filter((l) => l.sectorsS.length > 0);
+export function sectorTable(s: Session, only?: Lap[]): SectorTable {
+  const pool = only?.length ? only : s.laps;
+  const laps = plausibleFlyingLaps(pool).filter((l) => l.sectorsS.length > 0);
   if (!laps.length) {
     return { laps: [], sectors: [], bestPerSector: [], theoreticalBest: 0, sigma: 0 };
   }

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react';
 import uPlot from 'uplot';
-import { attachXInteractions } from './chartInteractions';
+import { attachXInteractions, attachYInteractions } from './chartInteractions';
 import type { DataMarker, Session, Workspace } from '../core/types';
 import { activeTrack, useLab, type CursorPos, type LapRef } from '../state/store';
 import { cursorIdxFromX, findLap, markerIdxInLap, markerX, overlaySeries, xFromIdx, type OverlayLine } from '../state/selectors';
@@ -416,6 +416,48 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
       reset: () => setRange(null),
     });
 
+    // ---- y axes: drag up/down to zoom, committed to the panel's fixed range ----
+    const axisEls = u.root.querySelectorAll<HTMLElement>('.u-axis');
+    const yDataExtent = (scale: 'L' | 'R'): [number, number] => {
+      let lo = Infinity;
+      let hi = -Infinity;
+      linesRef.current.forEach((l, i) => {
+        if (l.axis !== scale) return;
+        const arr = u.data[i + 1] as ArrayLike<number | null | undefined>;
+        for (let k = 0; k < arr.length; k++) {
+          const v = arr[k];
+          if (v == null || !Number.isFinite(v)) continue;
+          if (v < lo) lo = v;
+          if (v > hi) hi = v;
+        }
+      });
+      return lo < hi ? [lo, hi] : [0, 1];
+    };
+    const yIo = (scale: 'L' | 'R') => ({
+      get: (): [number, number] => {
+        const sc = u.scales[scale];
+        return sc.min != null && sc.max != null ? [sc.min, sc.max] : yDataExtent(scale);
+      },
+      extent: () => yDataExtent(scale),
+      set: (r: [number, number], commit: boolean) => {
+        u.setScale(scale, { min: r[0], max: r[1] });
+        if (!commit) return;
+        const st = useLab.getState();
+        const key = scale === 'L' ? 'yL' : 'yR';
+        st.setWorkspace({
+          panels: st.workspace.panels.map((p) => (p.id === panelRef.current.id ? { ...p, [key]: { min: r[0], max: r[1] } } : p)),
+        });
+      },
+      reset: () => {
+        const st = useLab.getState();
+        const key = scale === 'L' ? 'yL' : 'yR';
+        st.setWorkspace({ panels: st.workspace.panels.map((p) => (p.id === panelRef.current.id ? { ...p, [key]: undefined } : p)) });
+      },
+    });
+    const detachYs: (() => void)[] = [];
+    if (axisEls[1]) detachYs.push(attachYInteractions(u, axisEls[1], 'L', yIo('L')));
+    if (hasR && axisEls[2]) detachYs.push(attachYInteractions(u, axisEls[2], 'R', yIo('R')));
+
     const ro = new ResizeObserver(() => {
       const w = host.clientWidth;
       if (w > 0) u.setSize({ width: w, height: 150 });
@@ -425,6 +467,7 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
     return () => {
       ro.disconnect();
       detachX();
+      for (const d of detachYs) d();
       u.over.removeEventListener('dblclick', onDblClick);
       u.destroy();
       if (uRef.current === u) uRef.current = null;
@@ -558,6 +601,25 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
                   {fmtVal(l, mc.values[i], unitMph)}
                 </span>
               ))}
+              <span
+                role="button"
+                tabIndex={0}
+                className="mk-x"
+                data-testid={`marker-chip-del-${mc.m.id}`}
+                title={`Remove marker ${mc.m.name}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  useLab.getState().removeMarker(mc.m.id);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.stopPropagation();
+                    useLab.getState().removeMarker(mc.m.id);
+                  }
+                }}
+              >
+                ✕
+              </span>
             </button>
           ))}
         </div>

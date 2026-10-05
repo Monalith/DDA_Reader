@@ -216,7 +216,8 @@ export default function ReportsPanel() {
   }, [sessions, selectedLaps, session]);
 
   // --- sector -------------------------------------------------------------
-  const sector = useMemo(() => (session ? sectorTable(session) : null), [session]);
+  // only the workspace laps of this session (what the lap table above shows as selected)
+  const sector = useMemo(() => (session ? sectorTable(session, laps) : null), [session, laps]);
   const sectorRows = useMemo<Rows>(() => {
     if (!sector) return [];
     const n = sector.sectors[0]?.length ?? 0;

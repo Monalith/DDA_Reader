@@ -64,6 +64,8 @@ export default function LapsPanel() {
   const [pickers, setPickers] = useState<Picker[]>([]);
   /** Uncommitted text of the name input currently being edited, keyed by lapKey. */
   const [draft, setDraft] = useState<Record<string, string>>({});
+  const xRange = useLab((s) => s.xRange);
+  const [visibleOnly, setVisibleOnly] = useState(true);
 
   const entries = useMemo(() => selectedLapEntries({ sessions, selectedLaps }), [sessions, selectedLaps]);
   const vUnit = unitMph ? 'mph' : 'km/h';
@@ -138,11 +140,12 @@ export default function LapsPanel() {
       st.setStatus('No laps in the workspace to export');
       return;
     }
+    const visible = visibleOnly && st.xRange ? { xAxis: st.workspace.xAxis, range: st.xRange } : undefined;
     for (const { s, lap } of list) {
       const meta = lapMetaOf(st, s.id, lap.n);
-      download(`${safeFileName(meta.name)}.csv`, lapToCsv(s, lap), 'text/csv');
+      download(`${safeFileName(meta.name)}${visible ? '-visible' : ''}.csv`, lapToCsv(s, lap, visible), 'text/csv');
     }
-    st.setStatus(`${list.length} CSV file${list.length === 1 ? '' : 's'} exported`);
+    st.setStatus(`${list.length} CSV file${list.length === 1 ? '' : 's'} exported${visible ? ' (visible range only)' : ''}`);
   }
 
   // ---- row actions -------------------------------------------------------
@@ -184,6 +187,15 @@ export default function LapsPanel() {
           onChange={(e) => onFiles(e.target.files)}
         />
         <span className="bp-spacer-flex" />
+        <span className="bp-label" title="Exports contain only the laps listed below (deleted laps are never included)">
+          exports = these {entries.length} lap{entries.length === 1 ? '' : 's'}
+        </span>
+        {xRange && (
+          <label className="bp-label" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }} title="Limit the CSV rows to the zoomed chart range">
+            <input type="checkbox" data-testid="laps-export-visible" checked={visibleOnly} onChange={(e) => setVisibleOnly(e.target.checked)} />
+            visible range only
+          </label>
+        )}
         <button className="bp-btn" data-testid="laps-export-bundle" disabled={!entries.length} onClick={exportBundle}>
           Export bundle (.lab.json)
         </button>

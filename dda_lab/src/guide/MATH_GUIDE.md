@@ -118,6 +118,25 @@ the **Markers** tab (every channel × every selected lap at that point). In othe
 at the same lap distance / lap time, so you compare laps at exactly one spot. Rename, recolour, jump
 to or delete markers in the Markers tab.
 
+## 5d. Exports show what you see
+
+Every export follows the workspace: deleted laps are gone for good and only the laps listed in the
+**Laps** tab are written. **⤓ Export visible** (above the charts) writes one CSV with exactly the
+plotted lines, resampled every 1 m (or 0.1 s), limited to the zoomed x range. The Laps tab’s
+**Export CSV** has a “visible range only” switch when a zoom is active. Reports use the same laps.
+
+## 5e. Missing channels are estimated
+
+A run that lacks a channel gets an estimate on import, marked **estimated** in the Channels tab:
+`speed` from GPS ground speed, `dist` by integrating speed, `lean` from GPS curvature (v²κ/g).
+Real channels in the file are never replaced.
+
+## 5f. Zooming the Y axis
+
+Drag the Y axis up to zoom in, down to zoom out (around the value you grabbed); shift+drag pans;
+the mouse wheel over the axis zooms; double-click returns to automatic. The range is stored per
+panel (also editable in the panel ⚙ settings).
+
 ## 6. Channel filters (Channels tab)
 
 Each raw channel has a ⚙ editor: **source** (speed: wheel / GPS / blend), **scale + offset**

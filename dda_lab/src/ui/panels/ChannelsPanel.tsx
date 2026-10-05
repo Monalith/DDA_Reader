@@ -276,6 +276,11 @@ export default function ChannelsPanel() {
                       <span className="cname">{ch.name}</span>
                       <span className="unit">{ch.unit}</span>
                       <span className="bp-badge">{KIND_LABEL[ch.kind]}</span>
+                      {ch.note && (
+                        <span className="bp-badge" title={ch.note} data-testid={`ch-note-${ch.name}`} style={{ color: 'var(--accent-2)' }}>
+                          estimated
+                        </span>
+                      )}
                       <select
                         className="bp-select mini"
                         data-testid={`ch-preset-${ch.name}`}

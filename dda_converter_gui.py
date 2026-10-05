@@ -1057,13 +1057,17 @@ class DDAConverterApp(QMainWindow):
         if self._bridge_alive():
             return True
         here = os.path.dirname(os.path.abspath(__file__))
-        script = os.path.join(here, "dda_lab_bridge.py")
-        if not os.path.exists(script):
-            self._log("[-] dda_lab_bridge.py not found")
-            return False
+        if getattr(sys, "frozen", False):
+            cmd = [sys.executable, "--bridge"]  # the frozen app re-runs itself as the bridge
+        else:
+            script = os.path.join(here, "dda_lab_bridge.py")
+            if not os.path.exists(script):
+                self._log("[-] dda_lab_bridge.py not found")
+                return False
+            cmd = [sys.executable, script]
         try:
             self._bridge_proc = subprocess.Popen(
-                [sys.executable, script], cwd=here,
+                cmd, cwd=here,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
             self._log(f"[-] Could not start bridge: {e}")
@@ -1079,6 +1083,7 @@ class DDAConverterApp(QMainWindow):
 
     def _launch_lab(self):
         here = os.path.dirname(os.path.abspath(__file__))
+        here = getattr(sys, "_MEIPASS", here)
         if not os.path.exists(os.path.join(here, "viewer_lab", "index.html")):
             QMessageBox.warning(self, "DDA Lab", "viewer_lab/ build not found. Run `npm run build` in dda_lab/.")
             return
@@ -1375,4 +1380,8 @@ def cli_main():
 
 
 if __name__ == "__main__":
-    cli_main()
+    if "--bridge" in sys.argv:
+        import dda_lab_bridge
+        dda_lab_bridge.main([a for a in sys.argv[1:] if a != "--bridge"])
+    else:
+        cli_main()

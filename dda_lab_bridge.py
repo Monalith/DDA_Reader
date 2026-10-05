@@ -28,8 +28,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
-BASE_DIR = Path(__file__).resolve().parent
-SCHEMA_DIR = BASE_DIR / "tracks" / "schemas"
+import os
+import sys
+
+FROZEN = bool(getattr(sys, "frozen", False))
+# Bundled resources (viewer_lab, prompt) live next to this file, or inside the
+# PyInstaller bundle when frozen. User data (schemas) must stay writable.
+BASE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+DATA_DIR = Path(os.environ.get("DDA_LAB_HOME", Path.home() / "DDA_Lab")) if FROZEN else BASE_DIR
+SCHEMA_DIR = DATA_DIR / "tracks" / "schemas"
 PROMPT_PATH = BASE_DIR / "dda_lab_bridge_prompt.txt"
 
 CLAUDE_TIMEOUT_S = 180
@@ -282,7 +289,25 @@ if LAB_DIR.is_dir():
     app.mount("/lab", StaticFiles(directory=str(LAB_DIR), html=True), name="lab")
 
 
-if __name__ == "__main__":
+def main(argv=None):
+    """Run the bridge. `--open` launches the browser, `--port N` overrides 8777."""
+    import argparse
+    import threading
+    import webbrowser
+
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=8777)
+    ap = argparse.ArgumentParser(description="DDA Lab local server + Claude bridge")
+    ap.add_argument("--port", type=int, default=int(os.environ.get("DDA_LAB_PORT", "8777")))
+    ap.add_argument("--open", action="store_true", help="open the app in the default browser")
+    ap.add_argument("--host", default="127.0.0.1")
+    args = ap.parse_args(argv)
+    url = f"http://{args.host}:{args.port}/lab/"
+    print(f"DDA Lab: {url}  (Ctrl+C to stop)", flush=True)
+    if args.open:
+        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+
+
+if __name__ == "__main__":
+    main()

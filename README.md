@@ -267,5 +267,19 @@ sector gates and the cursor bike.
   `claude` CLI to extract apexes / racing line as JSON, you align it with 3 point pairs, and the
   coach apexes are compared to the GPS-derived ones.
 
+### Use DDA Lab on another computer
+`python package_lab.py all` builds two packages into `dist/`:
+
+| Package | Needs on the target | Start |
+|---|---|---|
+| `DDA_Lab_portable.zip` (~1 MB) | Python 3.10+ (internet once for 5 packages) | unzip → `start_lab.command` (macOS/Linux) or `start_lab.bat` (Windows) |
+| `DDA_Lab_macOS.zip` (~19 MB single binary) | nothing | unzip → `DDA Lab.command` (or `./"DDA Lab" --open`) |
+
+Both serve the app at http://127.0.0.1:8777/lab/ (`--port` to change). Build the Windows binary
+on a Windows machine with the same command (`python package_lab.py app` → `dist/DDA Lab.exe`).
+Schema analysis with Claude works wherever the `claude` CLI is installed and logged in; otherwise
+the app falls back to manual apex marking. The full desktop GUI build (`build_executables.py`)
+now bundles DDA Lab too (🧪 Open DDA Lab works in the frozen app).
+
 Development: `cd dda_lab && npm i && npm run dev` (port 5190), `npm test`, `npm run e2e`,
 `npm run build` (writes `viewer_lab/`). Spec and plan live in `docs/superpowers/`.

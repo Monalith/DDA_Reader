@@ -28,6 +28,8 @@ def main():
     data_viewer = f"viewer{sep}viewer"
     data_settings = f"dda_settings.json{sep}."
     data_driver = f"driver{sep}driver"
+    data_lab = f"viewer_lab{sep}viewer_lab"
+    data_prompt = f"dda_lab_bridge_prompt.txt{sep}."
 
     mode_arg = "--onefile" if "--onefile" in sys.argv else ("--onedir" if "--onedir" in sys.argv else "--onefile")
 
@@ -44,6 +46,11 @@ def main():
         f"--add-data={data_viewer}",
         f"--add-data={data_settings}",
         f"--add-data={data_driver}",
+        f"--add-data={data_lab}",
+        f"--add-data={data_prompt}",
+        "--hidden-import=dda_lab_bridge",
+        "--hidden-import=multipart",
+        "--collect-submodules=uvicorn",
         "dda_converter_gui.py"
     ]
 

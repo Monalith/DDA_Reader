@@ -1,9 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('viewer', 'viewer'), ('dda_settings.json', '.'), ('driver', 'driver')]
+datas = [('viewer', 'viewer'), ('viewer_lab', 'viewer_lab'), ('dda_lab_bridge_prompt.txt', '.'), ('dda_settings.json', '.'), ('driver', 'driver')]
 binaries = []
-hiddenimports = []
+hiddenimports = ['dda_lab_bridge', 'uvicorn.logging', 'uvicorn.loops.auto', 'uvicorn.protocols.http.auto', 'uvicorn.protocols.websockets.auto', 'uvicorn.lifespan.on', 'multipart']
 tmp_ret = collect_all('libusb_package')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('usb')

@@ -32,6 +32,23 @@ export function plausibleFlyingLaps(laps: Lap[]): Lap[] {
   return flying.filter((l) => l.timeS >= median * 0.6 && l.timeS <= median * 1.6);
 }
 
+/**
+ * Drop laps centred inside a user-deleted range and re-pick the best lap if it was
+ * removed, so deletions survive lap re-detection (start line moved, track rebuilt).
+ */
+export function withoutDeletedLaps(laps: Lap[], ranges: Array<[number, number]> | undefined): Lap[] {
+  if (!ranges?.length) return laps;
+  const kept = laps.filter((l) => {
+    const mid = (l.startIdx + l.endIdx) / 2;
+    return !ranges.some(([a, b]) => mid >= a && mid <= b);
+  });
+  if (!kept.some((l) => l.isBest)) {
+    const best = plausibleFlyingLaps(kept).sort((x, y) => x.timeS - y.timeS)[0];
+    if (best) best.isBest = true;
+  }
+  return kept;
+}
+
 function buildLaps(s: Session, rawCrossings: Crossing[], sectors: number[][]): Lap[] {
   const n = s.t.length;
   const crossings = dedupeCrossings(rawCrossings);

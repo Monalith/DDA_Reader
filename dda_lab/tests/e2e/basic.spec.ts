@@ -86,3 +86,25 @@ test('lap can be deleted from the session; wheel and middle-drag change the char
   await page.mouse.dblclick(box.x + box.width / 2, box.y + box.height / 2);
   await expect(page.getByTestId('focus-range')).toContainText('whole lap');
 });
+
+test('deleted laps are left out of the Laps export', async ({ page }) => {
+  await page.goto('/');
+  await page.getByTestId('open-files').setInputFiles(SAMPLE);
+  await expect(page.locator('.status')).toContainText(/laps/, { timeout: 30_000 });
+  const rows = page.locator('table.lap-table tbody tr');
+  // put every lap into the workspace
+  const boxes = rows.locator('input[type="checkbox"]');
+  for (let i = 0; i < (await boxes.count()); i++) if (!(await boxes.nth(i).isChecked())) await boxes.nth(i).check();
+  const del = page.locator('[data-testid^="lap-del-"]').nth(1);
+  const deleted = Number((await del.getAttribute('data-testid'))!.split('-').pop());
+  const before = await rows.count();
+  await del.click();
+  await expect(rows).toHaveCount(before - 1);
+
+  await page.getByTestId('bp-tab-laps').click();
+  const [dl] = await Promise.all([page.waitForEvent('download'), page.getByTestId('laps-export-bundle').click()]);
+  const bundle = JSON.parse(await (await import('node:fs/promises')).readFile((await dl.path())!, 'utf8'));
+  const exported = bundle.laps.map((l: { lapNumber: number }) => l.lapNumber);
+  expect(exported.length).toBe(before - 1);
+  expect(exported).not.toContain(deleted);
+});

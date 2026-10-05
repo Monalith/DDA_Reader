@@ -73,6 +73,42 @@ describe('store: start line, lap meta, turns', () => {
     expect(useLab.getState().lapMeta[lapKey('oval', 2)]).toBeUndefined();
   });
 
+  it('deleted laps stay deleted when the start line moves (and never reach an export)', () => {
+    const s = makeSession(6);
+    useLab.getState().addSession(s);
+    useLab.getState().setTrack(buildTrackFromSession(s)!);
+    const victim = useLab.getState().sessions[0].laps.find((l) => l.n === 3)!;
+    const [a, b] = [victim.startIdx, victim.endIdx];
+    useLab.getState().deleteLap('oval', 3);
+    useLab.getState().setStartLine(fromLocalM(ORIGIN, [100, R]));
+    const st = useLab.getState();
+    const laps = st.sessions[0].laps;
+    expect(laps.length).toBeGreaterThan(0);
+    const mid = (l: Lap) => (l.startIdx + l.endIdx) / 2;
+    expect(laps.some((l) => mid(l) >= a && mid(l) <= b)).toBe(false);
+    expect(laps.filter((l) => l.isBest).length).toBe(1);
+    // every workspace lap (what the Laps panel exports) still exists in the session
+    for (const r of st.selectedLaps) expect(laps.some((l) => l.n === r.lap)).toBe(true);
+  });
+
+  it('deleting every lap does not bring them back on the next refresh', () => {
+    const s = makeSession();
+    useLab.getState().addSession(s);
+    useLab.getState().setTrack(buildTrackFromSession(s)!);
+    for (const l of [...useLab.getState().sessions[0].laps]) useLab.getState().deleteLap('oval', l.n);
+    expect(useLab.getState().sessions[0].laps).toEqual([]);
+    useLab.getState().setTrack({ ...useLab.getState().tracks[0] });
+    expect(useLab.getState().sessions[0].laps).toEqual([]);
+    expect(useLab.getState().selectedLaps).toEqual([]);
+  });
+
+  it('removing a session drops its lap meta too', () => {
+    useLab.getState().addSession(makeSession());
+    useLab.getState().setLapMeta('oval', 2, { name: 'x' });
+    useLab.getState().removeSession('oval');
+    expect(useLab.getState().lapMeta).toEqual({});
+  });
+
   it('updateTurns renumbers and renames turns', () => {
     const s = makeSession();
     useLab.getState().addSession(s);

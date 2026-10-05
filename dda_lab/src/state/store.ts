@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { computeDerived } from '../core/derived';
 import { applyProc } from '../core/processing';
 import { evaluate, orderByDependencies, parseExpr, type EvalEnv } from '../core/mathExpr';
-import { detectLaps } from '../core/laps';
+import { detectLaps, withoutDeletedLaps } from '../core/laps';
 import { applyDeltaT, applySectorTimes, applyTrackLapDist } from './derivedExtras';
 import { defaultSectorGates, projectToTrack } from '../core/track';
 import { bearingDeg } from '../core/geo';
@@ -150,7 +150,7 @@ export function refreshSession(
     if (ch.kind === 'raw' || ch.kind === 'external') ch.data = applyProc(ch, session);
   }
   if (track && session.laps.length === 0) {
-    session.laps = detectLaps(session, track.startFinish, track.sectors);
+    session.laps = withoutDeletedLaps(detectLaps(session, track.startFinish, track.sectors), session.deletedRanges);
   }
   computeDerived(session, track);
   if (track) {
@@ -215,6 +215,7 @@ export const useLab = create<LabState>((set, get) => ({
     set((st) => ({
       sessions: st.sessions.filter((s) => s.id !== id),
       selectedLaps: st.selectedLaps.filter((l) => l.sessionId !== id),
+      lapMeta: Object.fromEntries(Object.entries(st.lapMeta).filter(([k]) => !k.startsWith(`${id}:`))),
       refLap: st.refLap?.sessionId === id ? undefined : st.refLap,
       cursor: st.cursor?.sessionId === id ? null : st.cursor,
     }));
@@ -320,12 +321,10 @@ export const useLab = create<LabState>((set, get) => ({
     const st = get();
     const session = st.sessions.find((s) => s.id === sessionId);
     if (!session) return;
-    session.laps = session.laps.filter((l) => l.n !== lap);
-    if (!session.laps.some((l) => l.isBest)) {
-      const flying = session.laps.filter((l) => l.kind === 'flying');
-      const best = flying.sort((a, b) => a.timeS - b.timeS)[0];
-      if (best) best.isBest = true;
-    }
+    const gone = session.laps.find((l) => l.n === lap);
+    if (!gone) return;
+    session.deletedRanges = [...(session.deletedRanges ?? []), [gone.startIdx, gone.endIdx]];
+    session.laps = withoutDeletedLaps(session.laps.filter((l) => l !== gone), session.deletedRanges);
     const meta = { ...st.lapMeta };
     delete meta[lapKey(sessionId, lap)];
     const refLap = st.refLap?.sessionId === sessionId && st.refLap.lap === lap ? undefined : st.refLap;

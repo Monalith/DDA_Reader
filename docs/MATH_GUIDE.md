@@ -35,6 +35,7 @@ reference lap or import a new session. They are saved in the workspace.
 | `slip` | % | wheel vs GPS speed (derived) |
 | `phase` | – | 0 coast, 1 brake, 2 throttle (derived) |
 | `lap_dist` | m | distance since the start line (derived) |
+| `total_dist` | m | distance covered over the laps still in the file, continuous lap after lap; deleting a lap removes its metres (derived) |
 | `delta_t` | s | time gained/lost vs the reference lap (derived) |
 | `pi`, `e`, `g` | – | constants 3.14159…, 2.71828…, 9.80665 |
 
@@ -57,6 +58,12 @@ parentheses for grouping. Numbers are plain: `3.6`, `0.25`.
 - `deriv(ch)` — rate of change per second. `deriv(speed)` = km/h per second.
 - `accel_g(speed)` — longitudinal acceleration in **g** straight from a km/h channel.
 - `integ(ch)` — running integral over time; `integ(kmh2ms(speed))` = distance in m.
+- `integ_x(y, x)` — integral with **your own x channel** (trapezoid rule): `integ_x(long_g, lap_dist)` integrates g over
+  metres, `integ_x(rpm, lap_time(rpm))` over lap time. A wrap of x (lap distance going back to 0) is skipped.
+- `lap_integ(y)`, `lap_integ_x(y, x)` — the same integrals restarting from 0 at every lap start.
+- `deriv_x(y, x)` — dy/dx with your own x channel: `deriv_x(speed, lap_dist)` = km/h per metre.
+- The **∫ Integral** builder in the Math editor writes these for you: pick y, pick dx (time or any channel), tick
+  “restart every lap”, press **Build formula**.
 - `cumsum(ch)`, `diff(ch)` — running sum / sample difference.
 - `shift(ch, seconds)` moves a channel later (negative = earlier); `lag(ch, samples)` same in samples (10 per second).
 
@@ -93,6 +100,23 @@ parentheses for grouping. Numbers are plain: `3.6`, `0.25`.
 | Corner speed only | `where(abs(lean) > 20, speed, 0)` |
 | Time at full throttle per lap (s) | `lap_sum(where(tps >= 95, 1, 0)) / 10` |
 | Lateral g from geometry | `kmh2ms(speed)^2 / clamp(radius, 5, 2000) / g` |
+
+## 5b. A different formula for one lap
+
+Every math channel has a default formula. In the editor, **Formula applies to** lets you pick one of the
+laps in your workspace instead of “all laps”: the formula you save then replaces the channel’s values
+inside that lap only (other laps keep the default). Per-lap formulas are listed under the channel with
+a **lap** badge; ✕ returns that lap to the default. Deleting the lap deletes its formula. Typical use:
+a different gear ratio or correction factor for a lap ridden with another setup.
+
+## 5c. Markers (fixed data points)
+
+Hover a chart (or click the map) and press **M** or **📍 Mark**: a marker is pinned to that sample.
+Markers draw as a coloured vertical line with a flag on every chart, as a pin on the map, and their
+values appear **fixed** under each chart (one chip per marker, one number per plotted line) and in
+the **Markers** tab (every channel × every selected lap at that point). In other laps a marker is read
+at the same lap distance / lap time, so you compare laps at exactly one spot. Rename, recolour, jump
+to or delete markers in the Markers tab.
 
 ## 6. Channel filters (Channels tab)
 

@@ -150,6 +150,9 @@ export default function MapView() {
   const setTrack = useLab((s) => s.setTrack);
   const xRange = useLab((s) => s.xRange);
   const xAxis = useLab((s) => s.workspace.xAxis);
+  const dataMarkers = useLab((s) => s.markers);
+  const activeMarkerId = useLab((s) => s.activeMarkerId);
+  const dataMarkerRefs = useRef<Map<string, maplibregl.Marker>>(new Map());
 
   const track = useMemo(() => activeTrack({ tracks, activeTrackId }), [tracks, activeTrackId]);
   const entries = useMemo(() => selectedLapEntries({ sessions, selectedLaps }), [sessions, selectedLaps]);
@@ -409,6 +412,45 @@ export default function MapView() {
     }
     bikeRef.current.setRotation(pos.bearing);
   }, [ready, cursor, sessions]);
+
+  // ---------- user data markers (pins with the marker name) ----------
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    const refs = dataMarkerRefs.current;
+    const alive = new Set<string>();
+    for (const m of dataMarkers) {
+      const pos = cursorPosition(sessions, { sessionId: m.sessionId, idx: m.idx });
+      if (!pos) continue;
+      alive.add(m.id);
+      let mk = refs.get(m.id);
+      if (!mk) {
+        const el = document.createElement('div');
+        el.className = 'data-marker';
+        el.setAttribute('data-testid', `map-data-marker-${m.id}`);
+        el.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          const st = useLab.getState();
+          st.setActiveMarker(m.id);
+          st.setCursor({ sessionId: m.sessionId, idx: m.idx });
+        });
+        mk = new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat(pos.at).addTo(map);
+        refs.set(m.id, mk);
+      } else {
+        mk.setLngLat(pos.at);
+      }
+      const el = mk.getElement();
+      el.textContent = m.name;
+      el.style.background = m.color;
+      el.classList.toggle('on', m.id === activeMarkerId);
+    }
+    for (const [id, mk] of refs) {
+      if (!alive.has(id)) {
+        mk.remove();
+        refs.delete(id);
+      }
+    }
+  }, [ready, dataMarkers, activeMarkerId, sessions]);
 
   // ---------- measure line ----------
   useEffect(() => {

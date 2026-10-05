@@ -177,23 +177,86 @@ table.lap-table tbody tr.out td, table.lap-table tbody tr.in td { color: var(--f
   color: var(--fg-dim);
   font-size: 11px;
 }
+/* Live cursor values under each chart: big, bold, colour-coded "value cards". */
 .chart-legend {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  padding: 2px 8px 4px;
+  gap: 6px 10px;
+  padding: 4px 8px 5px;
   font-size: 10.5px;
   color: var(--fg-dim);
   font-variant-numeric: tabular-nums;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent);
 }
-.chart-legend .lg { display: inline-flex; align-items: center; gap: 4px; }
+.chart-legend .lg {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+  padding: 2px 8px 1px 6px;
+  border-left: 3px solid var(--border);
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.025);
+  min-width: 92px;
+}
+.chart-legend .lg-head { display: inline-flex; align-items: center; gap: 5px; max-width: 220px; }
+.chart-legend .lg-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  font-size: 9.5px;
+}
 .chart-legend .lg i {
   width: 10px;
   height: 2px;
   display: inline-block;
   border-radius: 1px;
+  flex: 0 0 auto;
 }
-.chart-legend .lg b { color: var(--fg); font-weight: 600; }
+.chart-legend .lg-value { display: inline-flex; align-items: baseline; gap: 4px; }
+.chart-legend .lg b {
+  color: var(--fg);
+  font-weight: 800;
+  font-size: 21px;
+  line-height: 1.05;
+  letter-spacing: -0.01em;
+  text-shadow: 0 0 10px rgba(0, 0, 0, 0.6);
+}
+.chart-legend .lg-unit { font-size: 10px; color: var(--fg-dim); }
+
+/* Fixed marker values under each chart (one chip per marker, one number per line). */
+.chart-markers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 8px 6px;
+  font-variant-numeric: tabular-nums;
+}
+.chart-markers .mk {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 4px;
+  padding: 2px 8px 2px 4px;
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+.chart-markers .mk:hover, .chart-markers .mk.on { background: rgba(255, 255, 255, 0.06); }
+.chart-markers .mk-name {
+  color: #10141a;
+  font-weight: 800;
+  font-size: 11px;
+  padding: 0 6px;
+  border-radius: 3px;
+  letter-spacing: 0.03em;
+}
+.chart-markers .mk-val { font-weight: 700; font-size: 15px; }
 .uplot, .u-wrap { font-variant-numeric: tabular-nums; }
 
 /* ---- "Focus" toolbar group (ChartStack) ---- */

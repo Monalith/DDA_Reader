@@ -1,9 +1,32 @@
 import { useEffect, useMemo, useRef } from 'react';
 import uPlot from 'uplot';
 import { attachXInteractions } from './chartInteractions';
-import type { Session, Workspace } from '../core/types';
+import type { DataMarker, Session, Workspace } from '../core/types';
 import { activeTrack, useLab, type CursorPos, type LapRef } from '../state/store';
-import { cursorIdxFromX, findLap, overlaySeries, xFromIdx, type OverlayLine } from '../state/selectors';
+import { cursorIdxFromX, findLap, markerIdxInLap, markerX, overlaySeries, xFromIdx, type OverlayLine } from '../state/selectors';
+
+/** A marker resolved for one panel: its x on this axis and its fixed value on every line. */
+interface MarkerCol {
+  m: DataMarker;
+  x: number | null;
+  values: (number | null)[];
+}
+
+function resolveMarkers(markers: DataMarker[], sessions: Session[], lines: OverlayLine[], xAxis: Workspace['xAxis']): MarkerCol[] {
+  return markers.map((m) => {
+    const x = markerX(sessions, m, xAxis);
+    const values = lines.map((l) => {
+      const s = sessions.find((ss) => ss.id === l.sessionId);
+      const lap = s && findLap(s, l.lap);
+      if (!s || !lap) return null;
+      const idx = markerIdxInLap(sessions, m, s, lap, xAxis);
+      if (idx === null) return null;
+      const v = s.channels.get(l.channel)?.data[idx];
+      return v != null && Number.isFinite(v) ? v : null;
+    });
+    return { m, x, values };
+  });
+}
 
 const KMH_TO_MPH = 0.621371;
 const SPEED_CHANNELS = new Set(['speed', 'gps_speed']);
@@ -74,7 +97,13 @@ function joinLines(lines: OverlayLine[]): uPlot.AlignedData {
 function fmtVal(line: OverlayLine, v: number | null | undefined, unitMph: boolean): string {
   if (v == null || !Number.isFinite(v)) return '–';
   const out = unitMph && SPEED_CHANNELS.has(line.channel) ? v * KMH_TO_MPH : v;
-  return out.toFixed(1);
+  const a = Math.abs(out);
+  return a >= 1000 ? out.toFixed(0) : a >= 100 ? out.toFixed(1) : a >= 10 ? out.toFixed(2) : out.toFixed(3);
+}
+
+function unitOf(sessions: Session[], line: OverlayLine, unitMph: boolean): string {
+  const u = sessions.find((s) => s.id === line.sessionId)?.channels.get(line.channel)?.unit ?? '';
+  return unitMph && SPEED_CHANNELS.has(line.channel) ? 'mph' : u;
 }
 
 export default function ChartPanel({ panel }: { panel: Panel }) {
@@ -86,6 +115,8 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
   const cursor = useLab((s) => s.cursor);
   const xRange = useLab((s) => s.xRange);
   const track = useLab(activeTrack);
+  const markers = useLab((s) => s.markers);
+  const activeMarkerId = useLab((s) => s.activeMarkerId);
 
   const xAxis = workspace.xAxis;
   const unitMph = workspace.unitMph;
@@ -95,6 +126,11 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
     [sessions, selectedLaps, workspace, lapMeta, panel],
   );
   const data = useMemo(() => joinLines(lines), [lines]);
+  const markerCols = useMemo(() => resolveMarkers(markers, sessions, lines, xAxis), [markers, sessions, lines, xAxis]);
+  const markersRef = useRef<MarkerCol[]>(markerCols);
+  markersRef.current = markerCols;
+  const activeMarkerRef = useRef(activeMarkerId);
+  activeMarkerRef.current = activeMarkerId;
 
   const hostRef = useRef<HTMLDivElement>(null);
   const uRef = useRef<uPlot | null>(null);
@@ -275,27 +311,66 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
         ],
         draw: [
           (u) => {
-            const t = trackRef.current;
-            if (!t || xAxisRef.current !== 'distance') return;
             const ctx = u.ctx;
             const { left, top, width, height } = u.bbox;
+            const dpr = devicePixelRatio;
             ctx.save();
             ctx.beginPath();
             ctx.rect(left, top, width, height);
             ctx.clip();
-            ctx.setLineDash([3, 3]);
-            ctx.lineWidth = 1;
-            ctx.strokeStyle = 'rgba(139,149,165,0.55)';
-            ctx.fillStyle = 'rgba(139,149,165,0.9)';
-            ctx.font = `${10 * devicePixelRatio}px Inter, system-ui, sans-serif`;
-            for (const turn of t.turns) {
-              const px = u.valToPos(turn.sRange[0], 'x', true);
+            const t = trackRef.current;
+            if (t && xAxisRef.current === 'distance') {
+              ctx.setLineDash([3, 3]);
+              ctx.lineWidth = 1;
+              ctx.strokeStyle = 'rgba(139,149,165,0.55)';
+              ctx.fillStyle = 'rgba(139,149,165,0.9)';
+              ctx.font = `${10 * dpr}px Inter, system-ui, sans-serif`;
+              for (const turn of t.turns) {
+                const px = u.valToPos(turn.sRange[0], 'x', true);
+                if (!Number.isFinite(px) || px < left || px > left + width) continue;
+                ctx.beginPath();
+                ctx.moveTo(px, top);
+                ctx.lineTo(px, top + height);
+                ctx.stroke();
+                ctx.fillText(turn.name || `T${turn.n}`, px + 2 * dpr, top + 10 * dpr);
+              }
+            }
+            // ---- user markers: solid vertical line + flag with the name ----
+            ctx.setLineDash([]);
+            ctx.font = `bold ${10 * dpr}px Inter, system-ui, sans-serif`;
+            for (const mc of markersRef.current) {
+              if (mc.x === null) continue;
+              const px = u.valToPos(mc.x, 'x', true);
               if (!Number.isFinite(px) || px < left || px > left + width) continue;
+              const active = mc.m.id === activeMarkerRef.current;
+              ctx.strokeStyle = mc.m.color;
+              ctx.lineWidth = (active ? 2 : 1.25) * dpr;
               ctx.beginPath();
               ctx.moveTo(px, top);
               ctx.lineTo(px, top + height);
               ctx.stroke();
-              ctx.fillText(turn.name || `T${turn.n}`, px + 2 * devicePixelRatio, top + 10 * devicePixelRatio);
+              const label = mc.m.name;
+              const tw = ctx.measureText(label).width;
+              const bh = 13 * dpr;
+              ctx.fillStyle = mc.m.color;
+              ctx.fillRect(px, top + height - bh, tw + 8 * dpr, bh);
+              ctx.fillStyle = '#10141a';
+              ctx.fillText(label, px + 4 * dpr, top + height - 3 * dpr);
+              // value dots on every line at the marker
+              for (let i = 0; i < mc.values.length; i++) {
+                const v = mc.values[i];
+                const line = linesRef.current[i];
+                if (v == null || !line) continue;
+                const py = u.valToPos(v, line.axis, true);
+                if (!Number.isFinite(py)) continue;
+                ctx.beginPath();
+                ctx.arc(px, py, 3 * dpr, 0, Math.PI * 2);
+                ctx.fillStyle = line.color;
+                ctx.fill();
+                ctx.lineWidth = 1 * dpr;
+                ctx.strokeStyle = '#10141a';
+                ctx.stroke();
+              }
             }
             ctx.restore();
           },
@@ -423,7 +498,18 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unitMph, lines]);
 
+  // ---- markers changed: repaint the overlay ----------------------------
+  useEffect(() => {
+    uRef.current?.redraw(false, true);
+  }, [markerCols, activeMarkerId]);
+
   legendRefs.current.length = lines.length;
+
+  const jumpTo = (m: DataMarker) => {
+    const st = useLab.getState();
+    st.setActiveMarker(m.id);
+    st.setCursor({ sessionId: m.sessionId, idx: m.idx });
+  };
 
   return (
     <>
@@ -432,21 +518,50 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
       ) : (
         <div className="chart-plot" ref={hostRef} />
       )}
-      <div className="chart-legend">
+      <div className="chart-legend" data-testid={`chart-legend-${panel.id}`}>
         {lines.map((l, i) => (
-          <span className="lg" key={l.key}>
-            <i style={{ background: l.color, height: isRefLine(l, refLap) ? 3 : 2 }} />
-            {l.label}
-            <b
-              ref={(el) => {
-                legendRefs.current[i] = el;
-              }}
-            >
-              –
-            </b>
+          <span className="lg" key={l.key} style={{ borderColor: l.color }} title={l.label}>
+            <span className="lg-head">
+              <i style={{ background: l.color, height: isRefLine(l, refLap) ? 3 : 2 }} />
+              <span className="lg-name">{l.label}</span>
+            </span>
+            <span className="lg-value">
+              <b
+                style={{ color: l.color }}
+                ref={(el) => {
+                  legendRefs.current[i] = el;
+                }}
+              >
+                –
+              </b>
+              <span className="lg-unit">{unitOf(sessions, l, unitMph)}</span>
+            </span>
           </span>
         ))}
       </div>
+      {markerCols.length > 0 && lines.length > 0 && (
+        <div className="chart-markers" data-testid={`chart-markers-${panel.id}`}>
+          {markerCols.map((mc) => (
+            <button
+              type="button"
+              className={`mk${mc.m.id === activeMarkerId ? ' on' : ''}`}
+              key={mc.m.id}
+              style={{ borderColor: mc.m.color }}
+              onClick={() => jumpTo(mc.m)}
+              title={`${mc.m.name}: move the cursor here`}
+            >
+              <span className="mk-name" style={{ background: mc.m.color }}>
+                {mc.m.name}
+              </span>
+              {lines.map((l, i) => (
+                <span className="mk-val" key={l.key} title={l.label} style={{ color: l.color }}>
+                  {fmtVal(l, mc.values[i], unitMph)}
+                </span>
+              ))}
+            </button>
+          ))}
+        </div>
+      )}
     </>
   );
 }

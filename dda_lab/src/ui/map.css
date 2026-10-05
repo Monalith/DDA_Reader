@@ -311,3 +311,18 @@
 .map-btn[data-testid='map-follow-focus'] {
   white-space: nowrap;
 }
+
+/* User data markers (fixed samples placed with M / 📍 Mark). */
+.data-marker {
+  padding: 1px 6px 2px;
+  font-size: 11px;
+  font-weight: 800;
+  color: #0e1116;
+  border-radius: 3px 3px 3px 0;
+  border: 1px solid rgba(14, 17, 22, 0.8);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+  cursor: pointer;
+  white-space: nowrap;
+  transform-origin: bottom left;
+}
+.data-marker.on { outline: 2px solid #ffffff; }

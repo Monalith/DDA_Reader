@@ -1,5 +1,26 @@
-import type { Lap, Session, Workspace } from '../core/types';
+import type { DataMarker, Lap, Session, Workspace } from '../core/types';
 import { lapMetaOf, type LabState, type LapRef } from './store';
+
+/** Lap-relative x of a marker (distance or lap time), or null when it sits outside every lap. */
+export function markerX(sessions: Session[], m: DataMarker, xAxis: Workspace['xAxis']): number | null {
+  const s = sessions.find((x) => x.id === m.sessionId);
+  if (!s) return null;
+  const hit = xFromIdx(s, m.idx, xAxis);
+  return hit && Number.isFinite(hit.x) ? hit.x : null;
+}
+
+/**
+ * Sample index of a marker in some lap: the marker's own sample when the lap contains it,
+ * otherwise the sample of that lap at the same lap-relative x (so one marker lines every
+ * selected lap up, like a fixed cursor).
+ */
+export function markerIdxInLap(sessions: Session[], m: DataMarker, s: Session, lap: Lap, xAxis: Workspace['xAxis']): number | null {
+  if (m.sessionId === s.id && m.idx >= lap.startIdx && m.idx <= lap.endIdx) return m.idx;
+  const x = markerX(sessions, m, xAxis);
+  if (x === null) return null;
+  const idx = cursorIdxFromX(s, lap, x, xAxis);
+  return Math.min(lap.endIdx, Math.max(lap.startIdx, idx));
+}
 
 export interface OverlayLine {
   key: string;

@@ -32,6 +32,7 @@ const MathChannelSchema = z.object({
   unit: z.string().default(''),
   expr: z.string(),
   color: z.string().default('#ffffff'),
+  perLap: z.record(z.string(), z.string()).optional(),
 });
 
 const WorkspaceObject = z.object({

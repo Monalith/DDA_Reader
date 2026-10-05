@@ -2,8 +2,15 @@ import { useMemo, useRef, useState } from 'react';
 import guideSource from '../../guide/MATH_GUIDE.md?raw';
 import { CONSTANTS, FUNCTION_DOCS, dependencies, parseExpr } from '../../core/mathExpr';
 import { MATH_PRESETS, type MathPreset } from '../../core/presets';
-import { SESSION_COLORS, useLab } from '../../state/store';
+import { SESSION_COLORS, lapKey, lapMetaOf, useLab } from '../../state/store';
+import { selectedLapEntries } from '../../state/selectors';
 import Markdown from './Markdown';
+
+/** Expression for the integral builder. x = '' means time. */
+export function integralExpr(y: string, x: string, perLap: boolean): string {
+  if (!x) return perLap ? `lap_integ(${y})` : `integ(${y})`;
+  return perLap ? `lap_integ_x(${y}, ${x})` : `integ_x(${y}, ${x})`;
+}
 
 const EXAMPLES = [
   'rpm / max(speed, 1)',
@@ -50,7 +57,9 @@ function firstFunction(sig: string): string | null {
 export default function MathPanel() {
   const defs = useLab((s) => s.workspace.mathChannels);
   const sessions = useLab((s) => s.sessions);
-  const { addMathChannel, removeMathChannel } = useLab.getState();
+  const selectedLaps = useLab((s) => s.selectedLaps);
+  const lapMeta = useLab((s) => s.lapMeta);
+  const { addMathChannel, removeMathChannel, setMathLapExpr } = useLab.getState();
 
   const [sub, setSub] = useState<SubTab>('editor');
   const [name, setName] = useState('');
@@ -58,8 +67,26 @@ export default function MathPanel() {
   const [color, setColor] = useState(SESSION_COLORS[2]);
   const [expr, setExpr] = useState('');
   const [search, setSearch] = useState('');
+  /** 'all' = the channel's default formula; otherwise a lapKey → formula for that lap only. */
+  const [scope, setScope] = useState<string>('all');
+  const [intY, setIntY] = useState('speed');
+  const [intX, setIntX] = useState('lap_dist');
+  const [intPerLap, setIntPerLap] = useState(true);
   const exprRef = useRef<HTMLTextAreaElement | null>(null);
   const parsed = useMemo(() => analyse(expr), [expr]);
+
+  const lapOptions = useMemo(
+    () =>
+      selectedLapEntries({ sessions, selectedLaps }).map(({ s, lap }) => ({
+        key: lapKey(s.id, lap.n),
+        sessionId: s.id,
+        lap: lap.n,
+        label: lapMetaOf({ sessions, lapMeta }, s.id, lap.n).name,
+      })),
+    [sessions, selectedLaps, lapMeta],
+  );
+  const scopeLap = lapOptions.find((o) => o.key === scope);
+  const lapName = (k: string) => lapOptions.find((o) => o.key === k)?.label ?? k.replace(/^.*:/, 'L');
 
   const known = useMemo(() => {
     const s = new Set<string>();
@@ -73,11 +100,24 @@ export default function MathPanel() {
   );
 
   const unknownDeps = parsed.deps.filter((d) => !known.has(d) && d !== name);
-  const canSave = Boolean(name.trim()) && parsed.ok;
+  const canSave = Boolean(name.trim()) && parsed.ok && (scope === 'all' || Boolean(scopeLap));
 
   function save() {
     if (!canSave) return;
-    addMathChannel({ name: name.trim(), unit: unit.trim(), expr: expr.trim(), color });
+    const n = name.trim();
+    if (scope === 'all' || !scopeLap) {
+      addMathChannel({ name: n, unit: unit.trim(), expr: expr.trim(), color });
+      return;
+    }
+    // per-lap formula: create the channel first if it does not exist yet (same formula as default)
+    if (!defs.some((d) => d.name === n)) addMathChannel({ name: n, unit: unit.trim(), expr: expr.trim(), color });
+    setMathLapExpr(n, scopeLap.sessionId, scopeLap.lap, expr.trim());
+  }
+
+  function buildIntegral() {
+    const e = integralExpr(intY, intX, intPerLap);
+    setExpr(e);
+    if (!name.trim()) setName(`int_${intY}${intX ? `_${intX}` : ''}`.replace(/[^A-Za-z0-9_]/g, '_'));
   }
 
   /** Insert `text` at the caret of the expression textarea (or append). */
@@ -167,8 +207,50 @@ export default function MathPanel() {
                 onChange={(e) => setColor(e.target.value)}
               />
               <button className="bp-btn primary" data-testid="math-save" onClick={save} disabled={!canSave}>
-                {defs.some((d) => d.name === name.trim()) ? 'Update' : 'Add'}
+                {scope !== 'all' && scopeLap ? `Set for ${scopeLap.label}` : defs.some((d) => d.name === name.trim()) ? 'Update' : 'Add'}
               </button>
+            </div>
+
+            <div className="bp-row math-scope" style={{ marginBottom: 6 }}>
+              <span className="bp-label">Formula applies to</span>
+              <select className="bp-select" data-testid="math-scope" value={scope} onChange={(e) => setScope(e.target.value)}>
+                <option value="all">all laps (default formula)</option>
+                {lapOptions.map((o) => (
+                  <option key={o.key} value={o.key}>
+                    only {o.label}
+                  </option>
+                ))}
+              </select>
+              {!lapOptions.length && <span className="bp-label">select laps in the table to write a formula for one lap</span>}
+              {scope !== 'all' && !scopeLap && <span className="bp-err">that lap is no longer in the workspace</span>}
+            </div>
+
+            <div className="integral-builder" data-testid="integral-builder">
+              <span className="title">∫ Integral</span>
+              <span className="bp-label">y =</span>
+              <select className="bp-select" data-testid="integral-y" value={intY} onChange={(e) => setIntY(e.target.value)}>
+                {firstSessionChannels.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+              <span className="bp-label">dx =</span>
+              <select className="bp-select" data-testid="integral-x" value={intX} onChange={(e) => setIntX(e.target.value)}>
+                <option value="">time (s)</option>
+                {firstSessionChannels.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+              <label className="bp-label" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                <input type="checkbox" checked={intPerLap} onChange={(e) => setIntPerLap(e.target.checked)} /> restart every lap
+              </label>
+              <button className="bp-btn" data-testid="integral-build" onClick={buildIntegral} disabled={!firstSessionChannels.length}>
+                Build formula
+              </button>
+              <code className="bp-mono bp-label">{integralExpr(intY, intX, intPerLap)}</code>
             </div>
 
             <div className="bp-row" style={{ marginBottom: 4 }}>
@@ -228,26 +310,63 @@ export default function MathPanel() {
             <div className="math-list" data-testid="math-list">
               {defs.length === 0 && <span className="bp-label">none yet</span>}
               {defs.map((d) => (
-                <div className="row" key={d.name} data-testid={`math-item-${d.name}`}>
-                  <span className="bp-swatch" style={{ background: d.color }} />
-                  <strong>{d.name}</strong>
-                  <span className="bp-label">{d.unit}</span>
-                  <span className="expr">= {d.expr}</span>
-                  <button
-                    className="bp-btn"
-                    data-testid={`math-edit-${d.name}`}
-                    onClick={() => {
-                      setName(d.name);
-                      setUnit(d.unit);
-                      setColor(d.color);
-                      setExpr(d.expr);
-                    }}
-                  >
-                    Edit
-                  </button>
-                  <button className="bp-btn danger" data-testid={`math-del-${d.name}`} onClick={() => removeMathChannel(d.name)}>
-                    Delete
-                  </button>
+                <div key={d.name}>
+                  <div className="row" data-testid={`math-item-${d.name}`}>
+                    <span className="bp-swatch" style={{ background: d.color }} />
+                    <strong>{d.name}</strong>
+                    <span className="bp-label">{d.unit}</span>
+                    <span className="expr">= {d.expr}</span>
+                    <button
+                      className="bp-btn"
+                      data-testid={`math-edit-${d.name}`}
+                      onClick={() => {
+                        setName(d.name);
+                        setUnit(d.unit);
+                        setColor(d.color);
+                        setExpr(d.expr);
+                        setScope('all');
+                      }}
+                    >
+                      Edit
+                    </button>
+                    <button className="bp-btn danger" data-testid={`math-del-${d.name}`} onClick={() => removeMathChannel(d.name)}>
+                      Delete
+                    </button>
+                  </div>
+                  {d.perLap && Object.keys(d.perLap).length > 0 && (
+                    <div className="math-lap-overrides" data-testid={`math-perlap-${d.name}`}>
+                      {Object.entries(d.perLap).map(([k, e]) => {
+                        const [sid, lapStr] = [k.slice(0, k.lastIndexOf(':')), k.slice(k.lastIndexOf(':') + 1)];
+                        return (
+                          <div className="row" key={k}>
+                            <span className="bp-badge">lap</span>
+                            <strong>{lapName(k)}</strong>
+                            <span className="expr">= {e}</span>
+                            <button
+                              className="bp-btn tiny"
+                              onClick={() => {
+                                setName(d.name);
+                                setUnit(d.unit);
+                                setColor(d.color);
+                                setExpr(e);
+                                setScope(k);
+                              }}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              className="bp-btn tiny danger"
+                              data-testid={`math-perlap-del-${d.name}-${lapStr}`}
+                              title="Back to the default formula for this lap"
+                              onClick={() => setMathLapExpr(d.name, sid, Number(lapStr), null)}
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

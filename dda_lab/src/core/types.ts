@@ -151,8 +151,26 @@ export interface Workspace {
   unitMph: boolean;
   splitPct: number;
   panels: ChartPanelConfig[];
-  mathChannels: { name: string; unit: string; expr: string; color: string }[];
+  mathChannels: MathChannelDef[];
   mapLayers: Record<string, boolean>;
+}
+
+/** A math channel: one formula for every lap, optionally overridden per lap (key = `${sessionId}:${lapN}`). */
+export interface MathChannelDef {
+  name: string;
+  unit: string;
+  expr: string;
+  color: string;
+  perLap?: Record<string, string>;
+}
+
+/** A user-placed data marker: a fixed sample of one session, shown on every chart and the map. */
+export interface DataMarker {
+  id: string;
+  name: string;
+  color: string;
+  sessionId: string;
+  idx: number;
 }
 
 export const DEFAULT_WORKSPACE: Workspace = {

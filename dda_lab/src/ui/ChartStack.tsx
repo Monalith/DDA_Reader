@@ -18,6 +18,28 @@ export default function ChartStack() {
   const xRange = useLab((s) => s.xRange);
   const setXRange = useLab((s) => s.setXRange);
   const track = useLab(activeTrack);
+  const hasCursor = useLab((s) => s.cursor !== null);
+  const nMarkers = useLab((s) => s.markers.length);
+
+  // ---- markers: button + "M" key place one at the cursor ----------------
+  const placeMarker = () => {
+    const st = useLab.getState();
+    const m = st.addMarkerAtCursor();
+    st.setStatus(m ? `Marker ${m.name} placed (Markers tab shows its values)` : 'Hover a chart or the map first to place a marker');
+  };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'm' && e.key !== 'M') return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const el = e.target as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el?.isContentEditable) return;
+      e.preventDefault();
+      placeMarker();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   const names = useMemo(() => allChannelNames(sessions), [sessions]);
   const [axisFor, setAxisFor] = useState<Record<string, 'L' | 'R'>>({});
@@ -86,6 +108,20 @@ export default function ChartStack() {
         <span>
           {panels.length} panel{panels.length === 1 ? '' : 's'} · x: {xAxis}
         </span>
+        <button
+          className="btn-mini marker-btn"
+          data-testid="add-marker"
+          disabled={!hasCursor}
+          onClick={placeMarker}
+          title={hasCursor ? 'Place a marker at the cursor (key: M)' : 'Hover a chart or the map, then press M or click here'}
+        >
+          📍 Mark{nMarkers ? ` (${nMarkers})` : ''}
+        </button>
+        {nMarkers > 0 && (
+          <button className="btn-mini" onClick={() => useLab.getState().setBottomTab('markers')} title="Open the Markers tab">
+            values
+          </button>
+        )}
         <span className="spacer" style={{ flex: '1 1 auto' }} />
 
         <span className="focus-group" data-testid="focus-group">

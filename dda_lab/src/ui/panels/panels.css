@@ -298,3 +298,29 @@
 .tp-turns .bp-select { padding: 1px 3px; }
 .tp-turns .bp-input { padding: 1px 4px; }
 .tp-foot { gap: 8px; }
+
+/* ---- markers panel ---------------------------------------------------- */
+.markers-grid { display: grid; grid-template-columns: minmax(300px, 380px) 1fr; gap: 12px; align-items: start; }
+.markers-list { display: flex; flex-direction: column; gap: 3px; }
+.marker-row {
+  display: flex; align-items: center; gap: 6px; padding: 2px 4px; border-radius: 4px;
+  border: 1px solid transparent; cursor: pointer;
+}
+.marker-row:hover { background: var(--panel-2); }
+.marker-row.on { border-color: var(--accent); background: rgba(255, 106, 0, 0.08); }
+.marker-where { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 150px; }
+.markers-table { overflow: auto; }
+.marker-values td { font-weight: 600; font-size: 12.5px; }
+.marker-values th.name { font-size: 13px; font-weight: 800; }
+kbd { background: var(--panel-2); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; font: inherit; font-size: 11px; }
+
+/* ---- math panel: per-lap scope + integral builder ---------------------- */
+.math-scope { border-left: 3px solid var(--accent-2, #3da5ff); padding-left: 8px; }
+.math-lap-overrides { margin: 2px 0 4px 22px; display: flex; flex-direction: column; gap: 2px; }
+.math-lap-overrides .row { display: flex; align-items: center; gap: 6px; font-size: 11.5px; }
+.math-lap-overrides .expr { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--fg-dim); }
+.integral-builder {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 4px 0 6px;
+  padding: 5px 8px; border: 1px dashed var(--border); border-radius: 6px; background: rgba(255,255,255,0.02);
+}
+.integral-builder .title { font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--fg-dim); }

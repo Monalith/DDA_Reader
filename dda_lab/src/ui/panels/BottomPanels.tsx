@@ -6,6 +6,7 @@ import MathPanel from './MathPanel';
 import ReportsPanel from './ReportsPanel';
 import ExternalPanel from './ExternalPanel';
 import CursorPanel from './CursorPanel';
+import MarkersPanel from './MarkersPanel';
 import './panels.css';
 
 const TABS: Array<{ id: LabState['bottomTab']; label: string }> = [
@@ -16,6 +17,7 @@ const TABS: Array<{ id: LabState['bottomTab']; label: string }> = [
   { id: 'reports', label: 'Reports' },
   { id: 'external', label: 'External' },
   { id: 'cursor', label: 'Cursor' },
+  { id: 'markers', label: 'Markers' },
 ];
 
 export default function BottomPanels() {
@@ -52,6 +54,7 @@ export default function BottomPanels() {
         {tab === 'reports' && <ReportsPanel />}
         {tab === 'external' && <ExternalPanel />}
         {tab === 'cursor' && <CursorPanel />}
+        {tab === 'markers' && <MarkersPanel />}
       </div>
     </div>
   );

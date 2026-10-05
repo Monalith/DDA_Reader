@@ -82,6 +82,32 @@ export function applyTrackLapDist(s: Session, track: TrackModel): void {
   }
 }
 
+/**
+ * total_dist channel: distance covered over the laps that still exist, in lap order and
+ * continuous from one lap to the next (NaN outside laps). Deleting a lap removes its
+ * metres from everything after it, so the "total distance" follows the workspace.
+ */
+export function applyTotalDist(s: Session): void {
+  const lapDist = s.channels.get('lap_dist')?.data;
+  const out = new Float32Array(s.t.length).fill(NaN);
+  if (lapDist && s.laps.length) {
+    const laps = [...s.laps].sort((a, b) => a.startIdx - b.startIdx);
+    let offset = 0;
+    for (const lap of laps) {
+      let last = 0;
+      for (let i = lap.startIdx; i <= lap.endIdx && i < out.length; i++) {
+        const d = lapDist[i];
+        if (!Number.isFinite(d)) continue;
+        if (d >= last) last = d; // the sample shared with the next lap restarts at 0
+        out[i] = offset + last;
+      }
+      offset += last;
+    }
+  }
+  const ch: Channel = { name: 'total_dist', unit: 'm', kind: 'derived', data: out, proc: { ...DEFAULT_PROC } };
+  s.channels.set('total_dist', ch);
+}
+
 /** delta_t channel: time variance of every lap against the reference lap (NaN outside laps). */
 export function applyDeltaT(s: Session, ref: Session | undefined, refLap: Lap | undefined): void {
   const data = new Float32Array(s.t.length).fill(NaN);

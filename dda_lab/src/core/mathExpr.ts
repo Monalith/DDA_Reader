@@ -48,6 +48,8 @@ const FUNCTIONS: Record<string, number> = {
   deg2rad: 1, rad2deg: 1, kmh2ms: 1, ms2kmh: 1,
   // calculus / time
   deriv: 1, integ: 1, diff: 1, cumsum: 1, shift: 2, lag: 2, accel_g: 1,
+  // integrals with a chosen x channel / per-lap reset
+  integ_x: 2, lap_integ: 1, lap_integ_x: 2, deriv_x: 2,
   // rolling windows (ch, nSamples)
   smooth: 2, rolling_mean: 2, rolling_min: 2, rolling_max: 2, rolling_std: 2, median: 2,
   // filters
@@ -78,6 +80,9 @@ export const FUNCTION_DOCS: { group: string; items: { sig: string; doc: string }
     { sig: 'deriv(ch)', doc: 'Time derivative per second (central difference). deriv(speed) is km/h per s.' },
     { sig: 'accel_g(speed_kmh)', doc: 'Longitudinal acceleration in g from a km/h speed channel.' },
     { sig: 'integ(ch) cumsum(ch)', doc: 'Running integral over time (unit·s) / running sum of samples.' },
+    { sig: 'integ_x(y, x)', doc: 'Running integral ∫ y dx with your own x channel (trapezoid), e.g. integ_x(long_g, lap_dist).' },
+    { sig: 'lap_integ(y) lap_integ_x(y, x)', doc: 'Same integrals, but restarting from 0 at every lap start.' },
+    { sig: 'deriv_x(y, x)', doc: 'dy/dx with your own x channel, e.g. deriv_x(speed, lap_dist) = km/h per metre.' },
     { sig: 'diff(ch)', doc: 'Sample-to-sample difference.' },
     { sig: 'shift(ch, seconds) lag(ch, samples)', doc: 'Move a channel later in time (negative = earlier).' },
   ] },
@@ -428,6 +433,57 @@ function callFn(name: string, args: Val[], n: number, env: EvalEnv): Val {
       }
       return out;
     }
+    case 'lap_integ': {
+      const v = broadcast(args[0], n);
+      const out = new Float32Array(n);
+      for (const [a, b] of lapSegments(n, env.lapStarts)) {
+        let acc = 0;
+        for (let i = a; i < b; i++) {
+          if (Number.isFinite(v[i])) acc += v[i] * env.dtS;
+          out[i] = acc;
+        }
+      }
+      return out;
+    }
+    case 'integ_x':
+    case 'lap_integ_x': {
+      const y = broadcast(args[0], n);
+      const x = broadcast(args[1], n);
+      const out = new Float32Array(n);
+      const segs = name === 'lap_integ_x' ? lapSegments(n, env.lapStarts) : [[0, n] as [number, number]];
+      for (const [a, b] of segs) {
+        let acc = 0;
+        let px = NaN;
+        let py = NaN;
+        for (let i = a; i < b; i++) {
+          const xi = x[i];
+          const yi = y[i];
+          if (Number.isFinite(xi) && Number.isFinite(yi)) {
+            if (Number.isFinite(px)) {
+              const dx = xi - px;
+              // a wrap of the x channel (e.g. lap_dist back to 0) is not integrated
+              if (dx >= 0) acc += 0.5 * (yi + py) * dx;
+            }
+            px = xi;
+            py = yi;
+          }
+          out[i] = acc;
+        }
+      }
+      return out;
+    }
+    case 'deriv_x': {
+      const y = broadcast(args[0], n);
+      const x = broadcast(args[1], n);
+      const out = new Float32Array(n).fill(NaN);
+      for (let i = 0; i < n; i++) {
+        const i0 = i > 0 ? i - 1 : i;
+        const i1 = i < n - 1 ? i + 1 : i;
+        const dx = x[i1] - x[i0];
+        out[i] = Number.isFinite(dx) && dx !== 0 ? (y[i1] - y[i0]) / dx : NaN;
+      }
+      return out;
+    }
     case 'smooth': {
       const v = broadcast(args[0], n);
       const win = Math.max(1, Math.round(scalarOf(args[1], 'smooth(ch, n): n')));
@@ -743,7 +799,10 @@ export function evaluate(ast: Ast, env: EvalEnv): Float32Array {
     }
   };
 
-  return broadcast(ev(ast), n);
+  const res = broadcast(ev(ast), n);
+  // `k = speed` must not alias the source channel: callers write into the result.
+  for (const v of cache.values()) if (v === res) return res.slice();
+  return res;
 }
 
 function truthy(x: number): boolean {

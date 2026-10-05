@@ -3,7 +3,7 @@ import { computeDerived } from '../core/derived';
 import { applyProc } from '../core/processing';
 import { evaluate, orderByDependencies, parseExpr, type EvalEnv } from '../core/mathExpr';
 import { detectLaps, withoutDeletedLaps } from '../core/laps';
-import { applyDeltaT, applySectorTimes, applyTrackLapDist } from './derivedExtras';
+import { applyDeltaT, applySectorTimes, applyTotalDist, applyTrackLapDist } from './derivedExtras';
 import { defaultSectorGates, projectToTrack } from '../core/track';
 import { bearingDeg } from '../core/geo';
 import {
@@ -11,8 +11,10 @@ import {
   DEFAULT_WORKSPACE,
   type Channel,
   type ChannelProc,
+  type DataMarker,
   type Gate,
   type Lap,
+  type MathChannelDef,
   type LngLat,
   type Session,
   type Turn,
@@ -37,14 +39,10 @@ export interface LapMeta {
 
 export const lapKey = (sessionId: string, lap: number): string => `${sessionId}:${lap}`;
 
-export interface MathDef {
-  name: string;
-  unit: string;
-  expr: string;
-  color: string;
-}
+export type MathDef = MathChannelDef;
 
 export const SESSION_COLORS = ['#ff6a00', '#3da5ff', '#3ddc84', '#ffd166', '#c77dff', '#ff4d6d', '#4dd0e1', '#f4a261'];
+export const MARKER_COLORS = ['#ffd166', '#4dd0e1', '#ff4d6d', '#c77dff', '#3ddc84', '#f4a261', '#3da5ff', '#ffffff'];
 
 export interface LabState {
   sessions: Session[];
@@ -59,8 +57,12 @@ export interface LabState {
   workspace: Workspace;
   mapColorBy: 'speed' | 'tps' | 'lean' | 'brake' | 'solid';
   mapMaximized: boolean;
-  bottomTab: 'laps' | 'track' | 'channels' | 'math' | 'reports' | 'external' | 'cursor';
+  bottomTab: 'laps' | 'track' | 'channels' | 'math' | 'reports' | 'external' | 'cursor' | 'markers';
   statusMessage: string | null;
+  /** User-placed data markers (fixed samples). */
+  markers: DataMarker[];
+  /** Marker whose values the Markers panel shows. */
+  activeMarkerId: string | null;
 
   addSession(s: Session): void;
   removeSession(id: string): void;
@@ -73,8 +75,18 @@ export interface LabState {
   setWorkspace(patch: Partial<Workspace>): void;
   setChannelProc(sessionId: string, ch: string, proc: ChannelProc): void;
   applyProcToAll(ch: string, proc: ChannelProc): void;
+  /** Add or update a math channel. Existing per-lap formulas are kept unless `def.perLap` is given. */
   addMathChannel(def: MathDef): void;
   removeMathChannel(name: string): void;
+  /** Set (or clear with null) the formula of one math channel for one lap only. */
+  setMathLapExpr(name: string, sessionId: string, lap: number, expr: string | null): void;
+  /** Place a marker at the current cursor sample. Returns the new marker, or null without a cursor. */
+  addMarkerAtCursor(): DataMarker | null;
+  addMarker(sessionId: string, idx: number, patch?: Partial<Pick<DataMarker, 'name' | 'color'>>): DataMarker;
+  updateMarker(id: string, patch: Partial<Pick<DataMarker, 'name' | 'color' | 'idx'>>): void;
+  removeMarker(id: string): void;
+  clearMarkers(): void;
+  setActiveMarker(id: string | null): void;
   addExternalChannels(sessionId: string, channels: Channel[]): void;
   setTrack(t: TrackModel): void;
   setLapMeta(sessionId: string, lap: number, patch: Partial<LapMeta>): void;
@@ -96,7 +108,10 @@ export function activeTrack(state: Pick<LabState, 'tracks' | 'activeTrackId'>): 
   return state.tracks.find((t) => t.id === state.activeTrackId);
 }
 
-/** Recompute math channels for one session from the workspace definitions. */
+/**
+ * Recompute math channels for one session from the workspace definitions. A per-lap
+ * formula (`def.perLap[sessionId:lapN]`) replaces the channel's values inside that lap.
+ */
 export function recomputeMath(session: Session, defs: MathDef[]): void {
   for (const [name, ch] of session.channels) if (ch.kind === 'math') session.channels.delete(name);
   if (!defs.length) return;
@@ -116,6 +131,20 @@ export function recomputeMath(session: Session, defs: MathDef[]): void {
     const byName = defs.find((d) => d.name === def.name)!;
     try {
       const data = evaluate(parseExpr(def.expr), env);
+      const overrides = Object.entries(def.perLap ?? {}).filter(([k]) => k.startsWith(`${session.id}:`));
+      const lapErrors: string[] = [];
+      for (const [k, lapExpr] of overrides) {
+        const lapN = Number(k.slice(session.id.length + 1));
+        const lap = session.laps.find((l) => l.n === lapN);
+        if (!lap) continue;
+        try {
+          const d = evaluate(parseExpr(lapExpr), env);
+          for (let i = lap.startIdx; i <= lap.endIdx && i < data.length; i++) data[i] = d[i];
+        } catch (e) {
+          lapErrors.push(`L${lapN}: ${(e as Error).message}`);
+          for (let i = lap.startIdx; i <= lap.endIdx && i < data.length; i++) data[i] = NaN;
+        }
+      }
       session.channels.set(def.name, {
         name: def.name,
         unit: byName.unit,
@@ -123,7 +152,7 @@ export function recomputeMath(session: Session, defs: MathDef[]): void {
         color: byName.color,
         data,
         proc: { ...DEFAULT_PROC },
-        expr: def.expr,
+        expr: lapErrors.length ? `${def.expr}  // error: ${lapErrors.join('; ')}` : def.expr,
       });
     } catch (e) {
       session.channels.set(def.name, {
@@ -157,6 +186,7 @@ export function refreshSession(
     applyTrackLapDist(session, track);
     applySectorTimes(session, track);
   }
+  applyTotalDist(session);
   applyDeltaT(session, ref?.session, ref?.lap);
   recomputeMath(session, defs);
   return { ...session, channels: new Map(session.channels) };
@@ -198,6 +228,8 @@ export const useLab = create<LabState>((set, get) => ({
   mapMaximized: false,
   bottomTab: 'laps',
   statusMessage: null,
+  markers: [],
+  activeMarkerId: null,
 
   addSession(s) {
     const { workspace, sessions } = get();
@@ -218,6 +250,8 @@ export const useLab = create<LabState>((set, get) => ({
       lapMeta: Object.fromEntries(Object.entries(st.lapMeta).filter(([k]) => !k.startsWith(`${id}:`))),
       refLap: st.refLap?.sessionId === id ? undefined : st.refLap,
       cursor: st.cursor?.sessionId === id ? null : st.cursor,
+      markers: st.markers.filter((m) => m.sessionId !== id),
+      activeMarkerId: st.markers.some((m) => m.id === st.activeMarkerId && m.sessionId === id) ? null : st.activeMarkerId,
     }));
   },
   replaceSession(s) {
@@ -274,12 +308,66 @@ export const useLab = create<LabState>((set, get) => ({
   },
   addMathChannel(def) {
     const st = get();
-    const defs = [...st.workspace.mathChannels.filter((d) => d.name !== def.name), def];
+    const prev = st.workspace.mathChannels.find((d) => d.name === def.name);
+    const merged: MathDef = { ...def, perLap: def.perLap ?? prev?.perLap };
+    if (!merged.perLap || !Object.keys(merged.perLap).length) delete merged.perLap;
+    const defs = [...st.workspace.mathChannels.filter((d) => d.name !== def.name), merged];
     for (const s of st.sessions) recomputeMath(s, defs);
     set({
       workspace: { ...st.workspace, mathChannels: defs },
       sessions: st.sessions.map((s) => ({ ...s, channels: new Map(s.channels) })),
     });
+  },
+  setMathLapExpr(name, sessionId, lap, expr) {
+    const st = get();
+    const cur = st.workspace.mathChannels.find((d) => d.name === name);
+    if (!cur) return;
+    const perLap = { ...(cur.perLap ?? {}) };
+    const k = lapKey(sessionId, lap);
+    if (expr && expr.trim()) perLap[k] = expr.trim();
+    else delete perLap[k];
+    const next: MathDef = { ...cur };
+    if (Object.keys(perLap).length) next.perLap = perLap;
+    else delete next.perLap;
+    const defs = st.workspace.mathChannels.map((d) => (d.name === name ? next : d));
+    for (const s of st.sessions) recomputeMath(s, defs);
+    set({
+      workspace: { ...st.workspace, mathChannels: defs },
+      sessions: st.sessions.map((s) => ({ ...s, channels: new Map(s.channels) })),
+    });
+  },
+  addMarker(sessionId, idx, patch) {
+    const st = get();
+    const n = st.markers.length + 1;
+    const m: DataMarker = {
+      id: `m${Date.now().toString(36)}${n}`,
+      name: patch?.name ?? `M${n}`,
+      color: patch?.color ?? MARKER_COLORS[(n - 1) % MARKER_COLORS.length],
+      sessionId,
+      idx,
+    };
+    set({ markers: [...st.markers, m], activeMarkerId: m.id });
+    return m;
+  },
+  addMarkerAtCursor() {
+    const { cursor, addMarker } = get();
+    if (!cursor) return null;
+    return addMarker(cursor.sessionId, cursor.idx);
+  },
+  updateMarker(id, patch) {
+    set((st) => ({ markers: st.markers.map((m) => (m.id === id ? { ...m, ...patch } : m)) }));
+  },
+  removeMarker(id) {
+    set((st) => {
+      const markers = st.markers.filter((m) => m.id !== id);
+      return { markers, activeMarkerId: st.activeMarkerId === id ? (markers[markers.length - 1]?.id ?? null) : st.activeMarkerId };
+    });
+  },
+  clearMarkers() {
+    set({ markers: [], activeMarkerId: null });
+  },
+  setActiveMarker(id) {
+    set({ activeMarkerId: id });
   },
   removeMathChannel(name) {
     const st = get();
@@ -329,12 +417,26 @@ export const useLab = create<LabState>((set, get) => ({
     delete meta[lapKey(sessionId, lap)];
     const refLap = st.refLap?.sessionId === sessionId && st.refLap.lap === lap ? undefined : st.refLap;
     const track = activeTrack(st);
+    // per-lap formulas and markers of the deleted lap go with it
+    const mathChannels = st.workspace.mathChannels.map((d) => {
+      if (!d.perLap || !(lapKey(sessionId, lap) in d.perLap)) return d;
+      const perLap = { ...d.perLap };
+      delete perLap[lapKey(sessionId, lap)];
+      const next: MathDef = { ...d };
+      if (Object.keys(perLap).length) next.perLap = perLap;
+      else delete next.perLap;
+      return next;
+    });
+    const markers = st.markers.filter((m) => !(m.sessionId === sessionId && m.idx >= gone.startIdx && m.idx <= gone.endIdx));
     set({
       lapMeta: meta,
       refLap,
+      markers,
+      activeMarkerId: markers.some((m) => m.id === st.activeMarkerId) ? st.activeMarkerId : (markers[0]?.id ?? null),
+      workspace: { ...st.workspace, mathChannels },
       selectedLaps: st.selectedLaps.filter((l) => !(l.sessionId === sessionId && l.lap === lap)),
       cursor: st.cursor?.sessionId === sessionId ? null : st.cursor,
-      sessions: st.sessions.map((s) => (s.id === sessionId ? refreshSession(s, track, st.workspace.mathChannels, refOf({ ...st, refLap })) : s)),
+      sessions: st.sessions.map((s) => (s.id === sessionId ? refreshSession(s, track, mathChannels, refOf({ ...st, refLap })) : s)),
     });
   },
   removeLapFromWorkspace(sessionId, lap) {

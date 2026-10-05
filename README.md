@@ -267,7 +267,14 @@ sector gates and the cursor bike.
   `claude` CLI to extract apexes / racing line as JSON, you align it with 3 point pairs, and the
   coach apexes are compared to the GPS-derived ones.
 
-### Use DDA Lab on another computer
+#### Online: https://dda.kitchenonstage.com
+
+DDA Lab is also hosted at **https://dda.kitchenonstage.com** (kos-web droplet, nginx → uvicorn bridge,
+Cloudflare tunnel). Files you open stay in your browser; only track models and schema images you
+save go to the server. Claude schema analysis is not available there (no `claude` CLI on the
+server) — schema import falls back to manual marking. Redeploy with `./deploy_lab.sh`.
+
+## Use DDA Lab on another computer
 `python package_lab.py all` builds two packages into `dist/`:
 
 | Package | Needs on the target | Start |

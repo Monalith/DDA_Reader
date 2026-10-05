@@ -37,7 +37,12 @@ export function deserializeTrackJson(o: SerializedTrackJson): TrackModel {
   return { ...o, cumDistM: Float64Array.from(o.cumDistM) };
 }
 
-const num = (v: number): number | null => (Number.isFinite(v) ? Number(v.toFixed(4)) : null);
+/** Decimals kept per channel: GPS coordinates need 7 (≈1 cm); 4 would quantise the track to ~10 m. */
+export function bundleDecimals(name: string): number {
+  return name === 'gps_lat' || name === 'gps_lon' ? 7 : name === 'curvature' ? 6 : 4;
+}
+
+const roundTo = (decimals: number) => (v: number): number | null => (Number.isFinite(v) ? Number(v.toFixed(decimals)) : null);
 
 export function lapToBundleLap(s: Session, lap: Lap, name: string, color: string): BundleLap {
   const a = lap.startIdx;
@@ -46,7 +51,8 @@ export function lapToBundleLap(s: Session, lap: Lap, name: string, color: string
   const channels: BundleLap['channels'] = [];
   for (const ch of s.channels.values()) {
     if (ch.kind === 'math') continue; // recomputed from the workspace definitions
-    channels.push({ name: ch.name, unit: ch.unit, kind: ch.kind, data: Array.from(ch.data.slice(a, b + 1), num) });
+    if (ch.kind === 'derived') continue; // recomputed from raw on import (gps_speed, long_g, lap_dist, d_*…)
+    channels.push({ name: ch.name, unit: ch.unit, kind: ch.kind, data: Array.from(ch.data.slice(a, b + 1), roundTo(bundleDecimals(ch.name))) });
   }
   return {
     name,
@@ -144,6 +150,8 @@ export function parseBundle(json: string, makeId: () => string = () => `b${Date.
         },
       ],
       meta: bl.meta,
+      // the lap boundaries come from the file: never cleared when the start line moves
+      lapsFromFile: true,
     };
     return { session, name: bl.name, color: bl.color };
   });

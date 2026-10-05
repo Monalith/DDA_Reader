@@ -3,7 +3,7 @@ import { computeDerived } from '../core/derived';
 import { applyProc } from '../core/processing';
 import { evaluate, orderByDependencies, parseExpr, type EvalEnv } from '../core/mathExpr';
 import { detectLaps, withoutDeletedLaps } from '../core/laps';
-import { applyDeltaT, applySectorTimes, applyTotalDist, applyTrackLapDist } from './derivedExtras';
+import { applyDeltaT, applyRefDeltas, applySectorTimes, applyTotalDist, applyTrackLapDist } from './derivedExtras';
 import { defaultSectorGates, projectToTrack } from '../core/track';
 import { bearingDeg } from '../core/geo';
 import {
@@ -63,6 +63,8 @@ export interface LabState {
   markers: DataMarker[];
   /** Marker whose values the Markers panel shows. */
   activeMarkerId: string | null;
+  /** Last sample the user clicked (chart or map); the 📍 Mark button places markers here. */
+  clickPos: CursorPos | null;
 
   addSession(s: Session): void;
   removeSession(id: string): void;
@@ -80,10 +82,14 @@ export interface LabState {
   removeMathChannel(name: string): void;
   /** Set (or clear with null) the formula of one math channel for one lap only. */
   setMathLapExpr(name: string, sessionId: string, lap: number, expr: string | null): void;
-  /** Place a marker at the current cursor sample. Returns the new marker, or null without a cursor. */
-  addMarkerAtCursor(): DataMarker | null;
-  addMarker(sessionId: string, idx: number, patch?: Partial<Pick<DataMarker, 'name' | 'color'>>): DataMarker;
-  updateMarker(id: string, patch: Partial<Pick<DataMarker, 'name' | 'color' | 'idx'>>): void;
+  /**
+   * Place a marker. `prefer: 'click'` (the 📍 button) uses the last clicked sample and falls
+   * back to the hover cursor; `'hover'` (the M key) the other way round. Null when neither exists.
+   */
+  addMarkerAtCursor(prefer?: 'click' | 'hover'): DataMarker | null;
+  addMarker(sessionId: string, idx: number, patch?: Partial<Pick<DataMarker, 'name' | 'color' | 'note'>>): DataMarker;
+  updateMarker(id: string, patch: Partial<Pick<DataMarker, 'name' | 'color' | 'idx' | 'note'>>): void;
+  setClickPos(c: CursorPos | null): void;
   removeMarker(id: string): void;
   clearMarkers(): void;
   setActiveMarker(id: string | null): void;
@@ -188,6 +194,7 @@ export function refreshSession(
   }
   applyTotalDist(session);
   applyDeltaT(session, ref?.session, ref?.lap);
+  applyRefDeltas(session, ref?.session, ref?.lap);
   recomputeMath(session, defs);
   return { ...session, channels: new Map(session.channels) };
 }
@@ -230,6 +237,7 @@ export const useLab = create<LabState>((set, get) => ({
   statusMessage: null,
   markers: [],
   activeMarkerId: null,
+  clickPos: null,
 
   addSession(s) {
     const { workspace, sessions } = get();
@@ -250,6 +258,7 @@ export const useLab = create<LabState>((set, get) => ({
       lapMeta: Object.fromEntries(Object.entries(st.lapMeta).filter(([k]) => !k.startsWith(`${id}:`))),
       refLap: st.refLap?.sessionId === id ? undefined : st.refLap,
       cursor: st.cursor?.sessionId === id ? null : st.cursor,
+      clickPos: st.clickPos?.sessionId === id ? null : st.clickPos,
       markers: st.markers.filter((m) => m.sessionId !== id),
       activeMarkerId: st.markers.some((m) => m.id === st.activeMarkerId && m.sessionId === id) ? null : st.activeMarkerId,
     }));
@@ -345,14 +354,19 @@ export const useLab = create<LabState>((set, get) => ({
       color: patch?.color ?? MARKER_COLORS[(n - 1) % MARKER_COLORS.length],
       sessionId,
       idx,
+      note: patch?.note,
     };
     set({ markers: [...st.markers, m], activeMarkerId: m.id });
     return m;
   },
-  addMarkerAtCursor() {
-    const { cursor, addMarker } = get();
-    if (!cursor) return null;
-    return addMarker(cursor.sessionId, cursor.idx);
+  addMarkerAtCursor(prefer = 'click') {
+    const { cursor, clickPos, addMarker } = get();
+    const at = prefer === 'click' ? (clickPos ?? cursor) : (cursor ?? clickPos);
+    if (!at) return null;
+    return addMarker(at.sessionId, at.idx);
+  },
+  setClickPos(c) {
+    set({ clickPos: c });
   },
   updateMarker(id, patch) {
     set((st) => ({ markers: st.markers.map((m) => (m.id === id ? { ...m, ...patch } : m)) }));

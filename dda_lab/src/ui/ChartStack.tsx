@@ -5,6 +5,7 @@ import type { Workspace } from '../core/types';
 import { activeTrack, useLab } from '../state/store';
 import { allChannelNames, overlaySeries } from '../state/selectors';
 import { visibleCsv } from '../core/exportVisible';
+import { CHART_TEMPLATES, templateById, templatePanels } from '../core/chartTemplates';
 
 function download(name: string, text: string, mime = 'text/csv'): void {
   const a = document.createElement('a');
@@ -50,10 +51,11 @@ export default function ChartStack() {
   };
 
   // ---- markers: button + "M" key place one at the cursor ----------------
-  const placeMarker = () => {
+  const hasClick = useLab((s) => s.clickPos !== null);
+  const placeMarker = (prefer: 'click' | 'hover') => {
     const st = useLab.getState();
-    const m = st.addMarkerAtCursor();
-    st.setStatus(m ? `Marker ${m.name} placed (Markers tab shows its values)` : 'Hover a chart or the map first to place a marker');
+    const m = st.addMarkerAtCursor(prefer);
+    st.setStatus(m ? `Marker ${m.name} placed — drag its flag to move it, double-click it for a note` : 'Click a chart or the map first to place a marker');
   };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -63,7 +65,7 @@ export default function ChartStack() {
       const tag = el?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el?.isContentEditable) return;
       e.preventDefault();
-      placeMarker();
+      placeMarker('hover');
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -139,12 +141,34 @@ export default function ChartStack() {
         <button
           className="btn-mini marker-btn"
           data-testid="add-marker"
-          disabled={!hasCursor}
-          onClick={placeMarker}
-          title={hasCursor ? 'Place a marker at the cursor (key: M)' : 'Hover a chart or the map, then press M or click here'}
+          disabled={!hasCursor && !hasClick}
+          onClick={() => placeMarker('click')}
+          title={hasClick ? 'Place a marker where you last clicked (M key = under the mouse)' : 'Click a chart or the map, then press this (or M under the mouse)'}
         >
           📍 Mark{nMarkers ? ` (${nMarkers})` : ''}
         </button>
+        <select
+          className="template-select"
+          data-testid="chart-template"
+          aria-label="Chart template"
+          value=""
+          title="Replace the panels with a ready-made layout"
+          onChange={(e) => {
+            const t = templateById(e.target.value);
+            if (t) {
+              setWorkspace({ panels: templatePanels(t) });
+              useLab.getState().setStatus(`Template "${t.label}": ${t.doc}`);
+            }
+            e.currentTarget.value = '';
+          }}
+        >
+          <option value="">Templates…</option>
+          {CHART_TEMPLATES.map((t) => (
+            <option key={t.id} value={t.id} title={t.doc}>
+              {t.label}
+            </option>
+          ))}
+        </select>
         {nMarkers > 0 && (
           <button className="btn-mini" onClick={() => useLab.getState().setBottomTab('markers')} title="Open the Markers tab">
             values
@@ -213,6 +237,7 @@ export default function ChartStack() {
         return (
           <div className="chart-panel" key={panel.id}>
             <div className="chart-panel-head">
+              {panel.title && <span className="panel-title">{panel.title}</span>}
               {panel.channels.map((c) => (
                 <button
                   className="chan-pill"

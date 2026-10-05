@@ -522,7 +522,10 @@ export default function MapView() {
       }
       if (gateEdit) return;
       const hit = nearestSample(entries, p);
-      if (hit) setCursor({ sessionId: hit.sessionId, idx: hit.idx });
+      if (hit) {
+        setCursor({ sessionId: hit.sessionId, idx: hit.idx });
+        useLab.getState().setClickPos({ sessionId: hit.sessionId, idx: hit.idx });
+      }
     };
     map.on('click', onClick);
     return () => {

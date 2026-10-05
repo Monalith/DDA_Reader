@@ -108,6 +108,76 @@ export function applyTotalDist(s: Session): void {
   s.channels.set('total_dist', ch);
 }
 
+/** Channels compared against the reference lap as `d_<name>` (value − reference at the same lap distance). */
+export const REF_DELTA_CHANNELS = ['speed', 'gps_speed', 'rpm', 'tps', 'lean', 'long_g', 'lat_g', 'gear'] as const;
+
+/**
+ * d_<channel> channels: how far each lap is from the reference lap at the same lap
+ * distance (positive = more than the reference). NaN without a reference, outside laps
+ * or where either lap lacks the channel. Feeds the "stock chart" templates.
+ */
+export function applyRefDeltas(s: Session, ref: Session | undefined, refLap: Lap | undefined): void {
+  const n = s.t.length;
+  const myDist = s.channels.get('lap_dist')?.data;
+  const refDist = ref?.channels.get('lap_dist')?.data;
+  for (const name of REF_DELTA_CHANNELS) {
+    const out = new Float32Array(n).fill(NaN);
+    const mine = s.channels.get(name);
+    const theirs = ref?.channels.get(name);
+    if (mine && theirs && refLap && myDist && refDist) {
+      // reference lap as a monotonic (dist → value) table
+      const xs: number[] = [];
+      const ys: number[] = [];
+      let last = -Infinity;
+      for (let i = refLap.startIdx; i <= refLap.endIdx && i < refDist.length; i++) {
+        const d = refDist[i];
+        const v = theirs.data[i];
+        if (!Number.isFinite(d) || !Number.isFinite(v) || d <= last) continue;
+        xs.push(d);
+        ys.push(v);
+        last = d;
+      }
+      if (xs.length > 1) {
+        const at = (d: number): number => {
+          if (d < xs[0] || d > xs[xs.length - 1]) return NaN;
+          let lo = 0;
+          let hi = xs.length - 1;
+          while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (xs[mid] < d) lo = mid + 1;
+            else hi = mid;
+          }
+          if (lo === 0) return ys[0];
+          const t = (d - xs[lo - 1]) / (xs[lo] - xs[lo - 1]);
+          return ys[lo - 1] + (ys[lo] - ys[lo - 1]) * t;
+        };
+        for (const lap of s.laps) {
+          const isRef = ref.id === s.id && lap.n === refLap.n;
+          for (let i = lap.startIdx; i <= lap.endIdx && i < n; i++) {
+            const d = myDist[i];
+            const v = mine.data[i];
+            if (!Number.isFinite(d) || !Number.isFinite(v)) continue;
+            if (isRef) {
+              out[i] = 0;
+              continue;
+            }
+            const r = at(d);
+            if (Number.isFinite(r)) out[i] = v - r;
+          }
+        }
+      }
+    }
+    const unit = mine?.unit ?? '';
+    const existing = s.channels.get(`d_${name}`);
+    if (existing) {
+      existing.data = out;
+      existing.unit = unit;
+    } else {
+      s.channels.set(`d_${name}`, { name: `d_${name}`, unit, kind: 'derived', data: out, proc: { ...DEFAULT_PROC } });
+    }
+  }
+}
+
 /** delta_t channel: time variance of every lap against the reference lap (NaN outside laps). */
 export function applyDeltaT(s: Session, ref: Session | undefined, refLap: Lap | undefined): void {
   const data = new Float32Array(s.t.length).fill(NaN);

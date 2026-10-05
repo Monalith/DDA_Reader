@@ -11,6 +11,7 @@ const PanelChannelSchema = z.object({
   name: z.string(),
   axis: z.enum(['L', 'R']).default('L'),
   width: z.number().min(0.25).max(10).optional(),
+  fill: z.literal('zero').optional(),
 });
 
 const AxisRangeSchema = z.object({
@@ -20,6 +21,7 @@ const AxisRangeSchema = z.object({
 
 const PanelSchema = z.object({
   id: z.string(),
+  title: z.string().optional(),
   channels: z.array(PanelChannelSchema).default([]),
   yL: AxisRangeSchema.optional(),
   yR: AxisRangeSchema.optional(),

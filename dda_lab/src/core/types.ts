@@ -137,7 +137,9 @@ export interface AxisRange {
 
 export interface ChartPanelConfig {
   id: string;
-  channels: { name: string; axis: 'L' | 'R'; width?: number }[];
+  channels: { name: string; axis: 'L' | 'R'; width?: number; fill?: 'zero' }[];
+  /** Optional title shown in the panel head (templates use it). */
+  title?: string;
   /** Left / right Y axis ranges (auto when absent). */
   yL?: AxisRange;
   yR?: AxisRange;
@@ -173,6 +175,8 @@ export interface DataMarker {
   color: string;
   sessionId: string;
   idx: number;
+  /** Free-text note the user attached to the marker. */
+  note?: string;
 }
 
 export const DEFAULT_WORKSPACE: Workspace = {

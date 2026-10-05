@@ -98,7 +98,15 @@ export default function MarkersPanel() {
               title="Marker name"
             />
             <span className="bp-label marker-where">{where(m)}</span>
-            <span className="bp-spacer" style={{ flex: 1 }} />
+            <input
+              className="bp-input"
+              value={m.note ?? ''}
+              placeholder="note…"
+              style={{ flex: 1, minWidth: 80 }}
+              data-testid={`marker-note-input-${m.id}`}
+              onChange={(e) => updateMarker(m.id, { note: e.target.value })}
+              title="Note for this marker"
+            />
             <button
               className="bp-btn tiny"
               title="Move the cursor to this marker"

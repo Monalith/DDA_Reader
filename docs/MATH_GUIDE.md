@@ -118,6 +118,19 @@ the **Markers** tab (every channel × every selected lap at that point). In othe
 at the same lap distance / lap time, so you compare laps at exactly one spot. Rename, recolour, jump
 to or delete markers in the Markers tab.
 
+Markers can be **dragged** left/right by their flag on any chart; **double-click** the flag (or ✎)
+to write a **note**, ✕ on the flag or on the value chip removes it. The **📍 Mark** button places the
+marker where you **last clicked** (chart or map); the **M** key places it under the mouse.
+
+## 5c-bis. Δ vs reference channels and chart templates
+
+With a reference lap chosen (◉), every lap gets `d_speed`, `d_gps_speed`, `d_rpm`, `d_tps`,
+`d_lean`, `d_long_g`, `d_lat_g`, `d_gear`: the lap’s value **minus the reference lap at the same
+lap distance** (0 on the reference itself). Together with `delta_t` they drive the **Templates…**
+menu above the charts: *Δ vs reference (stock style)* draws them with a zero line and green/red
+fill (gain/loss; for `delta_t` red = slower), plus *Speed vs reference*, *Braking*, *Cornering*,
+*Engine & traction*, *GPS vs wheel* and *Default*. A template replaces the panels; edit them freely afterwards.
+
 ## 5d. Exports show what you see
 
 Every export follows the workspace: deleted laps are gone for good and only the laps listed in the

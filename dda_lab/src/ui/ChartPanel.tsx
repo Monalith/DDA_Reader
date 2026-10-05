@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import uPlot from 'uplot';
 import { attachXInteractions, attachYInteractions } from './chartInteractions';
 import type { DataMarker, Session, Workspace } from '../core/types';
@@ -54,6 +54,32 @@ function axisRange(r: Panel['yL']): uPlot.Scale['range'] {
 function lineWidthFor(panel: Panel, channel: string): number {
   const ch = panel.channels.find((c) => c.name === channel);
   return ch?.width ?? panel.lineWidth ?? 1.5;
+}
+
+const GAIN = 'rgba(61, 220, 132, 0.35)';
+const LOSS = 'rgba(255, 77, 109, 0.35)';
+
+/**
+ * "Stock chart" fill for a series: green above zero, red below (delta_t is the exception:
+ * below zero means faster, so its colours are swapped). Re-evaluated on every draw.
+ */
+function zeroFill(channel: string): uPlot.Series['fill'] {
+  const invert = channel === 'delta_t';
+  return (u: uPlot, si: number) => {
+    const scale = u.series[si].scale ?? 'L';
+    const { top, height } = u.bbox;
+    if (!height) return 'transparent';
+    const y0 = u.valToPos(0, scale, true);
+    const t = Math.min(1, Math.max(0, (y0 - top) / height));
+    const g = u.ctx.createLinearGradient(0, top, 0, top + height);
+    const above = invert ? LOSS : GAIN;
+    const below = invert ? GAIN : LOSS;
+    g.addColorStop(0, above);
+    g.addColorStop(t, above);
+    g.addColorStop(t, below);
+    g.addColorStop(1, below);
+    return g;
+  };
 }
 
 function isRefLine(line: OverlayLine, ref: LapRef | undefined): boolean {
@@ -131,6 +157,25 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
   markersRef.current = markerCols;
   const activeMarkerRef = useRef(activeMarkerId);
   activeMarkerRef.current = activeMarkerId;
+  /** Pixel x (within the host) of every marker flag, refreshed by the draw hook. */
+  const [flagPx, setFlagPx] = useState<Record<string, number>>({});
+  const [noteFor, setNoteFor] = useState<string | null>(null);
+  const flagRaf = useRef<number | null>(null);
+  const placeFlags = (u: uPlot) => {
+    if (flagRaf.current != null) return;
+    flagRaf.current = requestAnimationFrame(() => {
+      flagRaf.current = null;
+      const out: Record<string, number> = {};
+      const left = u.over.offsetLeft;
+      const w = u.over.clientWidth;
+      for (const mc of markersRef.current) {
+        if (mc.x === null) continue;
+        const px = u.valToPos(mc.x, 'x');
+        if (Number.isFinite(px) && px >= 0 && px <= w) out[mc.m.id] = left + px;
+      }
+      setFlagPx(out);
+    });
+  };
 
   const hostRef = useRef<HTMLDivElement>(null);
   const uRef = useRef<uPlot | null>(null);
@@ -267,6 +312,7 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
           width: lineWidthFor(panel, l.channel) + (isRefLine(l, refLap) ? 1 : 0),
           spanGaps: true,
           points: { show: false },
+          ...(panel.channels.find((c) => c.name === l.channel)?.fill === 'zero' ? { fill: zeroFill(l.channel) } : {}),
         })),
       ],
       hooks: {
@@ -335,9 +381,21 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
                 ctx.fillText(turn.name || `T${turn.n}`, px + 2 * dpr, top + 10 * dpr);
               }
             }
-            // ---- user markers: solid vertical line + flag with the name ----
+            // ---- zero line for "stock" panels ----
+            if (panelRef.current.channels.some((c) => c.fill === 'zero')) {
+              const y0 = u.valToPos(0, 'L', true);
+              if (Number.isFinite(y0) && y0 >= top && y0 <= top + height) {
+                ctx.setLineDash([]);
+                ctx.lineWidth = 1 * dpr;
+                ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+                ctx.beginPath();
+                ctx.moveTo(left, y0);
+                ctx.lineTo(left + width, y0);
+                ctx.stroke();
+              }
+            }
+            // ---- user markers: solid vertical line + value dots (the flag is a DOM element) ----
             ctx.setLineDash([]);
-            ctx.font = `bold ${10 * dpr}px Inter, system-ui, sans-serif`;
             for (const mc of markersRef.current) {
               if (mc.x === null) continue;
               const px = u.valToPos(mc.x, 'x', true);
@@ -349,13 +407,6 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
               ctx.moveTo(px, top);
               ctx.lineTo(px, top + height);
               ctx.stroke();
-              const label = mc.m.name;
-              const tw = ctx.measureText(label).width;
-              const bh = 13 * dpr;
-              ctx.fillStyle = mc.m.color;
-              ctx.fillRect(px, top + height - bh, tw + 8 * dpr, bh);
-              ctx.fillStyle = '#10141a';
-              ctx.fillText(label, px + 4 * dpr, top + height - 3 * dpr);
               // value dots on every line at the marker
               for (let i = 0; i < mc.values.length; i++) {
                 const v = mc.values[i];
@@ -373,6 +424,7 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
               }
             }
             ctx.restore();
+            placeFlags(u);
           },
         ],
       },
@@ -406,6 +458,24 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
     };
     const onDblClick = () => setRange(null);
     u.over.addEventListener('dblclick', onDblClick);
+    // A plain left click pins the "last clicked" sample (📍 Mark places markers there).
+    let downAt: [number, number] | null = null;
+    const onDownPin = (e: MouseEvent) => {
+      downAt = e.button === 0 ? [e.clientX, e.clientY] : null;
+    };
+    const onClickPin = (e: MouseEvent) => {
+      if (!downAt || Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 3) return;
+      const r = u.over.getBoundingClientRect();
+      const xv = u.posToVal(e.clientX - r.left, 'x');
+      const line = linesRef.current[0];
+      const s = line && sessionsRef.current.find((x) => x.id === line.sessionId);
+      const lap = s && findLap(s, line.lap);
+      if (!s || !lap || !Number.isFinite(xv)) return;
+      const idx = cursorIdxFromX(s, lap, xv, xAxisRef.current);
+      useLab.getState().setClickPos({ sessionId: s.id, idx });
+    };
+    u.over.addEventListener('mousedown', onDownPin);
+    u.over.addEventListener('click', onClickPin);
     const detachX = attachXInteractions(u, {
       get: () => {
         const sc = u.scales.x;
@@ -469,6 +539,8 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
       detachX();
       for (const d of detachYs) d();
       u.over.removeEventListener('dblclick', onDblClick);
+      u.over.removeEventListener('mousedown', onDownPin);
+      u.over.removeEventListener('click', onClickPin);
       u.destroy();
       if (uRef.current === u) uRef.current = null;
     };
@@ -554,12 +626,126 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
     st.setCursor({ sessionId: m.sessionId, idx: m.idx });
   };
 
+  /** Drag a marker flag left/right: the marker follows the sample under the mouse. */
+  const startFlagDrag = (e: React.MouseEvent, m: DataMarker) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const u = uRef.current;
+    if (!u) return;
+    const s = sessions.find((x) => x.id === m.sessionId);
+    const hit = s && xFromIdx(s, m.idx, xAxis);
+    if (!s || !hit) return;
+    const lap = hit.lap;
+    const x0 = e.clientX;
+    let moved = false;
+    const onMove = (ev: MouseEvent) => {
+      if (Math.abs(ev.clientX - x0) > 2) moved = true;
+      if (!moved) return;
+      const r = u.over.getBoundingClientRect();
+      const xv = u.posToVal(ev.clientX - r.left, 'x');
+      if (!Number.isFinite(xv)) return;
+      const idx = Math.min(lap.endIdx, Math.max(lap.startIdx, cursorIdxFromX(s, lap, xv, xAxis)));
+      useLab.getState().updateMarker(m.id, { idx });
+    };
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      if (!moved) jumpTo(m);
+      else useLab.getState().setActiveMarker(m.id);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+
+  const noteMarker = markers.find((m) => m.id === noteFor) ?? null;
+
   return (
     <>
       {lines.length === 0 ? (
         <div className="chart-plot-empty">Select laps in the lap table to plot {panel.channels.map((c) => c.name).join(', ') || 'channels'}.</div>
       ) : (
-        <div className="chart-plot" ref={hostRef} />
+        <div className="chart-plot" ref={hostRef}>
+          {markerCols.map((mc) =>
+            flagPx[mc.m.id] == null ? null : (
+              <div
+                key={mc.m.id}
+                className={`marker-flag${mc.m.id === activeMarkerId ? ' on' : ''}`}
+                data-testid={`marker-flag-${mc.m.id}`}
+                style={{ left: flagPx[mc.m.id], background: mc.m.color }}
+                title={`${mc.m.name}${mc.m.note ? ` — ${mc.m.note}` : ''}\nDrag to move · double-click for a note · ✕ removes`}
+                onMouseDown={(e) => startFlagDrag(e, mc.m)}
+                onDoubleClick={(e) => {
+                  e.stopPropagation();
+                  setNoteFor(mc.m.id);
+                }}
+              >
+                {mc.m.name}
+                {mc.m.note && <span className="mf-note">· {mc.m.note}</span>}
+                <span
+                  className="mf-edit"
+                  title="Note"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setNoteFor(mc.m.id);
+                  }}
+                >
+                  ✎
+                </span>
+                <span
+                  className="mf-x"
+                  data-testid={`marker-flag-del-${mc.m.id}`}
+                  title="Remove marker"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    useLab.getState().removeMarker(mc.m.id);
+                  }}
+                >
+                  ✕
+                </span>
+              </div>
+            ),
+          )}
+          {noteMarker && flagPx[noteMarker.id] != null && (
+            <div
+              className="marker-note-pop"
+              data-testid={`marker-note-${noteMarker.id}`}
+              style={{ left: Math.min(flagPx[noteMarker.id], (hostRef.current?.clientWidth ?? 600) - 250) }}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <div className="row">
+                <input
+                  value={noteMarker.name}
+                  aria-label="Marker name"
+                  onChange={(e) => useLab.getState().updateMarker(noteMarker.id, { name: e.target.value })}
+                />
+                <input
+                  type="color"
+                  value={/^#[0-9a-f]{6}$/i.test(noteMarker.color) ? noteMarker.color : '#ffd166'}
+                  style={{ width: 28, padding: 0 }}
+                  onChange={(e) => useLab.getState().updateMarker(noteMarker.id, { color: e.target.value })}
+                />
+              </div>
+              <textarea
+                autoFocus
+                placeholder="Note for this point… (e.g. late brake, gear 2 too early)"
+                value={noteMarker.note ?? ''}
+                data-testid={`marker-note-text-${noteMarker.id}`}
+                onChange={(e) => useLab.getState().updateMarker(noteMarker.id, { note: e.target.value })}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape' || (e.key === 'Enter' && (e.metaKey || e.ctrlKey))) setNoteFor(null);
+                }}
+              />
+              <div className="row" style={{ justifyContent: 'flex-end' }}>
+                <button className="btn-mini" onClick={() => setNoteFor(null)}>
+                  Done
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       )}
       <div className="chart-legend" data-testid={`chart-legend-${panel.id}`}>
         {lines.map((l, i) => (
@@ -596,6 +782,11 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
               <span className="mk-name" style={{ background: mc.m.color }}>
                 {mc.m.name}
               </span>
+              {mc.m.note && (
+                <span className="mk-note" title={mc.m.note}>
+                  {mc.m.note}
+                </span>
+              )}
               {lines.map((l, i) => (
                 <span className="mk-val" key={l.key} title={l.label} style={{ color: l.color }}>
                   {fmtVal(l, mc.values[i], unitMph)}

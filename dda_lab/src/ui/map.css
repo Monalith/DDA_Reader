@@ -326,3 +326,4 @@
   transform-origin: bottom left;
 }
 .data-marker.on { outline: 2px solid #ffffff; }
+.examples-select { color: var(--accent, #ff6a00); font-weight: 600; }

@@ -134,6 +134,8 @@ export interface Session {
   sfHint?: LngLat;
   /** Laps came from the file itself (not from gates/beacon): keep them when the start line moves. */
   lapsFromFile?: boolean;
+  /** Bundled example (Examples menu on the map); closed when real data is opened. */
+  isExample?: boolean;
   /** Sample-index ranges of laps the user deleted; re-detected laps centred in one stay dropped. */
   deletedRanges?: Array<[number, number]>;
 }

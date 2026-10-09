@@ -31,6 +31,8 @@ import {
 } from './MapLayers';
 import { mapBus } from './mapBus';
 import SchemaImport from './SchemaImport';
+import { EXAMPLES, fetchExampleFile } from '../core/examples';
+import { openFiles } from './openFiles';
 
 maplibregl.setWorkerUrl(maplibreWorkerUrl);
 
@@ -736,6 +738,33 @@ export default function MapView() {
       <div className="map-canvas" ref={containerRef} data-testid="map-canvas" />
 
       <div className="map-toolbar">
+        <select
+          className="map-select examples-select"
+          data-testid="map-examples"
+          aria-label="Examples"
+          value=""
+          title="Open a bundled example lap (closes when you open your own data)"
+          onChange={(e) => {
+            const ex = EXAMPLES.find((x) => x.id === e.target.value);
+            e.currentTarget.value = '';
+            if (!ex) return;
+            const st = useLab.getState();
+            if (st.sessions.some((s) => s.isExample && s.name === ex.file.replace(/\.[^.]+$/, ''))) {
+              st.setStatus(`${ex.label} is already open`);
+              return;
+            }
+            fetchExampleFile(ex)
+              .then((f) => openFiles([f], { example: true }))
+              .catch((err) => useLab.getState().setStatus(`Example error: ${(err as Error).message}`));
+          }}
+        >
+          <option value="">Examples…</option>
+          {EXAMPLES.map((x) => (
+            <option key={x.id} value={x.id}>
+              {x.label}
+            </option>
+          ))}
+        </select>
         <select
           className="map-select"
           data-testid="map-basemap"

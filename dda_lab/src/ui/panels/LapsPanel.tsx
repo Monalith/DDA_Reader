@@ -6,6 +6,7 @@ import { isBundle, loadBundleFromFile, loadSessionFromFile } from '../../core/se
 import type { Lap, Session } from '../../core/types';
 import { activeTrack, lapMetaOf, SESSION_COLORS, useLab, type LapRef } from '../../state/store';
 import { ensureTrackForSession } from '../../state/trackActions';
+import { closeExamples } from '../openFiles';
 import { fmtLapTime, selectedLapEntries } from '../../state/selectors';
 import './laps.css';
 
@@ -77,6 +78,7 @@ export default function LapsPanel() {
     setBusy(true);
     const queued: Picker[] = [];
     try {
+      closeExamples();
       for (const f of Array.from(files)) {
         const st = useLab.getState();
         const color = SESSION_COLORS[st.sessions.length % SESSION_COLORS.length];

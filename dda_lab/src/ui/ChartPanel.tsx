@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import uPlot from 'uplot';
 import { attachXInteractions, attachYInteractions } from './chartInteractions';
-import type { DataMarker, Session, Workspace } from '../core/types';
+import { DEFAULT_TURN_LABELS, type DataMarker, type Session, type Workspace } from '../core/types';
 import { activeTrack, useLab, type CursorPos, type LapRef } from '../state/store';
 import { cursorIdxFromX, findLap, markerIdxInLap, markerX, overlaySeries, xFromIdx, type OverlayLine } from '../state/selectors';
 import { bestTurnTimes, fmtTurnDelta, turnDeltas } from '../core/turnTimes';
@@ -181,6 +181,9 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
   const turnRows = useMemo(() => resolveTurnDeltas(lines, sessions, track), [lines, sessions, track]);
   const turnRowsRef = useRef<TurnDeltaRow[]>(turnRows);
   turnRowsRef.current = turnRows;
+  const turnLabels = workspace.turnLabels ?? DEFAULT_TURN_LABELS;
+  const turnLabelsRef = useRef(turnLabels);
+  turnLabelsRef.current = turnLabels;
   const markersRef = useRef<MarkerCol[]>(markerCols);
   markersRef.current = markerCols;
   const activeMarkerRef = useRef(activeMarkerId);
@@ -410,26 +413,35 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
                 // gain (−, green) / loss (+, red) of every plotted lap in this turn vs the best loaded lap
                 const rows = turnRowsRef.current;
                 const k = t.turns.indexOf(turn);
-                // bigger, bolder labels: 14 px, dark pill, lap-colour bar on the left
-                const FS = 12;
-                const LH = 15;
-                ctx.font = `800 ${FS * dpr}px Inter, system-ui, sans-serif`;
-                rows.forEach((row, r) => {
+                // per-turn gain/loss labels: crisp monospace digits on a dark pill, colours from the workspace
+                const style = turnLabelsRef.current;
+                const FS = style.size;
+                const LH = Math.round(FS * 1.3);
+                ctx.font = `700 ${FS * dpr}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
+                ctx.textBaseline = 'middle';
+                if (style.show) rows.forEach((row, r) => {
                   const d = row.deltas[k];
                   if (!Number.isFinite(d)) return;
                   const txt = fmtTurnDelta(d);
-                  const y = top + (24 + r * LH) * dpr;
-                  if (y > top + height - 16 * dpr) return;
+                  const yc = top + (16 + LH / 2 + r * (LH + 2)) * dpr;
+                  if (yc + LH * dpr / 2 > top + height - 4 * dpr) return;
                   const w = ctx.measureText(txt).width;
-                  ctx.fillStyle = 'rgba(16,20,26,0.82)';
-                  ctx.fillRect(px + 1 * dpr, y - 13 * dpr, w + 9 * dpr, LH * dpr);
-                  if (rows.length > 1) {
-                    ctx.fillStyle = row.color;
-                    ctx.fillRect(px + 1 * dpr, y - 13 * dpr, 3 * dpr, LH * dpr);
-                  }
-                  ctx.fillStyle = txt === 'best' ? '#3ddc84' : d > 0 ? '#ff4d6d' : '#3ddc84';
-                  ctx.fillText(txt, px + 6 * dpr, y);
+                  const x0 = px + 3 * dpr;
+                  const padX = 5 * dpr;
+                  const color = txt === 'best' ? style.best : d > 0 ? style.loss : style.gain;
+                  ctx.fillStyle = 'rgba(12,15,20,0.9)';
+                  ctx.beginPath();
+                  ctx.roundRect(x0, yc - (LH * dpr) / 2, w + padX * 2, LH * dpr, 3 * dpr);
+                  ctx.fill();
+                  ctx.strokeStyle = color;
+                  ctx.globalAlpha = 0.45;
+                  ctx.lineWidth = 1 * dpr;
+                  ctx.stroke();
+                  ctx.globalAlpha = 1;
+                  ctx.fillStyle = color;
+                  ctx.fillText(txt, x0 + padX, yc + 0.5 * dpr);
                 });
+                ctx.textBaseline = 'alphabetic';
                 ctx.font = `${10 * dpr}px Inter, system-ui, sans-serif`;
                 ctx.fillStyle = 'rgba(139,149,165,0.9)';
               }
@@ -669,7 +681,7 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
   // ---- markers changed: repaint the overlay ----------------------------
   useEffect(() => {
     uRef.current?.redraw(false, true);
-  }, [markerCols, activeMarkerId, turnRows]);
+  }, [markerCols, activeMarkerId, turnRows, turnLabels]);
 
   legendRefs.current.length = lines.length;
 

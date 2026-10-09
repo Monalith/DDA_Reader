@@ -3,7 +3,7 @@
 // workspace.json files keep loading.
 
 import { z } from 'zod';
-import { DEFAULT_WORKSPACE, type Workspace } from './types';
+import { DEFAULT_TURN_LABELS, DEFAULT_WORKSPACE, type Workspace } from './types';
 
 const clone = <T>(v: T): T => structuredClone(v);
 
@@ -46,6 +46,15 @@ const WorkspaceObject = z.object({
   panels: z.array(PanelSchema).default(clone(DEFAULT_WORKSPACE.panels)),
   mathChannels: z.array(MathChannelSchema).default(clone(DEFAULT_WORKSPACE.mathChannels)),
   mapLayers: z.record(z.string(), z.boolean()).default(clone(DEFAULT_WORKSPACE.mapLayers)),
+  turnLabels: z
+    .object({
+      show: z.boolean().default(DEFAULT_TURN_LABELS.show),
+      size: z.number().min(8).max(24).default(DEFAULT_TURN_LABELS.size),
+      gain: z.string().default(DEFAULT_TURN_LABELS.gain),
+      loss: z.string().default(DEFAULT_TURN_LABELS.loss),
+      best: z.string().default(DEFAULT_TURN_LABELS.best),
+    })
+    .default(clone(DEFAULT_TURN_LABELS)),
 });
 
 export const WorkspaceSchema = WorkspaceObject as unknown as z.ZodType<Workspace>;

@@ -7,6 +7,18 @@ import { applyDeltaT, applyRefDeltas, applySectorTimes, applyTotalDist, applyTra
 import { defaultSectorGates, projectToTrack } from '../core/track';
 import { bearingDeg } from '../core/geo';
 import { loadSavedMarkers, markersToRestore, persistMarkers } from '../core/markerStore';
+import { parseWorkspace, serializeWorkspace } from '../core/workspace';
+
+/** Workspace (panels, math, label colours…) is remembered in this browser between visits. */
+export const WORKSPACE_KEY = 'dda-lab-workspace';
+function loadWorkspaceLocal(): Workspace {
+  try {
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(WORKSPACE_KEY) : null;
+    return raw ? parseWorkspace(raw) : DEFAULT_WORKSPACE;
+  } catch {
+    return DEFAULT_WORKSPACE;
+  }
+}
 import {
   DEFAULT_PROC,
   DEFAULT_WORKSPACE,
@@ -234,7 +246,7 @@ export const useLab = create<LabState>((set, get) => ({
   refLap: undefined,
   cursor: null,
   xRange: null,
-  workspace: DEFAULT_WORKSPACE,
+  workspace: loadWorkspaceLocal(),
   mapColorBy: 'speed',
   mapMaximized: false,
   bottomTab: 'laps',
@@ -604,3 +616,17 @@ export const useLab = create<LabState>((set, get) => ({
     set({ statusMessage: msg });
   },
 }));
+
+// autosave the workspace (debounced) so panel layouts, math channels and label styles survive a reload
+let wsTimer: ReturnType<typeof setTimeout> | null = null;
+useLab.subscribe((st, prev) => {
+  if (st.workspace === prev.workspace) return;
+  if (wsTimer) clearTimeout(wsTimer);
+  wsTimer = setTimeout(() => {
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem(WORKSPACE_KEY, serializeWorkspace(st.workspace));
+    } catch {
+      /* storage unavailable */
+    }
+  }, 300);
+});

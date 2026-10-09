@@ -161,7 +161,19 @@ export interface Workspace {
   panels: ChartPanelConfig[];
   mathChannels: MathChannelDef[];
   mapLayers: Record<string, boolean>;
+  /** Look of the per-turn gain/loss labels on the charts. */
+  turnLabels?: TurnLabelStyle;
 }
+
+export interface TurnLabelStyle {
+  show: boolean;
+  size: number; // px
+  gain: string; // faster than the best (−)
+  loss: string; // slower (+)
+  best: string;
+}
+
+export const DEFAULT_TURN_LABELS: TurnLabelStyle = { show: true, size: 12, gain: '#4ade80', loss: '#fb7185', best: '#facc15' };
 
 /** A math channel: one formula for every lap, optionally overridden per lap (key = `${sessionId}:${lapN}`). */
 export interface MathChannelDef {
@@ -199,6 +211,7 @@ export const DEFAULT_WORKSPACE: Workspace = {
     { id: 'p6', channels: [{ name: 'gear', axis: 'L' }] },
   ],
   mathChannels: [],
+  turnLabels: { ...DEFAULT_TURN_LABELS },
   mapLayers: {
     satellite: true, centerline: true, turns: true, apex: true, brake: true,
     throttle: true, gates: true, trace: true, schema: true,

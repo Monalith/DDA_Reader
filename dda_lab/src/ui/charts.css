@@ -372,3 +372,9 @@ table.lap-table tbody tr.out td, table.lap-table tbody tr.in td { color: var(--f
 .marker-note-pop .row { display: flex; gap: 4px; align-items: center; }
 .marker-note-pop input { flex: 1; font: inherit; font-size: 12px; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: 2px 4px; }
 .chart-markers .mk-note { font-weight: 500; color: var(--fg-dim); font-size: 11px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---- turn label style popover ---- */
+.labels-wrap { position: relative; }
+.labels-pop { left: 0; right: auto; top: 24px; width: 300px; }
+.label-preview { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 700; background: rgba(12,15,20,0.9); padding: 1px 6px; border-radius: 3px; }
+.labels-pop input[type='color'] { width: 34px; height: 22px; padding: 0; border: 1px solid var(--border); background: transparent; }

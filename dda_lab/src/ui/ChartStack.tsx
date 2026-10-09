@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import 'uplot/dist/uPlot.min.css';
 import './charts.css';
-import type { Workspace } from '../core/types';
+import { DEFAULT_TURN_LABELS, type Workspace } from '../core/types';
 import { activeTrack, useLab } from '../state/store';
 import { allChannelNames, overlaySeries } from '../state/selectors';
 import { visibleCsv } from '../core/exportVisible';
@@ -105,6 +105,9 @@ export default function ChartStack() {
 
   const removePanel = (id: string) => update(panels.filter((p) => p.id !== id));
   const [settingsFor, setSettingsFor] = useState<string | null>(null);
+  const [labelsOpen, setLabelsOpen] = useState(false);
+  const turnLabels = useLab((s) => s.workspace.turnLabels ?? DEFAULT_TURN_LABELS);
+  const setTurnLabels = (patch: Partial<typeof turnLabels>) => setWorkspace({ turnLabels: { ...turnLabels, ...patch } });
   const updatePanel = (next: Panel) => update(panels.map((p) => (p.id === next.id ? next : p)));
 
   const removeChannel = (id: string, name: string) =>
@@ -183,6 +186,70 @@ export default function ChartStack() {
         >
           ⤓ Export visible
         </button>
+        <span className="labels-wrap">
+          <button
+            className={`btn-mini ${labelsOpen ? 'on' : ''}`}
+            data-testid="turn-labels-btn"
+            onClick={() => setLabelsOpen((v) => !v)}
+            title="Per-turn gain/loss labels: size and colours"
+          >
+            <span style={{ color: turnLabels.gain }}>−</span>
+            <span style={{ color: turnLabels.loss }}>+</span> labels
+          </button>
+          {labelsOpen && (
+            <div className="panel-settings labels-pop" data-testid="turn-labels-pop" role="dialog" aria-label="Turn label style">
+              <div className="ps-title">
+                Turn labels
+                <button className="btn-mini" onClick={() => setLabelsOpen(false)} title="Close">
+                  ✕
+                </button>
+              </div>
+              <label className="ps-row ps-check">
+                <input type="checkbox" checked={turnLabels.show} onChange={(e) => setTurnLabels({ show: e.target.checked })} /> Show gain/loss per turn
+              </label>
+              <div className="ps-row">
+                <span className="ps-label">Size</span>
+                <input type="range" min={9} max={20} step={1} value={turnLabels.size} data-testid="turn-labels-size" onChange={(e) => setTurnLabels({ size: Number(e.target.value) })} />
+                <span className="num ps-val">{turnLabels.size}px</span>
+              </div>
+              {(
+                [
+                  ['gain', 'Gained (−)'],
+                  ['loss', 'Lost (+)'],
+                  ['best', 'best'],
+                ] as const
+              ).map(([key, label]) => (
+                <div className="ps-row" key={key}>
+                  <span className="ps-label" style={{ width: 80 }}>{label}</span>
+                  <input type="color" value={turnLabels[key]} data-testid={`turn-labels-${key}`} onChange={(e) => setTurnLabels({ [key]: e.target.value })} />
+                  <span className="label-preview" style={{ color: turnLabels[key], fontSize: turnLabels.size }}>
+                    {key === 'gain' ? '−0.12' : key === 'loss' ? '+0.26' : 'best'}
+                  </span>
+                </div>
+              ))}
+              <div className="ps-row" style={{ gap: 4, flexWrap: 'wrap' }}>
+                <span className="ps-label">Themes</span>
+                {(
+                  [
+                    ['Fresh', { gain: '#4ade80', loss: '#fb7185', best: '#facc15' }],
+                    ['Classic', { gain: '#3ddc84', loss: '#ff4d6d', best: '#ffd166' }],
+                    ['Cool', { gain: '#22d3ee', loss: '#f472b6', best: '#a3e635' }],
+                    ['Mono', { gain: '#e5e7eb', loss: '#9ca3af', best: '#ffffff' }],
+                  ] as const
+                ).map(([name, th]) => (
+                  <button key={name} className="btn-mini" onClick={() => setTurnLabels(th)} title={`${th.gain} / ${th.loss} / ${th.best}`}>
+                    {name}
+                  </button>
+                ))}
+              </div>
+              <div className="ps-foot">
+                <button className="btn-mini" onClick={() => setTurnLabels({ ...DEFAULT_TURN_LABELS })}>
+                  Reset
+                </button>
+              </div>
+            </div>
+          )}
+        </span>
         <span className="spacer" style={{ flex: '1 1 auto' }} />
 
         <span className="focus-group" data-testid="focus-group">

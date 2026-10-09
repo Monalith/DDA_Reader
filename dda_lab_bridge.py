@@ -23,10 +23,10 @@ import tempfile
 from pathlib import Path
 from typing import Literal, Optional
 
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, Header, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 import os
 import sys
@@ -38,6 +38,19 @@ BASE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 DATA_DIR = Path(os.environ.get("DDA_LAB_HOME", Path.home() / "DDA_Lab")) if FROZEN else BASE_DIR
 SCHEMA_DIR = DATA_DIR / "tracks" / "schemas"
 PROMPT_PATH = BASE_DIR / "dda_lab_bridge_prompt.txt"
+
+# Corridors are extracted once and then live here, so every visitor gets the
+# same one instead of each browser re-downloading ~54 satellite tiles. On the
+# deployed droplet this is /opt/dda-lab/corridors (DATA_DIR = BASE_DIR when the
+# service is not a frozen bundle); deploy_lab.sh does not touch it.
+CORRIDOR_DIR = DATA_DIR / "corridors"
+# Reads are public; writes need this. Unset means the store is read-only, which
+# is the right default for a host that should only ever serve what it has.
+CORRIDOR_TOKEN = os.environ.get("DDA_CORRIDOR_TOKEN", "")
+# The key is a caller-supplied path component on a public endpoint: allowlist it.
+CORRIDOR_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+# A 7 km circuit at 2 m spacing is ~3500 points; this is a generous ceiling.
+CORRIDOR_MAX_POINTS = 20000
 
 CLAUDE_TIMEOUT_S = 180
 ALLOWED_IMAGE_EXT = {".png", ".jpg", ".jpeg"}
@@ -101,6 +114,32 @@ class SchemaResult(BaseModel):
     @classmethod
     def _clamp_polyline(cls, pts):
         return [(_clamp01(x), _clamp01(y)) for x, y in pts]
+
+
+class CorridorPayload(BaseModel):
+    version: int = Field(1, ge=1, le=1)
+    trackId: str = Field(..., max_length=128)
+    nPoints: int = Field(..., ge=2, le=CORRIDOR_MAX_POINTS)
+    lengthM: float = Field(..., gt=0, le=100_000)
+    firstPoint: tuple[float, float]
+    stepM: float = Field(..., gt=0, le=1000)
+    leftM: list[float]
+    rightM: list[float]
+    known: list[bool]
+
+    @field_validator("leftM", "rightM", "known")
+    @classmethod
+    def _not_too_long(cls, v):
+        if len(v) > CORRIDOR_MAX_POINTS:
+            raise ValueError(f"at most {CORRIDOR_MAX_POINTS} points")
+        return v
+
+    @model_validator(mode="after")
+    def _lengths_agree(self):
+        n = self.nPoints
+        if not (len(self.leftM) == len(self.rightM) == len(self.known) == n):
+            raise ValueError("leftM, rightM and known must all have nPoints entries")
+        return self
 
 
 # --------------------------------------------------------------------------- #
@@ -279,6 +318,47 @@ async def analyze_schema(file: UploadFile = File(...)):
         status_code=422,
         content={"error": "invalid_model_output", "detail": last_error},
     )
+
+
+def _corridor_path(key: str) -> Optional[Path]:
+    """Resolved path for `key`, or None when the key is not in the allowlist."""
+    if not CORRIDOR_KEY_RE.match(key):
+        return None
+    path = (CORRIDOR_DIR / f"{key}.json").resolve()
+    # belt and braces: the allowlist already forbids separators and dots
+    if path.parent != CORRIDOR_DIR.resolve():
+        return None
+    return path
+
+
+@app.get("/corridors/{key}")
+def get_corridor(key: str):
+    path = _corridor_path(key)
+    if path is None:
+        return JSONResponse(status_code=400, content={"error": "bad_key"})
+    if not path.exists():
+        return JSONResponse(status_code=404, content={"error": "not_found"})
+    return JSONResponse(content=json.loads(path.read_text(encoding="utf-8")))
+
+
+@app.put("/corridors/{key}")
+def put_corridor(key: str, payload: CorridorPayload, x_corridor_token: str = Header("")):
+    if not CORRIDOR_TOKEN:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "read_only", "detail": "DDA_CORRIDOR_TOKEN is not set on this host"},
+        )
+    if x_corridor_token != CORRIDOR_TOKEN:
+        return JSONResponse(status_code=401, content={"error": "unauthorized"})
+    path = _corridor_path(key)
+    if path is None:
+        return JSONResponse(status_code=400, content={"error": "bad_key"})
+    CORRIDOR_DIR.mkdir(parents=True, exist_ok=True)
+    # write to a sibling then rename, so a reader never sees a half-written file
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(payload.model_dump_json(), encoding="utf-8")
+    tmp.replace(path)
+    return {"ok": True, "key": key, "nPoints": payload.nPoints}
 
 
 # Serve the built DDA Lab web app (ES modules need http://, not file://).

@@ -228,3 +228,104 @@ def test_prompt_file_exists_and_mentions_json_keys():
     for key in ("track_outline", "racing_line", "apexes", "markers",
                 "start_finish", "turn_labels"):
         assert key in text
+
+
+# --------------------------------------------------------------------------- #
+# Corridor store                                                              #
+# --------------------------------------------------------------------------- #
+
+VALID_CORRIDOR = {
+    "version": 1,
+    "trackId": "runtime-1",
+    "nPoints": 3,
+    "lengthM": 1200.0,
+    "firstPoint": [23.518, 41.073],
+    "stepM": 2.0,
+    "leftM": [5.0, 5.5, 6.0],
+    "rightM": [5.0, 4.5, 4.0],
+    "known": [True, True, False],
+}
+
+
+@pytest.fixture()
+def corridor_client(tmp_path, monkeypatch):
+    monkeypatch.setattr(dda_lab_bridge, "CORRIDOR_DIR", tmp_path / "corridors")
+    monkeypatch.setattr(dda_lab_bridge, "CORRIDOR_TOKEN", "s3cret")
+    return TestClient(dda_lab_bridge.app)
+
+
+def test_corridor_round_trip(corridor_client):
+    r = corridor_client.put(
+        "/corridors/serres-23518-41073",
+        json=VALID_CORRIDOR,
+        headers={"X-Corridor-Token": "s3cret"},
+    )
+    assert r.status_code == 200, r.text
+    got = corridor_client.get("/corridors/serres-23518-41073")
+    assert got.status_code == 200
+    assert got.json()["leftM"] == [5.0, 5.5, 6.0]
+
+
+def test_corridor_missing_is_404(corridor_client):
+    assert corridor_client.get("/corridors/nothing-here").status_code == 404
+
+
+def test_corridor_write_needs_the_token(corridor_client):
+    r = corridor_client.put("/corridors/serres-23518-41073", json=VALID_CORRIDOR)
+    assert r.status_code == 401
+    assert corridor_client.get("/corridors/serres-23518-41073").status_code == 404
+
+
+def test_corridor_write_refused_when_no_token_is_configured(tmp_path, monkeypatch):
+    monkeypatch.setattr(dda_lab_bridge, "CORRIDOR_DIR", tmp_path / "corridors")
+    monkeypatch.setattr(dda_lab_bridge, "CORRIDOR_TOKEN", "")
+    client = TestClient(dda_lab_bridge.app)
+    r = client.put(
+        "/corridors/serres-23518-41073",
+        json=VALID_CORRIDOR,
+        headers={"X-Corridor-Token": ""},
+    )
+    assert r.status_code == 503
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["../etc-passwd", "a/b", "..", "-leading-dash", "UPPER", "x" * 65, "", "a b"],
+)
+def test_corridor_rejects_keys_outside_the_allowlist(corridor_client, key):
+    r = corridor_client.put(
+        f"/corridors/{key}", json=VALID_CORRIDOR, headers={"X-Corridor-Token": "s3cret"}
+    )
+    assert r.status_code in (400, 404, 405), f"{key!r} was not rejected"
+
+
+def test_corridor_path_traversal_writes_nothing_outside_the_directory(corridor_client, tmp_path):
+    corridor_client.put(
+        "/corridors/..%2F..%2Fescaped",
+        json=VALID_CORRIDOR,
+        headers={"X-Corridor-Token": "s3cret"},
+    )
+    assert not (tmp_path / "escaped.json").exists()
+    assert not (tmp_path.parent / "escaped.json").exists()
+
+
+def test_corridor_rejects_mismatched_array_lengths(corridor_client):
+    bad = {**VALID_CORRIDOR, "rightM": [1.0]}
+    r = corridor_client.put(
+        "/corridors/serres-23518-41073", json=bad, headers={"X-Corridor-Token": "s3cret"}
+    )
+    assert r.status_code == 422
+
+
+def test_corridor_rejects_an_oversized_body(corridor_client):
+    huge = {
+        **VALID_CORRIDOR,
+        "nPoints": 200_001,
+        "leftM": [1.0] * 200_001,
+        "rightM": [1.0] * 200_001,
+        "known": [True] * 200_001,
+    }
+    r = corridor_client.put(
+        "/corridors/serres-23518-41073", json=huge, headers={"X-Corridor-Token": "s3cret"}
+    )
+    assert r.status_code == 422

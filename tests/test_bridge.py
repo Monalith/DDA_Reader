@@ -235,15 +235,12 @@ def test_prompt_file_exists_and_mentions_json_keys():
 # --------------------------------------------------------------------------- #
 
 VALID_CORRIDOR = {
-    "version": 1,
-    "trackId": "runtime-1",
-    "nPoints": 3,
-    "lengthM": 1200.0,
-    "firstPoint": [23.518, 41.073],
-    "stepM": 2.0,
-    "leftM": [5.0, 5.5, 6.0],
-    "rightM": [5.0, 4.5, 4.0],
-    "known": [True, True, False],
+    "version": 2,
+    "key": "serres-23518-41073",
+    "center": [23.518, 41.073],
+    "lengthM": 3186.0,
+    "leftEdge": [[23.518 + i * 1e-5, 41.073] for i in range(10)],
+    "rightEdge": [[23.518 + i * 1e-5, 41.0729] for i in range(10)],
 }
 
 
@@ -263,7 +260,7 @@ def test_corridor_round_trip(corridor_client):
     assert r.status_code == 200, r.text
     got = corridor_client.get("/corridors/serres-23518-41073")
     assert got.status_code == 200
-    assert got.json()["leftM"] == [5.0, 5.5, 6.0]
+    assert got.json()["leftEdge"] == VALID_CORRIDOR["leftEdge"]
 
 
 def test_corridor_missing_is_404(corridor_client):
@@ -310,7 +307,7 @@ def test_corridor_path_traversal_writes_nothing_outside_the_directory(corridor_c
 
 
 def test_corridor_rejects_mismatched_array_lengths(corridor_client):
-    bad = {**VALID_CORRIDOR, "rightM": [1.0]}
+    bad = {**VALID_CORRIDOR, "rightEdge": [[1.0, 1.0]]}
     r = corridor_client.put(
         "/corridors/serres-23518-41073", json=bad, headers={"X-Corridor-Token": "s3cret"}
     )
@@ -324,10 +321,8 @@ def test_corridor_rejects_too_many_points(corridor_client):
     n = 25_000
     too_many_points = {
         **VALID_CORRIDOR,
-        "nPoints": n,
-        "leftM": [1.0] * n,
-        "rightM": [1.0] * n,
-        "known": [True] * n,
+        "leftEdge": [[1.0, 1.0]] * n,
+        "rightEdge": [[1.0, 1.0]] * n,
     }
     r = corridor_client.put(
         "/corridors/serres-23518-41073", json=too_many_points, headers={"X-Corridor-Token": "s3cret"}

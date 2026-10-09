@@ -122,28 +122,20 @@ class SchemaResult(BaseModel):
 
 
 class CorridorPayload(BaseModel):
-    version: int = Field(1, ge=1, le=1)
-    trackId: str = Field(..., max_length=128)
-    nPoints: int = Field(..., ge=2, le=CORRIDOR_MAX_POINTS)
+    version: int = Field(2, ge=2, le=2)
+    key: str = Field(..., max_length=64)
+    center: tuple[float, float]
     lengthM: float = Field(..., gt=0, le=100_000)
-    firstPoint: tuple[float, float]
-    stepM: float = Field(..., gt=0, le=1000)
-    leftM: list[float]
-    rightM: list[float]
-    known: list[bool]
-
-    @field_validator("leftM", "rightM", "known")
-    @classmethod
-    def _not_too_long(cls, v):
-        if len(v) > CORRIDOR_MAX_POINTS:
-            raise ValueError(f"at most {CORRIDOR_MAX_POINTS} points")
-        return v
+    leftEdge: list[Optional[tuple[float, float]]]
+    rightEdge: list[Optional[tuple[float, float]]]
 
     @model_validator(mode="after")
-    def _lengths_agree(self):
-        n = self.nPoints
-        if not (len(self.leftM) == len(self.rightM) == len(self.known) == n):
-            raise ValueError("leftM, rightM and known must all have nPoints entries")
+    def _shape(self):
+        n = len(self.leftEdge)
+        if n != len(self.rightEdge):
+            raise ValueError("leftEdge and rightEdge must have the same length")
+        if not (8 <= n <= CORRIDOR_MAX_POINTS):
+            raise ValueError(f"between 8 and {CORRIDOR_MAX_POINTS} points")
         return self
 
 
@@ -402,7 +394,7 @@ async def put_corridor(key: str, request: Request, x_corridor_token: str = Heade
         # No-op once the rename above succeeded; cleans up the orphan on any
         # failure in between.
         tmp.unlink(missing_ok=True)
-    return {"ok": True, "key": key, "nPoints": payload.nPoints}
+    return {"ok": True, "key": key, "nPoints": len(payload.leftEdge)}
 
 
 # Serve the built DDA Lab web app (ES modules need http://, not file://).

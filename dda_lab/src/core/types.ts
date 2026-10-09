@@ -235,6 +235,7 @@ export const DEFAULT_WORKSPACE: Workspace = {
   mapLayers: {
     satellite: true, centerline: true, turns: true, trace: true,
     apex: false, turnin: false, brake: false, throttle: false, gates: false, schema: false,
+    corridor: false, idealLine: false,
   },
 };
 

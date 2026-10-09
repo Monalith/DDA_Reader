@@ -8,6 +8,11 @@ import { defaultSectorGates, normalizeTrackOrigin, projectToTrack } from '../cor
 import { bearingDeg } from '../core/geo';
 import { loadSavedMarkers, markersToRestore, persistMarkers } from '../core/markerStore';
 import { parseWorkspace, serializeWorkspace } from '../core/workspace';
+import { browserTileLoader } from '../sim/browserTiles';
+import { CorridorError, extractCorridor } from '../sim/corridor';
+import { fetchCorridor, putCorridor } from '../sim/corridorService';
+import { buildMosaic, SAT_ZOOM, tileRangeFor } from '../sim/tiles';
+import type { Corridor } from '../sim/types';
 
 /** Workspace (panels, math, label colours…) is remembered in this browser between visits. */
 export const WORKSPACE_KEY = 'dda-lab-workspace';
@@ -23,6 +28,20 @@ function loadWorkspaceLocal(): Workspace {
     return ws;
   } catch {
     return DEFAULT_WORKSPACE;
+  }
+}
+
+/**
+ * The corridor write token. Corridors themselves live on the server; only this
+ * one secret is per-user, because it decides who may publish one.
+ */
+const CORRIDOR_TOKEN_KEY = 'dda-lab-corridor-token';
+
+function loadCorridorToken(): string {
+  try {
+    return typeof localStorage !== 'undefined' ? (localStorage.getItem(CORRIDOR_TOKEN_KEY) ?? '') : '';
+  } catch {
+    return '';
   }
 }
 import {
@@ -76,7 +95,7 @@ export interface LabState {
   workspace: Workspace;
   mapColorBy: 'speed' | 'tps' | 'lean' | 'brake' | 'solid';
   mapMaximized: boolean;
-  bottomTab: 'laps' | 'track' | 'channels' | 'math' | 'reports' | 'external' | 'cursor' | 'markers';
+  bottomTab: 'laps' | 'track' | 'channels' | 'math' | 'reports' | 'external' | 'cursor' | 'markers' | 'sim';
   statusMessage: string | null;
   /** User-placed data markers (fixed samples). */
   markers: DataMarker[];
@@ -84,6 +103,17 @@ export interface LabState {
   activeMarkerId: string | null;
   /** Last sample the user clicked (chart or map); the 📍 Mark button places markers here. */
   clickPos: CursorPos | null;
+  /** Track boundaries for the active track, from the server or freshly extracted. */
+  corridor?: Corridor;
+  /** True while tiles are being fetched or the store is being read. */
+  corridorBusy: boolean;
+  /** Ask the server for this track's stored corridor. Cheap; safe to call on load. */
+  loadCorridor(): Promise<void>;
+  /** Fetch tiles, extract the corridor and store it on the server. */
+  extractCorridorNow(): Promise<void>;
+  /** Write token for the corridor store; empty means this user cannot publish one. */
+  corridorToken: string;
+  setCorridorToken(t: string): void;
 
   addSession(s: Session): void;
   removeSession(id: string): void;
@@ -286,6 +316,9 @@ export const useLab = create<LabState>((set, get) => ({
   markers: [],
   activeMarkerId: null,
   clickPos: null,
+  corridor: undefined,
+  corridorBusy: false,
+  corridorToken: loadCorridorToken(),
 
   addSession(s) {
     const { workspace, sessions } = get();
@@ -517,6 +550,7 @@ export const useLab = create<LabState>((set, get) => ({
       activeTrackId: t.id,
       sessions: refreshAll(st, t),
     });
+    void get().loadCorridor();
   },
   setLapMeta(sessionId, lap, patch) {
     set((st) => {
@@ -597,7 +631,8 @@ export const useLab = create<LabState>((set, get) => ({
     const sessions = refreshAll({ ...st, tracks, activeTrackId: next.id }, next);
     // keep workspace laps whose number still exists
     const selectedLaps = st.selectedLaps.filter((r) => sessions.find((s) => s.id === r.sessionId)?.laps.some((l) => l.n === r.lap));
-    set({ tracks, activeTrackId: next.id, sessions, selectedLaps, cursor: null });
+    set({ tracks, activeTrackId: next.id, sessions, selectedLaps, cursor: null, corridor: undefined });
+    void get().loadCorridor();
   },
   updateTurns(turns) {
     const st = get();
@@ -656,6 +691,77 @@ export const useLab = create<LabState>((set, get) => ({
   },
   setStatus(msg) {
     set({ statusMessage: msg });
+  },
+  setCorridorToken(t) {
+    set({ corridorToken: t });
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem(CORRIDOR_TOKEN_KEY, t);
+    } catch {
+      /* storage unavailable: the token still works this session */
+    }
+  },
+  async loadCorridor() {
+    const track = activeTrack(get());
+    if (!track) return;
+    set({ corridorBusy: true });
+    try {
+      const stored = await fetchCorridor(track);
+      // a track change while the request was in flight must not install the wrong corridor
+      if (stored && activeTrack(get())?.id === track.id) set({ corridor: stored });
+    } finally {
+      set({ corridorBusy: false });
+    }
+  },
+  async extractCorridorNow() {
+    const st = get();
+    const track = activeTrack(st);
+    if (!track) {
+      set({ statusMessage: 'Load a session first — the corridor is extracted along its track.' });
+      return;
+    }
+    // the server already has one for this exact centerline: use it, fetch nothing
+    const stored = await fetchCorridor(track);
+    if (stored) {
+      set({ corridor: stored, statusMessage: 'Corridor loaded from the server.' });
+      return;
+    }
+    const trace: LngLat[] = [];
+    for (const s of st.sessions) {
+      const lng = s.channels.get('gps_lon')?.data;
+      const lat = s.channels.get('gps_lat')?.data;
+      if (!lng || !lat) continue;
+      for (let i = 0; i < lng.length; i += 5) {
+        if (Number.isFinite(lng[i]) && Number.isFinite(lat[i]) && (lng[i] !== 0 || lat[i] !== 0)) {
+          trace.push([lng[i], lat[i]]);
+        }
+      }
+    }
+    set({ corridorBusy: true, statusMessage: 'Fetching satellite tiles…' });
+    try {
+      const range = tileRangeFor(track.centerline, SAT_ZOOM, 80);
+      const mosaic = await buildMosaic(range, browserTileLoader);
+      if (mosaic.missing.every(Boolean)) {
+        throw new CorridorError('tiles-failed', 'No satellite tiles could be fetched. Check the network connection.');
+      }
+      const corridor = extractCorridor(track, mosaic, trace);
+      const pct = Math.round((100 * corridor.known.filter(Boolean).length) / corridor.known.length);
+      set({ corridor, statusMessage: `Corridor extracted — ${pct} % of the track resolved.` });
+      // publish it so nobody has to extract this track again
+      const token = get().corridorToken;
+      if (token) {
+        const saved = await putCorridor(track, corridor, token);
+        set({
+          statusMessage: saved
+            ? `Corridor extracted (${pct} % resolved) and saved to the server.`
+            : `Corridor extracted (${pct} % resolved), but the server refused to store it — check the token.`,
+        });
+      }
+    } catch (e) {
+      const msg = e instanceof CorridorError ? e.message : `Corridor extraction failed: ${(e as Error).message}`;
+      set({ statusMessage: msg });
+    } finally {
+      set({ corridorBusy: false });
+    }
   },
 }));
 

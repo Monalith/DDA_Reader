@@ -21,6 +21,7 @@ import type { Gate, Lap, LngLat, SchemaLayer, Session, TrackModel, TurnMetrics }
 import { lapX, selectedLapEntries } from '../state/selectors';
 import { activeTrack, useLab, lapMetaOf } from '../state/store';
 import { backgroundColorByZoom, inRangeSegments, rasterOpacityByZoom, zoomRadius, zoomWidth } from './focus';
+import { corridorGeoJson } from './SimLayers';
 import {
   IMAGE_CORNERS,
   centerlineGeoJson,
@@ -171,6 +172,7 @@ export default function MapView() {
   const dataMarkers = useLab((s) => s.markers);
   const turnLabels = useLab((s) => s.workspace.turnLabels ?? DEFAULT_TURN_LABELS);
   const activeMarkerId = useLab((s) => s.activeMarkerId);
+  const corridor = useLab((s) => s.corridor);
   const dataMarkerRefs = useRef<Map<string, maplibregl.Marker>>(new Map());
 
   const track = useMemo(() => activeTrack({ tracks, activeTrackId }), [tracks, activeTrackId]);
@@ -405,13 +407,16 @@ export default function MapView() {
     const schema: SchemaLayer | undefined = preview ?? track?.schema;
     setData(map, 'schema', track && schema ? schemaGeoJson({ ...track, schema }) : EMPTY);
     syncSchemaImage(map, schema ?? null);
-  }, [ready, track, entries, metrics, preview, lapMeta]);
+    setData(map, 'corridor', track && corridor ? corridorGeoJson(track, corridor) : EMPTY);
+  }, [ready, track, entries, metrics, preview, lapMeta, corridor]);
 
   // ---------- layer toggles ----------
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready) return;
     setVis(map, 'centerline-line', mapLayers.centerline !== false);
+    setVis(map, 'corridor-line', mapLayers.corridor !== false);
+    setVis(map, 'ideal-line', mapLayers.idealLine !== false);
     setVis(map, 'markers-turn', mapLayers.turns !== false);
     setVis(map, 'markers-apex', mapLayers.apex !== false);
     setVis(map, 'markers-apex-label', mapLayers.apex !== false);
@@ -1003,7 +1008,7 @@ function syncSchemaImage(map: maplibregl.Map, schema: SchemaLayer | null): void 
 
 /** One-time creation of the empty data sources and their layers. */
 function addDataLayers(map: maplibregl.Map): void {
-  for (const id of ['centerline', 'gates', 'markers', 'schema', 'measure', 'turn-deltas']) {
+  for (const id of ['centerline', 'gates', 'markers', 'schema', 'measure', 'turn-deltas', 'corridor', 'idealLine']) {
     if (!map.getSource(id)) map.addSource(id, { type: 'geojson', data: EMPTY });
   }
 
@@ -1027,6 +1032,22 @@ function addDataLayers(map: maplibregl.Map): void {
     type: 'line',
     source: 'centerline',
     paint: { 'line-color': '#ffffff', 'line-width': zoomWidth(2, 4), 'line-opacity': 0.8 },
+  });
+  map.addLayer({
+    id: 'corridor-line',
+    type: 'line',
+    source: 'corridor',
+    paint: {
+      'line-color': ['case', ['==', ['get', 'side'], 'left'], '#ff6a00', '#4dd0e1'],
+      'line-width': zoomWidth(1, 2.5),
+      'line-opacity': 0.85,
+    },
+  });
+  map.addLayer({
+    id: 'ideal-line',
+    type: 'line',
+    source: 'idealLine',
+    paint: { 'line-color': '#c77dff', 'line-width': zoomWidth(2, 4), 'line-opacity': 0.95 },
   });
   map.addLayer({
     id: 'gates-line',

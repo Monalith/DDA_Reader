@@ -424,17 +424,48 @@ export default function MapView() {
     if (track && track.turns.length && entries.length && turnLabels.onMap !== false) {
       const best = bestTurnTimes(sessions, track);
       const multi = entries.length > 1;
+      // apex speed of the lap that owns the best time in each turn (for the km/h delta)
+      const apexOf = (sid: string, lapN: number): Map<number, number> => {
+        const s = sessions.find((x) => x.id === sid);
+        const lap = s?.laps.find((l) => l.n === lapN);
+        if (!s || !lap) return new Map();
+        try {
+          return new Map(turnMetrics(s, lap, track).map((m) => [m.turn, m.apexKmh]));
+        } catch {
+          return new Map();
+        }
+      };
+      const bestApex = new Map<number, number>();
+      if (turnLabels.speed !== false) {
+        const cache = new Map<string, Map<number, number>>();
+        best.who.forEach((w, k) => {
+          if (!w) return;
+          const key = `${w.sessionId}:${w.lap}`;
+          if (!cache.has(key)) cache.set(key, apexOf(w.sessionId, w.lap));
+          const v = cache.get(key)!.get(track.turns[k].n);
+          if (v != null && Number.isFinite(v)) bestApex.set(track.turns[k].n, v);
+        });
+      }
       entries.forEach(({ s, lap }, row) => {
         const deltas = turnDeltas(s, lap, track, best);
         const meta = lapMetaOf(useLab.getState(), s.id, lap.n);
+        const myApex = turnLabels.speed !== false ? apexOf(s.id, lap.n) : new Map<number, number>();
         track.turns.forEach((turn, k) => {
           const d = deltas[k];
           if (!Number.isFinite(d)) return;
           const txt = fmtTurnDelta(d);
           const color = txt === 'best' ? turnLabels.best : d > 0 ? turnLabels.loss : turnLabels.gain;
+          let speedTxt = '';
+          const va = myApex.get(turn.n);
+          const vb = bestApex.get(turn.n);
+          if (va != null && vb != null && Number.isFinite(va) && Number.isFinite(vb) && txt !== 'best') {
+            const dv = va - vb;
+            speedTxt = `  ${dv >= 0 ? '+' : '−'}${Math.abs(dv).toFixed(1)} km/h`;
+          }
+          const timeTxt = txt === 'best' ? 'best' : `${txt}s`;
           features.push({
             type: 'Feature',
-            properties: { label: multi ? `${meta.name.replace(/^.*\s(L\d+)$/, '$1')} ${txt}` : txt, color, offset: [1.1, 0.75 + row * 1.15] },
+            properties: { label: `${multi ? `${meta.name.replace(/^.*\s(L\d+)$/, '$1')} ` : ''}${timeTxt}${speedTxt}`, color, offset: [1.1, 0.75 + row * 1.15] },
             geometry: { type: 'Point', coordinates: [turn.apexGeo[0], turn.apexGeo[1]] },
           });
         });

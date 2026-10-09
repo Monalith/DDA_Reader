@@ -208,6 +208,9 @@ export default function ChartStack() {
                 <input type="checkbox" checked={turnLabels.onMap !== false} data-testid="turn-labels-map" onChange={(e) => setTurnLabels({ onMap: e.target.checked })} /> On the map (next to each turn)
               </label>
               <label className="ps-row ps-check">
+                <input type="checkbox" checked={turnLabels.speed !== false} data-testid="turn-labels-speed" onChange={(e) => setTurnLabels({ speed: e.target.checked })} /> Also apex speed Δ (km/h) vs the best lap
+              </label>
+              <label className="ps-row ps-check">
                 <input type="checkbox" checked={turnLabels.show} data-testid="turn-labels-charts" onChange={(e) => setTurnLabels({ show: e.target.checked })} /> On the charts (at the turn lines)
               </label>
               <div className="ps-row">

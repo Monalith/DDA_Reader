@@ -50,6 +50,7 @@ const WorkspaceObject = z.object({
     .object({
       show: z.boolean().default(DEFAULT_TURN_LABELS.show),
       onMap: z.boolean().default(true),
+      speed: z.boolean().default(true),
       size: z.number().min(8).max(28).default(DEFAULT_TURN_LABELS.size),
       gain: z.string().default(DEFAULT_TURN_LABELS.gain),
       loss: z.string().default(DEFAULT_TURN_LABELS.loss),

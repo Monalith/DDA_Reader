@@ -170,13 +170,15 @@ export interface TurnLabelStyle {
   show: boolean;
   /** on the satellite map, next to each turn */
   onMap?: boolean;
+  /** also show the apex-speed delta (km/h) against the best lap in that turn */
+  speed?: boolean;
   size: number; // px
   gain: string; // faster than the best (−)
   loss: string; // slower (+)
   best: string;
 }
 
-export const DEFAULT_TURN_LABELS: TurnLabelStyle = { show: false, onMap: true, size: 14, gain: '#00e676', loss: '#ff3d57', best: '#ffffff' };
+export const DEFAULT_TURN_LABELS: TurnLabelStyle = { show: false, onMap: true, speed: true, size: 14, gain: '#00e676', loss: '#ff3d57', best: '#ffffff' };
 
 /** A math channel: one formula for every lap, optionally overridden per lap (key = `${sessionId}:${lapN}`). */
 export interface MathChannelDef {

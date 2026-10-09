@@ -1350,6 +1350,344 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
+### Task 3b: Make the stored corridor actually shareable
+
+**Why this task exists.** Task 3's review found that the vertex-indexed storage format can essentially never be shared between two visitors, which defeats the whole purpose of a server-side store. `createTrackFromSession` calls `buildCenterline(lapTraces, 2)` over *this session's* fastest laps (`src/state/trackActions.ts:127`) and takes the start/finish gate from *this session's* lap-1 GPS point. So every visitor's centerline differs in vertex count, in length and in first point — all three fingerprint fields — and `track.center`, being the mean of their own centerline, can even yield a different storage key.
+
+**The fix.** Store the corridor as **geographic edge polylines** instead of per-vertex offsets, and project the visitor's own centerline onto them on load. Geography is the one thing two visitors on the same circuit genuinely share. This is origin-independent, rotation-independent and centerline-independent — strictly more robust than arc-length resampling, which would still need a common start/finish origin.
+
+`Corridor` itself does not change. Only the serialisation boundary moves, so Tasks 4 and 6 are unaffected.
+
+**Files:**
+- Modify: `dda_lab/src/sim/corridorCache.ts`
+- Test: `dda_lab/tests/unit/simCorridorCache.test.ts`
+
+**Interfaces:**
+- Consumes: `Corridor` from `src/sim/types.ts`; `TrackModel`, `LngLat` from `src/core/types.ts`; `haversineM`, `toLocalM`, `fromLocalM` from `src/core/geo.ts`
+- Produces (replacing the v1 shape):
+  - `export interface StoredCorridor { version: 2; key: string; center: LngLat; lengthM: number; leftEdge: Array<LngLat | null>; rightEdge: Array<LngLat | null> }`
+  - `serializeCorridor` and `deserializeCorridor` keep their signatures
+  - `corridorKey` is unchanged
+
+- [ ] **Step 1: Write the failing tests**
+
+Replace the fingerprint tests in `dda_lab/tests/unit/simCorridorCache.test.ts` with these. Keep `corridorKey`'s tests exactly as they are — that function does not change.
+
+```ts
+/** A circular track of `radiusM` sampled every ~`stepM` metres. */
+function circleTrack(radiusM: number, stepM: number, id = 'c'): TrackModel {
+  const lat0 = 41.073;
+  const lng0 = 23.518;
+  const mPerDegLat = 111320;
+  const mPerDegLng = 111320 * Math.cos((lat0 * Math.PI) / 180);
+  const n = Math.max(16, Math.round((2 * Math.PI * radiusM) / stepM));
+  const centerline: LngLat[] = [];
+  for (let i = 0; i < n; i++) {
+    const a = (2 * Math.PI * i) / n;
+    centerline.push([lng0 + (radiusM * Math.cos(a)) / mPerDegLng, lat0 + (radiusM * Math.sin(a)) / mPerDegLat]);
+  }
+  const step = (2 * Math.PI * radiusM) / n;
+  const cumDistM = new Float64Array(n);
+  for (let i = 1; i < n; i++) cumDistM[i] = cumDistM[i - 1] + step;
+  return {
+    id, name: 'circle', center: [lng0, lat0], centerline, cumDistM, lengthM: step * n,
+    startFinish: { id: 'sf', name: 'SF', type: 'sf', at: centerline[0], bearingDeg: 0, halfWidthM: 15 },
+    sectors: [], turns: [],
+  };
+}
+
+function uniformCorridor(n: number, leftM: number, rightM: number, known = true): Corridor {
+  return {
+    stepM: 2,
+    leftM: new Float32Array(n).fill(leftM),
+    rightM: new Float32Array(n).fill(rightM),
+    known: new Array(n).fill(known),
+  };
+}
+
+describe('corridor storage is shareable across differently-built centerlines', () => {
+  it('round-trips widths onto the SAME centerline', () => {
+    const t = circleTrack(200, 2);
+    const c = uniformCorridor(t.centerline.length, 6, 4);
+    const back = deserializeCorridor(t, serializeCorridor(t, c));
+    expect(back).not.toBeNull();
+    const mid = back!.leftM.length >> 1;
+    expect(back!.leftM[mid]).toBeCloseTo(6, 0);
+    expect(back!.rightM[mid]).toBeCloseTo(4, 0);
+    expect(back!.known[mid]).toBe(true);
+  });
+
+  it('recovers the same widths on a DIFFERENT centerline of the same circuit', () => {
+    // This is the whole point of the task: the producer and the consumer built
+    // their centerlines from their own laps, so vertex count, length and first
+    // point all differ. Only the geography is shared.
+    const producer = circleTrack(200, 2, 'runtime-a');
+    const stored = serializeCorridor(producer, uniformCorridor(producer.centerline.length, 6, 4));
+
+    const consumer = circleTrack(200, 3.1, 'runtime-b'); // different spacing => different n
+    // and rotate it so index 0 is somewhere else entirely
+    const k = Math.floor(consumer.centerline.length / 3);
+    consumer.centerline = [...consumer.centerline.slice(k), ...consumer.centerline.slice(0, k)];
+
+    expect(consumer.centerline.length).not.toBe(producer.centerline.length);
+
+    const back = deserializeCorridor(consumer, stored);
+    expect(back).not.toBeNull();
+    expect(back!.leftM.length).toBe(consumer.centerline.length);
+    let okCount = 0;
+    for (let i = 0; i < back!.leftM.length; i++) {
+      if (!back!.known[i]) continue;
+      okCount++;
+      expect(back!.leftM[i]).toBeGreaterThan(5);
+      expect(back!.leftM[i]).toBeLessThan(7);
+      expect(back!.rightM[i]).toBeGreaterThan(3);
+      expect(back!.rightM[i]).toBeLessThan(5);
+    }
+    expect(okCount).toBeGreaterThan(back!.leftM.length * 0.9);
+  });
+
+  it('keeps unknown sections unknown through the round trip', () => {
+    const t = circleTrack(200, 2);
+    const c = uniformCorridor(t.centerline.length, 6, 4);
+    const gap0 = 10;
+    for (let i = gap0; i < gap0 + 20; i++) c.known[i] = false;
+    const back = deserializeCorridor(t, serializeCorridor(t, c))!;
+    // the middle of the gap must still be unknown; its edges may be bridged by
+    // the nearest-point search, so check well inside
+    expect(back.known[gap0 + 10]).toBe(false);
+    expect(back.known[(gap0 + 200) % back.known.length]).toBe(true);
+  });
+
+  it('rejects a corridor stored for a different circuit', () => {
+    const serres = circleTrack(200, 2);
+    const stored = serializeCorridor(serres, uniformCorridor(serres.centerline.length, 6, 4));
+    const elsewhere = circleTrack(200, 2);
+    elsewhere.center = [29.0, 41.0];
+    elsewhere.centerline = elsewhere.centerline.map(([lo, la]) => [lo + 5.5, la] as LngLat);
+    expect(deserializeCorridor(elsewhere, stored)).toBeNull();
+  });
+
+  it('rejects a corridor whose track length is wildly different', () => {
+    const short = circleTrack(200, 2);
+    const long = circleTrack(600, 2);
+    long.center = short.center;
+    expect(deserializeCorridor(long, serializeCorridor(short, uniformCorridor(short.centerline.length, 6, 4)))).toBeNull();
+  });
+
+  it('rejects malformed input instead of throwing', () => {
+    const t = circleTrack(200, 2);
+    expect(deserializeCorridor(t, null)).toBeNull();
+    expect(deserializeCorridor(t, { version: 1 })).toBeNull();
+    expect(deserializeCorridor(t, { version: 2, key: 'k', center: ['a', 'b'], lengthM: 10, leftEdge: [], rightEdge: [] })).toBeNull();
+    const ok = serializeCorridor(t, uniformCorridor(t.centerline.length, 6, 4));
+    expect(deserializeCorridor(t, { ...ok, leftEdge: [[Number.NaN, 1]] })).toBeNull();
+  });
+});
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `cd dda_lab && npx vitest run tests/unit/simCorridorCache.test.ts`
+Expected: FAIL — the v2 shape does not exist yet.
+
+- [ ] **Step 3: Implement the v2 format**
+
+Replace the `StoredCorridor` interface, `serializeCorridor` and `deserializeCorridor` in `dda_lab/src/sim/corridorCache.ts` with:
+
+```ts
+/**
+ * A corridor as it is stored on the server.
+ *
+ * Edges are GEOGRAPHIC, not per-vertex offsets. Every visitor builds their own
+ * centerline from their own laps (`buildCenterline` in `state/trackActions.ts`),
+ * so vertex count, length and start point all differ between two people on the
+ * same circuit — a vertex-indexed corridor is unshareable by construction.
+ * Geography is the one thing they do share.
+ *
+ * `null` marks a vertex the extractor could not resolve; it survives the round
+ * trip so a leak into the pit lane stays flagged rather than being invented.
+ */
+export interface StoredCorridor {
+  version: 2;
+  key: string;
+  center: LngLat;
+  lengthM: number;
+  leftEdge: Array<LngLat | null>;
+  rightEdge: Array<LngLat | null>;
+}
+
+/** Unit normal pointing left of travel at centerline vertex `i`, east/north metres. */
+function leftNormal(cl: LngLat[], i: number): [number, number] {
+  const n = cl.length;
+  const a = toLocalM(cl[i], cl[(i - 1 + n) % n]);
+  const b = toLocalM(cl[i], cl[(i + 1) % n]);
+  const tx = b[0] - a[0];
+  const ty = b[1] - a[1];
+  const len = Math.hypot(tx, ty);
+  return len < 1e-9 ? [0, 0] : [-ty / len, tx / len];
+}
+
+const round6 = (v: number): number => Math.round(v * 1e6) / 1e6;
+
+export function serializeCorridor(track: TrackModel, c: Corridor): StoredCorridor {
+  const cl = track.centerline;
+  const leftEdge: Array<LngLat | null> = [];
+  const rightEdge: Array<LngLat | null> = [];
+  for (let i = 0; i < cl.length; i++) {
+    if (!c.known[i] || !Number.isFinite(c.leftM[i]) || !Number.isFinite(c.rightM[i])) {
+      leftEdge.push(null);
+      rightEdge.push(null);
+      continue;
+    }
+    const [nx, ny] = leftNormal(cl, i);
+    const l = fromLocalM(cl[i], [nx * c.leftM[i], ny * c.leftM[i]]);
+    const r = fromLocalM(cl[i], [-nx * c.rightM[i], -ny * c.rightM[i]]);
+    leftEdge.push([round6(l[0]), round6(l[1])]);
+    rightEdge.push([round6(r[0]), round6(r[1])]);
+  }
+  return {
+    version: 2,
+    key: corridorKey(track),
+    center: [round6(track.center[0]), round6(track.center[1])],
+    lengthM: Math.round(track.lengthM),
+    leftEdge,
+    rightEdge,
+  };
+}
+
+/** The circuit must be the same one: centre within this, metres. */
+const SAME_CIRCUIT_M = 2000;
+/** ...and the lap length within this fraction. */
+const LENGTH_TOLERANCE = 0.15;
+/** An edge further than this from a vertex is not that vertex's edge. */
+const MAX_EDGE_DIST_M = 30;
+
+function isLngLat(v: unknown): v is LngLat {
+  return Array.isArray(v) && v.length === 2 && Number.isFinite(v[0]) && Number.isFinite(v[1]);
+}
+
+/** Squared local-metre distance from `p` to the nearest vertex of `edge`, and that distance. */
+function nearestEdgeDistM(edge: Array<LngLat | null>, p: LngLat): number {
+  let best = Infinity;
+  for (const q of edge) {
+    if (!q) continue;
+    const d = toLocalM(p, q);
+    const d2 = d[0] * d[0] + d[1] * d[1];
+    if (d2 < best) best = d2;
+  }
+  return best === Infinity ? NaN : Math.sqrt(best);
+}
+
+/**
+ * Project this track's centerline onto a stored corridor's edge polylines.
+ *
+ * The edge runs roughly parallel to the centerline, so the distance to the
+ * nearest stored edge point is the corridor half-width to within the edge's own
+ * 2 m sampling — good enough for a racing line, and it needs no shared origin,
+ * no shared vertex count and no shared start/finish.
+ */
+export function deserializeCorridor(track: TrackModel, raw: unknown): Corridor | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const s = raw as Partial<StoredCorridor>;
+  if (s.version !== 2) return null;
+  if (!isLngLat(s.center)) return null;
+  if (typeof s.lengthM !== 'number' || !Number.isFinite(s.lengthM) || s.lengthM <= 0) return null;
+  if (!Array.isArray(s.leftEdge) || !Array.isArray(s.rightEdge)) return null;
+  if (s.leftEdge.length !== s.rightEdge.length || s.leftEdge.length < 8) return null;
+  for (const e of [...s.leftEdge, ...s.rightEdge]) {
+    if (e !== null && !isLngLat(e)) return null;
+  }
+  if (haversineM(s.center, track.center) > SAME_CIRCUIT_M) return null;
+  if (Math.abs(s.lengthM - track.lengthM) > LENGTH_TOLERANCE * s.lengthM) return null;
+
+  const n = track.centerline.length;
+  const leftM = new Float32Array(n);
+  const rightM = new Float32Array(n);
+  const known = new Array<boolean>(n).fill(false);
+  for (let i = 0; i < n; i++) {
+    const l = nearestEdgeDistM(s.leftEdge, track.centerline[i]);
+    const r = nearestEdgeDistM(s.rightEdge, track.centerline[i]);
+    if (!Number.isFinite(l) || !Number.isFinite(r) || l > MAX_EDGE_DIST_M || r > MAX_EDGE_DIST_M) continue;
+    leftM[i] = l;
+    rightM[i] = r;
+    known[i] = true;
+  }
+  const stepM = track.lengthM / Math.max(1, n);
+  return { stepM, leftM, rightM, known };
+}
+```
+
+Add `haversineM` and `fromLocalM` to the `../core/geo` import, and `Corridor` stays imported from `./types`.
+
+- [ ] **Step 4: Update the Python payload model to v2**
+
+In `dda_lab_bridge.py`, replace `CorridorPayload` with the v2 shape. The server does not interpret the geometry; it bounds it.
+
+```python
+class CorridorPayload(BaseModel):
+    version: int = Field(2, ge=2, le=2)
+    key: str = Field(..., max_length=64)
+    center: tuple[float, float]
+    lengthM: float = Field(..., gt=0, le=100_000)
+    leftEdge: list[Optional[tuple[float, float]]]
+    rightEdge: list[Optional[tuple[float, float]]]
+
+    @model_validator(mode="after")
+    def _shape(self):
+        n = len(self.leftEdge)
+        if n != len(self.rightEdge):
+            raise ValueError("leftEdge and rightEdge must have the same length")
+        if not (8 <= n <= CORRIDOR_MAX_POINTS):
+            raise ValueError(f"between 8 and {CORRIDOR_MAX_POINTS} points")
+        return self
+```
+
+Update the Python tests' `VALID_CORRIDOR` fixture to the v2 shape, keeping every security test (key allowlist, token, 413, 503, mismatched lengths, oversized body) exactly as it is — only the payload shape changes:
+
+```python
+VALID_CORRIDOR = {
+    "version": 2,
+    "key": "serres-23518-41073",
+    "center": [23.518, 41.073],
+    "lengthM": 3186.0,
+    "leftEdge": [[23.518 + i * 1e-5, 41.073] for i in range(10)],
+    "rightEdge": [[23.518 + i * 1e-5, 41.0729] for i in range(10)],
+}
+```
+
+- [ ] **Step 5: Run both suites**
+
+Run:
+- `cd dda_lab && npx vitest run tests/unit/simCorridorCache.test.ts && npm run typecheck 2>&1 | grep -E '^src/sim/|simCorridorCache'`
+- `/Users/macbookmini/projects/dda_venv/bin/python -m pytest tests/test_bridge.py -q`
+
+Expected: the corridor-cache tests pass, the grep prints nothing, and every pre-existing bridge test still passes.
+
+- [ ] **Step 6: Mutation-check the sharing test**
+
+The second test is the one that justifies this task. Prove it can fail: temporarily make `deserializeCorridor` return the widths from vertex index instead of by projection (or simply return `null` when the vertex counts differ, which is the old v1 behaviour), run the file, confirm that test goes **red**, then restore. Report both outcomes.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add dda_lab/src/sim/corridorCache.ts dda_lab/tests/unit/simCorridorCache.test.ts dda_lab_bridge.py tests/test_bridge.py
+git commit -m "feat(sim): store the corridor as geographic edges so it is actually shareable
+
+Every visitor builds their own centerline from their own laps, so vertex
+count, length and start point all differ on the same circuit and a
+vertex-indexed corridor could never be shared — which was the entire
+point of putting it on the server.
+
+Edges are stored as geographic polylines and projected onto whatever
+centerline the visitor has. No shared origin, vertex count or start line
+required. Corridor itself is unchanged, so the solver and the UI are not
+affected.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
 ### Task 4: Browser tile loader, store wiring, map layer — corridor visible
 
 **Files:**

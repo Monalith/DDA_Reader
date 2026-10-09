@@ -410,23 +410,25 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
                 // gain (−, green) / loss (+, red) of every plotted lap in this turn vs the best loaded lap
                 const rows = turnRowsRef.current;
                 const k = t.turns.indexOf(turn);
-                ctx.font = `bold ${10 * dpr}px Inter, system-ui, sans-serif`;
+                // bigger, bolder labels: 14 px, dark pill, lap-colour bar on the left
+                const FS = 14;
+                const LH = 17;
+                ctx.font = `800 ${FS * dpr}px Inter, system-ui, sans-serif`;
                 rows.forEach((row, r) => {
                   const d = row.deltas[k];
                   if (!Number.isFinite(d)) return;
                   const txt = fmtTurnDelta(d);
-                  const y = top + (21 + r * 11) * dpr;
-                  if (y > top + height - 14 * dpr) return;
+                  const y = top + (24 + r * LH) * dpr;
+                  if (y > top + height - 16 * dpr) return;
                   const w = ctx.measureText(txt).width;
-                  ctx.fillStyle = 'rgba(16,20,26,0.75)';
-                  ctx.fillRect(px + 1 * dpr, y - 9 * dpr, w + 4 * dpr, 11 * dpr);
-                  ctx.fillStyle = txt === 'best' ? '#3ddc84' : d > 0 ? '#ff4d6d' : '#3ddc84';
+                  ctx.fillStyle = 'rgba(16,20,26,0.82)';
+                  ctx.fillRect(px + 1 * dpr, y - 13 * dpr, w + 9 * dpr, LH * dpr);
                   if (rows.length > 1) {
                     ctx.fillStyle = row.color;
-                    ctx.fillRect(px + 1 * dpr, y - 9 * dpr, 2 * dpr, 11 * dpr);
-                    ctx.fillStyle = txt === 'best' ? '#3ddc84' : d > 0 ? '#ff4d6d' : '#3ddc84';
+                    ctx.fillRect(px + 1 * dpr, y - 13 * dpr, 3 * dpr, LH * dpr);
                   }
-                  ctx.fillText(txt, px + 4 * dpr, y);
+                  ctx.fillStyle = txt === 'best' ? '#3ddc84' : d > 0 ? '#ff4d6d' : '#3ddc84';
+                  ctx.fillText(txt, px + 6 * dpr, y);
                 });
                 ctx.font = `${10 * dpr}px Inter, system-ui, sans-serif`;
                 ctx.fillStyle = 'rgba(139,149,165,0.9)';

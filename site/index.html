@@ -3,9 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MotoRaceLaps — free motorcycle lap data analysis in your browser</title>
-<meta name="description" content="DDA Lab: open Ducati DDA, RaceChrono and onboard-video telemetry, compare laps on a satellite map with turns and apexes, Δ time and Δ distance vs a reference lap, math channels, markers and exports. Runs in the browser, your files never leave your computer.">
-<meta property="og:title" content="MotoRaceLaps — DDA Lab">
+<title>MotoRaceLaps — Motorcycle Race Track Data Analysis | Serres Racing Circuit Lap Data</title>
+<meta name="description" content="Learn the track from data: free motorcycle race lap analysis in your browser. Serres Racing Circuit example laps (BMW S1000RR 1:19.8, Yamaha R6 1:19.8, intermediate 1:29.2), Ducati DDA, RaceChrono and onboard video telemetry, satellite map with turns and apexes, Δ time vs a reference lap, braking and throttle points.">
+<meta name="keywords" content="motorcycle race data analysis, track data, lap data analysis, Serres Racing Circuit, Serres track data, learn the track, Ducati DDA, DDA+ GPS, RaceChrono, motorcycle telemetry, lap time analysis, braking points, apex speed, track day data, MoTeC alternative free, Panigale data analysis, S1000RR lap data, R6 lap data">
+<link rel="canonical" href="https://motoracelaps.com/">
+<meta name="robots" content="index, follow, max-image-preview:large">
+<meta name="theme-color" content="#0e1116">
+<meta property="og:title" content="MotoRaceLaps — Motorcycle Race Track Data Analysis">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
 <meta property="og:description" content="Free motorcycle lap data analysis in the browser. Satellite map, lap compare, Δ time, math channels.">
 <meta property="og:image" content="https://motoracelaps.com/img/app-examples.jpg">
 <meta property="og:url" content="https://motoracelaps.com/">
@@ -13,6 +19,17 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@graph":[
+ {"@type":"WebSite","name":"MotoRaceLaps","url":"https://motoracelaps.com/","description":"Free motorcycle race track data analysis in the browser."},
+ {"@type":"SoftwareApplication","name":"DDA Lab","applicationCategory":"SportsApplication","operatingSystem":"Web browser","url":"https://motoracelaps.com/lab/","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"description":"Motorcycle lap data analysis: Ducati DDA, RaceChrono and onboard-video telemetry, satellite track map with turns and apexes, lap comparison, delta time, math channels, markers and exports.","featureList":["Satellite map with turns and apexes","Lap comparison with a reference lap","Delta time and delta distance","Braking and throttle points","Math channels and filters","Markers with notes","CSV and bundle export","Serres Racing Circuit example laps"]},
+ {"@type":"FAQPage","mainEntity":[
+  {"@type":"Question","name":"How do I learn the Serres Racing Circuit from data?","acceptedAnswer":{"@type":"Answer","text":"Open DDA Lab, pick the Serres example laps (BMW S1000RR 1:19.81, Yamaha R6 1:19.849 or the intermediate 1:29.2 lap) from the Examples menu and compare them turn by turn: braking points, apex speed, throttle pick-up and where the time is gained or lost in each of the 16 turns."}},
+  {"@type":"Question","name":"Which motorcycle data files can I open?","acceptedAnswer":{"@type":"Answer","text":"Ducati DDA and DDA+ GPS .dda files, DDA_Reader .json and .csv exports, RaceChrono and onboard-video telemetry JSON, and DDA Lab .lab.json bundles."}},
+  {"@type":"Question","name":"Is my lap data uploaded?","acceptedAnswer":{"@type":"Answer","text":"No. Files are decoded and analysed inside your browser; only track models and schema images you choose to save are stored on the server."}}
+ ]}
+]}
+</script>
 </head>
 <body>
 <header class="top">
@@ -21,6 +38,7 @@
     <a href="#features">Features</a>
     <a href="#how">How it works</a>
     <a href="#examples">Examples</a>
+    <a href="#serres">Serres</a>
     <a href="#privacy">Privacy</a>
     <a class="cta" href="/lab/">Open DDA Lab →</a>
   </nav>
@@ -83,6 +101,21 @@
     <img src="img/app-map.jpg" alt="Two runs in different colours on the Serres map, with per-turn gain/loss labels" width="1600" height="1000" loading="lazy">
     <figcaption>Runs in their own colours, turn-by-turn gain and loss on the map.</figcaption>
   </figure>
+</section>
+
+<section id="serres" class="serres">
+  <h2>Learn Serres Racing Circuit from real lap data</h2>
+  <p>Serres Racing Circuit (Greece) is 3.186 km with 16 turns. MotoRaceLaps ships with three complete laps so you can study the
+    track before you ride it: where a <strong>1000 cc superbike</strong> (BMW S1000RR, 1:19.81) brakes for K1, how a
+    <strong>600 cc supersport</strong> (Yamaha R6, 1:19.849) carries corner speed through K5–K6, and what an
+    <strong>intermediate rider</strong> (1:29.2) does differently in every turn. Overlay them, put the cursor on a turn and read
+    braking point, turn-in speed, apex speed, throttle-on point and the time gained or lost — on the satellite map and on the charts.</p>
+  <ul class="serres-list">
+    <li><strong>Track map:</strong> turns K1–K16 with apexes, vectorised from GPS, on Esri satellite imagery.</li>
+    <li><strong>Per-turn gain/loss:</strong> seconds and km/h against the best lap, written next to each turn.</li>
+    <li><strong>Your own data:</strong> open your Ducati DDA / RaceChrono lap next to the examples and see where you lose time at Serres.</li>
+  </ul>
+  <p class="actions"><a class="btn primary" href="/lab/?example=bike1000">Open the Serres laps</a></p>
 </section>
 
 <section id="privacy" class="privacy">

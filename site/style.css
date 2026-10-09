@@ -55,3 +55,7 @@ footer a { color: var(--fg-dim); text-decoration: underline; }
   .top nav a:not(.cta) { display: none; }
   section { padding: 40px 18px; }
 }
+
+.serres p { max-width: 820px; font-size: 17px; color: #c6ced8; }
+.serres-list { font-size: 16px; max-width: 820px; }
+.serres-list li { margin: 6px 0; }

@@ -411,8 +411,8 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
                 const rows = turnRowsRef.current;
                 const k = t.turns.indexOf(turn);
                 // bigger, bolder labels: 14 px, dark pill, lap-colour bar on the left
-                const FS = 14;
-                const LH = 17;
+                const FS = 12;
+                const LH = 15;
                 ctx.font = `800 ${FS * dpr}px Inter, system-ui, sans-serif`;
                 rows.forEach((row, r) => {
                   const d = row.deltas[k];

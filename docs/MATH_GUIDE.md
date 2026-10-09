@@ -39,6 +39,7 @@ reference lap or import a new session. They are saved in the workspace.
 | `lap_dist` | m | distance since the start line (derived) |
 | `total_dist` | m | distance covered over the laps still in the file, continuous lap after lap; deleting a lap removes its metres (derived) |
 | `delta_t` | s | time gained/lost vs the reference lap (derived) |
+| `delta_d` | m | metres ahead (+) / behind (−) the reference lap at the same lap time (derived) |
 | `pi`, `e`, `g` | – | constants 3.14159…, 2.71828…, 9.80665 |
 
 Any math or imported CSV channel can be used by its name as well.
@@ -121,6 +122,20 @@ Esc reverts). Preset cards are editable too: adjust the formula or the channel n
 **Presets → My presets**, stored in this browser. Your presets can be edited and saved on their
 card, or deleted with ✕.
 
+
+## 5b-ter. Reading another run or the reference lap in a formula
+
+- `ref(ch)` — channel `ch` of the **reference lap** (◉) at the same lap distance. `speed - ref(speed)`
+  is the speed delta, `speed / ref(speed)` the ratio, `rpm - ref(rpm)` the rpm delta.
+- `ref_t(ch)` — the same aligned by **lap time**: `lap_dist - ref_t(lap_dist)` = metres ahead of the
+  reference at the same moment (that is the built-in `delta_d`).
+- `run(ch, n)` / `run_t(ch, n)` — channel `ch` of the **n-th loaded run** (1 = first chip in the top
+  bar) at its best lap. `run(speed, 2) - speed`, `tps / run(tps, 1)`.
+- Built-in deltas need no formula: `delta_t`, `delta_d`, `d_speed`, `d_rpm`, `d_tps`, `d_lean`…
+
+Every chart panel can have its **own x axis** (⚙ → X axis → distance / lap time); the shared zoom
+only applies to panels on the workspace axis. The **Templates…** menu has *Δ lap time vs distance*,
+*Δ distance vs lap time* and the combined view ready-made.
 
 ## 5c. Markers (fixed data points)
 

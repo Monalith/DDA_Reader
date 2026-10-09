@@ -149,6 +149,8 @@ export interface ChartPanelConfig {
   channels: { name: string; axis: 'L' | 'R'; width?: number; fill?: 'zero' }[];
   /** Optional title shown in the panel head (templates use it). */
   title?: string;
+  /** X axis of this panel only; absent = the workspace setting. */
+  xAxis?: 'time' | 'distance';
   /** Left / right Y axis ranges (auto when absent). */
   yL?: AxisRange;
   yR?: AxisRange;

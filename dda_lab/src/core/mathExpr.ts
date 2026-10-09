@@ -15,7 +15,18 @@ export interface EvalEnv {
   get(name: string): Float32Array;
   dtS: number;
   lapStarts?: number[];
+  /** Sample count of the session (lets an expression consist only of ref()/run() terms). */
+  n?: number;
+  /**
+   * Another lap's channel aligned onto this session (see alignedChannel): `ref` = the
+   * reference lap; `run` = the n-th loaded run (1-based) at its best lap. Default alignment
+   * is by lap distance, `by` = 'time' aligns by lap time.
+   */
+  aligned?(name: string, target: { kind: 'ref' } | { kind: 'run'; n: number }, by: 'lap_dist' | 'lap_time'): Float32Array;
 }
+
+/** Functions whose first argument is a channel *name* read from another lap/run. */
+const CROSS_FUNCTIONS = new Set(['ref', 'ref_t', 'run', 'run_t']);
 
 export type Ast =
   | { kind: 'num'; value: number }
@@ -60,6 +71,8 @@ const FUNCTIONS: Record<string, number> = {
   lap_min: 1, lap_max: 1, lap_mean: 1, lap_sum: 1, lap_first: 1, lap_last: 1, lap_time: 1, lap_progress: 1,
   // events
   rising: 1, falling: 1, hold: 2,
+  // other laps / runs (first argument is a channel name)
+  ref: 1, ref_t: 1, run: 2, run_t: 2,
 };
 
 /** Named constants usable as identifiers. */
@@ -103,6 +116,11 @@ export const FUNCTION_DOCS: { group: string; items: { sig: string; doc: string }
   { group: 'Events', items: [
     { sig: 'rising(cond) falling(cond)', doc: '1 on the sample where cond becomes true / false, else 0.' },
     { sig: 'hold(cond, seconds)', doc: '1 while cond was true within the last N seconds.' },
+  ] },
+  { group: 'Other runs & the reference lap', items: [
+    { sig: 'ref(ch)', doc: 'Channel ch of the reference lap (◉), read at the same lap distance. speed - ref(speed) = Δ speed; speed / ref(speed) = ratio.' },
+    { sig: 'ref_t(ch)', doc: 'Same, aligned by lap time instead of distance. lap_dist - ref_t(lap_dist) = metres ahead of the reference.' },
+    { sig: 'run(ch, n) run_t(ch, n)', doc: 'Channel ch of the n-th loaded run (1 = first chip in the top bar) at its best lap, aligned by distance / lap time. run(speed, 2) - speed compares you with run 2.' },
   ] },
   { group: 'Constants & operators', items: [
     { sig: 'pi e g', doc: '3.14159…, 2.71828…, 9.80665 m/s².' },
@@ -306,6 +324,15 @@ export function parseExpr(src: string): Ast {
 // ------------------------------------------------------------- dependencies
 
 export function dependencies(ast: Ast): string[] {
+  return collectDeps(ast, false);
+}
+
+/** Channels read from *this* session only (the first argument of ref()/run() is read elsewhere). */
+export function localDependencies(ast: Ast): string[] {
+  return collectDeps(ast, true);
+}
+
+function collectDeps(ast: Ast, localOnly: boolean): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
   const walk = (n: Ast): void => {
@@ -324,6 +351,10 @@ export function dependencies(ast: Ast): string[] {
         walk(n.right);
         return;
       case 'call':
+        if (localOnly && CROSS_FUNCTIONS.has(n.name)) {
+          n.args.slice(1).forEach(walk);
+          return;
+        }
         n.args.forEach(walk);
         return;
       default:
@@ -726,9 +757,14 @@ export function evaluate(ast: Ast, env: EvalEnv): Float32Array {
   if (deps.length === 0) {
     throw new Error('Expression references no channel, so its length is unknown');
   }
-  const first = env.get(deps[0]);
-  const n = first.length;
-  const cache = new Map<string, Float32Array>([[deps[0], first]]);
+  // Length: from env.n when given (an expression made only of ref()/run() terms has no
+  // local channel to measure), else from the first local channel.
+  const localDeps = localDependencies(ast);
+  const first = localDeps.length ? env.get(localDeps[0]) : undefined;
+  const n = env.n ?? first?.length;
+  if (n === undefined) throw new Error('Expression references no channel, so its length is unknown');
+  const cache = new Map<string, Float32Array>();
+  if (first && localDeps.length) cache.set(localDeps[0], first);
   const channel = (name: string): Float32Array => {
     let v = cache.get(name);
     if (!v) {
@@ -788,6 +824,19 @@ export function evaluate(ast: Ast, env: EvalEnv): Float32Array {
         }
       }
       case 'call':
+        if (CROSS_FUNCTIONS.has(node.name)) {
+          const a0 = node.args[0];
+          if (!a0 || a0.kind !== 'ident') throw new Error(`${node.name}(): first argument must be a channel name`);
+          if (!env.aligned) throw new Error(`${node.name}() is only available inside a session`);
+          const by = node.name.endsWith('_t') ? 'lap_time' : 'lap_dist';
+          if (node.name.startsWith('ref')) {
+            if (node.args.length !== 1) throw new Error(`${node.name}() expects 1 argument`);
+            return env.aligned(a0.name, { kind: 'ref' }, by);
+          }
+          if (node.args.length !== 2) throw new Error(`${node.name}() expects 2 arguments (channel, run number)`);
+          const k = Math.round(scalarOf(ev(node.args[1]), `${node.name}(ch, n): n`));
+          return env.aligned(a0.name, { kind: 'run', n: k }, by);
+        }
         return callFn(
           node.name,
           node.args.map((a) => ev(a)),

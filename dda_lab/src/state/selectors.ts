@@ -82,6 +82,11 @@ export function selectedLapEntries(state: Pick<LabState, 'sessions' | 'selectedL
   return out;
 }
 
+/** Effective x axis of a panel: its own override or the workspace setting. */
+export function panelXAxis(panel: Pick<Workspace['panels'][number], 'xAxis'>, workspace: Pick<Workspace, 'xAxis'>): Workspace['xAxis'] {
+  return panel.xAxis ?? workspace.xAxis;
+}
+
 /** Series for one chart panel: one line per selected lap per channel. */
 export function overlaySeries(
   state: Pick<LabState, 'sessions' | 'selectedLaps' | 'workspace'> & Partial<Pick<LabState, 'lapMeta'>>,
@@ -95,7 +100,7 @@ export function overlaySeries(
     const perSession = entries.filter((e) => e.s.id === s.id);
     const k = perSession.findIndex((e) => e.lap === lap);
     const factor = perSession.length > 1 ? 1.25 - (k / Math.max(1, perSession.length - 1)) * 0.6 : 1;
-    const x = lapX(s, lap, state.workspace.xAxis);
+    const x = lapX(s, lap, panelXAxis(panel, state.workspace));
     panel.channels.forEach((pc, ci) => {
       const ch = s.channels.get(pc.name);
       if (!ch) return;

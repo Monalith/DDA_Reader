@@ -124,52 +124,19 @@ export const REF_DELTA_CHANNELS = ['speed', 'gps_speed', 'rpm', 'tps', 'lean', '
  */
 export function applyRefDeltas(s: Session, ref: Session | undefined, refLap: Lap | undefined): void {
   const n = s.t.length;
-  const myDist = s.channels.get('lap_dist')?.data;
-  const refDist = ref?.channels.get('lap_dist')?.data;
   for (const name of REF_DELTA_CHANNELS) {
-    const out = new Float32Array(n).fill(NaN);
     const mine = s.channels.get(name);
     const theirs = ref?.channels.get(name);
-    if (mine && theirs && refLap && myDist && refDist) {
-      // reference lap as a monotonic (dist → value) table
-      const xs: number[] = [];
-      const ys: number[] = [];
-      let last = -Infinity;
-      for (let i = refLap.startIdx; i <= refLap.endIdx && i < refDist.length; i++) {
-        const d = refDist[i];
-        const v = theirs.data[i];
-        if (!Number.isFinite(d) || !Number.isFinite(v) || d <= last) continue;
-        xs.push(d);
-        ys.push(v);
-        last = d;
-      }
-      if (xs.length > 1) {
-        const at = (d: number): number => {
-          if (d < xs[0] || d > xs[xs.length - 1]) return NaN;
-          let lo = 0;
-          let hi = xs.length - 1;
-          while (lo < hi) {
-            const mid = (lo + hi) >> 1;
-            if (xs[mid] < d) lo = mid + 1;
-            else hi = mid;
-          }
-          if (lo === 0) return ys[0];
-          const t = (d - xs[lo - 1]) / (xs[lo] - xs[lo - 1]);
-          return ys[lo - 1] + (ys[lo] - ys[lo - 1]) * t;
-        };
-        for (const lap of s.laps) {
-          const isRef = ref.id === s.id && lap.n === refLap.n;
-          for (let i = lap.startIdx; i <= lap.endIdx && i < n; i++) {
-            const d = myDist[i];
-            const v = mine.data[i];
-            if (!Number.isFinite(d) || !Number.isFinite(v)) continue;
-            if (isRef) {
-              out[i] = 0;
-              continue;
-            }
-            const r = at(d);
-            if (Number.isFinite(r)) out[i] = v - r;
-          }
+    const out = new Float32Array(n).fill(NaN);
+    if (mine && theirs && ref && refLap) {
+      const aligned = alignedChannel(s, ref, refLap, name, 'lap_dist');
+      for (const lap of s.laps) {
+        const isRef = ref.id === s.id && lap.n === refLap.n;
+        for (let i = lap.startIdx; i <= lap.endIdx && i < n; i++) {
+          const v = mine.data[i];
+          if (!Number.isFinite(v)) continue;
+          if (isRef) out[i] = 0;
+          else if (Number.isFinite(aligned[i])) out[i] = v - aligned[i];
         }
       }
     }
@@ -182,6 +149,70 @@ export function applyRefDeltas(s: Session, ref: Session | undefined, refLap: Lap
       s.channels.set(`d_${name}`, { name: `d_${name}`, unit, kind: 'derived', data: out, proc: { ...DEFAULT_PROC } });
     }
   }
+  // delta_d: metres ahead (+) or behind (−) the reference lap at the same lap time
+  const dd = new Float32Array(n).fill(NaN);
+  const myDist = s.channels.get('lap_dist')?.data;
+  if (ref && refLap && myDist) {
+    const refDistAtTime = alignedChannel(s, ref, refLap, 'lap_dist', 'lap_time');
+    for (const lap of s.laps) {
+      const isRef = ref.id === s.id && lap.n === refLap.n;
+      for (let i = lap.startIdx; i <= lap.endIdx && i < n; i++) {
+        if (!Number.isFinite(myDist[i])) continue;
+        if (isRef) dd[i] = 0;
+        else if (Number.isFinite(refDistAtTime[i])) dd[i] = myDist[i] - refDistAtTime[i];
+      }
+    }
+  }
+  const ex = s.channels.get('delta_d');
+  if (ex) ex.data = dd;
+  else s.channels.set('delta_d', { name: 'delta_d', unit: 'm', kind: 'derived', data: dd, proc: { ...DEFAULT_PROC }, color: '#4dd0e1' });
+}
+
+/**
+ * Channel `name` of `target`'s lap `targetLap`, re-sampled onto every lap of `s` by the
+ * common coordinate `by` (`lap_dist`: same place on track, `lap_time`: same time into the
+ * lap). NaN outside laps or beyond the target lap. This is how one run is read against
+ * another: d_* channels, delta_d and the math functions ref()/run().
+ */
+export function alignedChannel(s: Session, target: Session, targetLap: Lap, name: string, by: 'lap_dist' | 'lap_time' = 'lap_dist'): Float32Array {
+  const n = s.t.length;
+  const out = new Float32Array(n).fill(NaN);
+  const myX = s.channels.get(by)?.data;
+  const tX = target.channels.get(by)?.data;
+  const tY = target.channels.get(name)?.data;
+  if (!myX || !tX || !tY) return out;
+  const xs: number[] = [];
+  const ys: number[] = [];
+  let last = -Infinity;
+  for (let i = targetLap.startIdx; i <= targetLap.endIdx && i < tX.length; i++) {
+    const x = tX[i];
+    const y = tY[i];
+    if (!Number.isFinite(x) || !Number.isFinite(y) || x <= last) continue;
+    xs.push(x);
+    ys.push(y);
+    last = x;
+  }
+  if (xs.length < 2) return out;
+  const at = (x: number): number => {
+    if (x < xs[0] || x > xs[xs.length - 1]) return NaN;
+    let lo = 0;
+    let hi = xs.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (xs[mid] < x) lo = mid + 1;
+      else hi = mid;
+    }
+    if (lo === 0) return ys[0];
+    const t = (x - xs[lo - 1]) / (xs[lo] - xs[lo - 1]);
+    return ys[lo - 1] + (ys[lo] - ys[lo - 1]) * t;
+  };
+  for (const lap of s.laps) {
+    for (let i = lap.startIdx; i <= lap.endIdx && i < n; i++) {
+      const x = myX[i];
+      if (Number.isFinite(x)) out[i] = at(x);
+    }
+  }
+  return out;
 }
 
 /** delta_t channel: time variance of every lap against the reference lap (NaN outside laps). */

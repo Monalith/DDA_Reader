@@ -40,6 +40,34 @@ export const CHART_TEMPLATES: ChartTemplate[] = [
     ],
   },
   {
+    id: 'delta-time-distance',
+    label: 'Δ lap time vs distance',
+    doc: 'Time gained/lost against the reference lap along the track (x = lap distance). Below zero = faster.',
+    panels: [
+      { id: 'dt1', title: 'Δ lap time vs reference (s) — x: distance', channels: [z('delta_t')], lineWidth: 2, xAxis: 'distance' },
+      { id: 'dt2', title: 'Speed (km/h)', channels: [c('speed')], xAxis: 'distance' },
+    ],
+  },
+  {
+    id: 'delta-distance-time',
+    label: 'Δ distance vs lap time',
+    doc: 'Metres ahead (+) or behind (−) the reference lap at the same lap time (x = lap time).',
+    panels: [
+      { id: 'dd1', title: 'Δ distance vs reference (m) — x: lap time', channels: [z('delta_d')], lineWidth: 2, xAxis: 'time' },
+      { id: 'dd2', title: 'Speed (km/h) — x: lap time', channels: [c('speed')], xAxis: 'time' },
+    ],
+  },
+  {
+    id: 'delta-both',
+    label: 'Δ time (distance) + Δ distance (time)',
+    doc: 'Both delta views together: Δ lap time over distance and Δ distance over lap time, each panel on its own x axis.',
+    panels: [
+      { id: 'db1', title: 'Δ lap time vs reference (s) — x: distance', channels: [z('delta_t')], lineWidth: 2, xAxis: 'distance' },
+      { id: 'db2', title: 'Δ distance vs reference (m) — x: lap time', channels: [z('delta_d')], lineWidth: 2, xAxis: 'time' },
+      { id: 'db3', title: 'Δ speed vs reference (km/h)', channels: [z('d_speed')], xAxis: 'distance' },
+    ],
+  },
+  {
     id: 'speed-vs-ref',
     label: 'Speed vs reference',
     doc: 'Speed traces of every lap with the Δ speed stock panel and Δ time underneath.',

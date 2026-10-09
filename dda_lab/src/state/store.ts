@@ -3,7 +3,7 @@ import { computeDerived } from '../core/derived';
 import { applyProc } from '../core/processing';
 import { evaluate, orderByDependencies, parseExpr, type EvalEnv } from '../core/mathExpr';
 import { detectLaps, withoutDeletedLaps } from '../core/laps';
-import { applyDeltaT, applyRefDeltas, applySectorTimes, applyTotalDist, applyTrackLapDist } from './derivedExtras';
+import { alignedChannel, applyDeltaT, applyRefDeltas, applySectorTimes, applyTotalDist, applyTrackLapDist } from './derivedExtras';
 import { defaultSectorGates, normalizeTrackOrigin, projectToTrack } from '../core/track';
 import { bearingDeg } from '../core/geo';
 import { loadSavedMarkers, markersToRestore, persistMarkers } from '../core/markerStore';
@@ -135,7 +135,13 @@ export function activeTrack(state: Pick<LabState, 'tracks' | 'activeTrackId'>): 
  * Recompute math channels for one session from the workspace definitions. A per-lap
  * formula (`def.perLap[sessionId:lapN]`) replaces the channel's values inside that lap.
  */
-export function recomputeMath(session: Session, defs: MathDef[]): void {
+/** Context for ref()/run() in formulas: every loaded run and the reference lap. */
+export interface MathContext {
+  sessions: Session[];
+  ref?: { session: Session; lap: Lap };
+}
+
+export function recomputeMath(session: Session, defs: MathDef[], ctx?: MathContext): void {
   for (const [name, ch] of session.channels) if (ch.kind === 'math') session.channels.delete(name);
   if (!defs.length) return;
   const ordered = orderByDependencies(defs);
@@ -150,6 +156,23 @@ export function recomputeMath(session: Session, defs: MathDef[]): void {
       },
       dtS,
       lapStarts,
+      n: session.t.length,
+      aligned: (name, target, by) => {
+        if (!ctx) throw new Error('ref()/run() need loaded runs');
+        let t: { session: Session; lap: Lap } | undefined;
+        if (target.kind === 'ref') {
+          t = ctx.ref;
+          if (!t) throw new Error('ref(): pick a reference lap (◉) first');
+        } else {
+          const rs = ctx.sessions[target.n - 1];
+          if (!rs) throw new Error(`run(): there are ${ctx.sessions.length} loaded run(s), no run ${target.n}`);
+          const lap = rs.laps.find((l) => l.isBest) ?? rs.laps.find((l) => l.kind === 'flying') ?? rs.laps[0];
+          if (!lap) throw new Error(`run(): run ${target.n} has no laps`);
+          t = { session: rs, lap };
+        }
+        if (!t.session.channels.has(name)) throw new Error(`'${name}' does not exist in ${t.session.name}`);
+        return alignedChannel(session, t.session, t.lap, name, by);
+      },
     };
     const byName = defs.find((d) => d.name === def.name)!;
     try {
@@ -198,6 +221,7 @@ export function refreshSession(
   track: TrackModel | undefined,
   defs: MathDef[],
   ref?: { session: Session; lap: Lap },
+  allSessions?: Session[],
 ): Session {
   for (const ch of session.channels.values()) {
     if (ch.kind === 'raw' || ch.kind === 'external') ch.data = applyProc(ch, session);
@@ -213,7 +237,7 @@ export function refreshSession(
   applyTotalDist(session);
   applyDeltaT(session, ref?.session, ref?.lap);
   applyRefDeltas(session, ref?.session, ref?.lap);
-  recomputeMath(session, defs);
+  recomputeMath(session, defs, { sessions: allSessions ?? [session], ref });
   return { ...session, channels: new Map(session.channels) };
 }
 
@@ -227,7 +251,7 @@ function refOf(st: Pick<LabState, 'sessions' | 'refLap'>): { session: Session; l
 /** Refresh every session against the current track and reference lap. */
 function refreshAll(st: Pick<LabState, 'sessions' | 'refLap' | 'tracks' | 'activeTrackId' | 'workspace'>, track = activeTrack(st)): Session[] {
   const ref = refOf(st);
-  return st.sessions.map((s) => refreshSession(s, track, st.workspace.mathChannels, ref));
+  return st.sessions.map((s) => refreshSession(s, track, st.workspace.mathChannels, ref, st.sessions));
 }
 
 export function defaultLapMeta(st: Pick<LabState, 'sessions'>, sessionId: string, lap: number): LapMeta {
@@ -259,7 +283,7 @@ export const useLab = create<LabState>((set, get) => ({
 
   addSession(s) {
     const { workspace, sessions } = get();
-    recomputeMath(s, workspace.mathChannels);
+    recomputeMath(s, workspace.mathChannels, { sessions: [...sessions, s], ref: refOf(get()) });
     const best = s.laps.find((l) => l.isBest) ?? s.laps.find((l) => l.kind === 'flying') ?? s.laps[0];
     const refLap = get().refLap ?? (best ? { sessionId: s.id, lap: best.n } : undefined);
     const next = { ...get(), sessions: [...sessions, s], refLap };
@@ -353,7 +377,7 @@ export const useLab = create<LabState>((set, get) => ({
         if (s.id !== sessionId) return s;
         const ch = s.channels.get(chName);
         if (ch) ch.proc = proc;
-        return refreshSession(s, track, st.workspace.mathChannels, refOf(st));
+        return refreshSession(s, track, st.workspace.mathChannels, refOf(st), st.sessions);
       }),
     });
   },
@@ -364,7 +388,7 @@ export const useLab = create<LabState>((set, get) => ({
       sessions: st.sessions.map((s) => {
         const ch = s.channels.get(chName);
         if (ch) ch.proc = { ...proc };
-        return refreshSession(s, track, st.workspace.mathChannels, refOf(st));
+        return refreshSession(s, track, st.workspace.mathChannels, refOf(st), st.sessions);
       }),
     });
   },
@@ -375,7 +399,7 @@ export const useLab = create<LabState>((set, get) => ({
     if (!merged.perLap || !Object.keys(merged.perLap).length) delete merged.perLap;
     if (!merged.perSession || !Object.keys(merged.perSession).length) delete merged.perSession;
     const defs = [...st.workspace.mathChannels.filter((d) => d.name !== def.name), merged];
-    for (const s of st.sessions) recomputeMath(s, defs);
+    for (const s of st.sessions) recomputeMath(s, defs, { sessions: st.sessions, ref: refOf(st) });
     set({
       workspace: { ...st.workspace, mathChannels: defs },
       sessions: st.sessions.map((s) => ({ ...s, channels: new Map(s.channels) })),
@@ -393,7 +417,7 @@ export const useLab = create<LabState>((set, get) => ({
     if (Object.keys(perLap).length) next.perLap = perLap;
     else delete next.perLap;
     const defs = st.workspace.mathChannels.map((d) => (d.name === name ? next : d));
-    for (const s of st.sessions) recomputeMath(s, defs);
+    for (const s of st.sessions) recomputeMath(s, defs, { sessions: st.sessions, ref: refOf(st) });
     set({
       workspace: { ...st.workspace, mathChannels: defs },
       sessions: st.sessions.map((s) => ({ ...s, channels: new Map(s.channels) })),
@@ -410,7 +434,7 @@ export const useLab = create<LabState>((set, get) => ({
     if (Object.keys(perSession).length) next.perSession = perSession;
     else delete next.perSession;
     const defs = st.workspace.mathChannels.map((d) => (d.name === name ? next : d));
-    for (const s of st.sessions) recomputeMath(s, defs);
+    for (const s of st.sessions) recomputeMath(s, defs, { sessions: st.sessions, ref: refOf(st) });
     set({
       workspace: { ...st.workspace, mathChannels: defs },
       sessions: st.sessions.map((s) => ({ ...s, channels: new Map(s.channels) })),
@@ -461,7 +485,7 @@ export const useLab = create<LabState>((set, get) => ({
   removeMathChannel(name) {
     const st = get();
     const defs = st.workspace.mathChannels.filter((d) => d.name !== name);
-    for (const s of st.sessions) recomputeMath(s, defs);
+    for (const s of st.sessions) recomputeMath(s, defs, { sessions: st.sessions, ref: refOf(st) });
     set({
       workspace: { ...st.workspace, mathChannels: defs },
       sessions: st.sessions.map((s) => ({ ...s, channels: new Map(s.channels) })),
@@ -474,7 +498,7 @@ export const useLab = create<LabState>((set, get) => ({
       sessions: st.sessions.map((s) => {
         if (s.id !== sessionId) return s;
         for (const c of channels) s.channels.set(c.name, c);
-        return refreshSession(s, track, st.workspace.mathChannels, refOf(st));
+        return refreshSession(s, track, st.workspace.mathChannels, refOf(st), st.sessions);
       }),
     });
   },
@@ -526,7 +550,7 @@ export const useLab = create<LabState>((set, get) => ({
       workspace: { ...st.workspace, mathChannels },
       selectedLaps: st.selectedLaps.filter((l) => !(l.sessionId === sessionId && l.lap === lap)),
       cursor: st.cursor?.sessionId === sessionId ? null : st.cursor,
-      sessions: st.sessions.map((s) => (s.id === sessionId ? refreshSession(s, track, mathChannels, refOf({ ...st, refLap })) : s)),
+      sessions: st.sessions.map((s) => (s.id === sessionId ? refreshSession(s, track, mathChannels, refOf({ ...st, refLap }), st.sessions) : s)),
     });
   },
   removeLapFromWorkspace(sessionId, lap) {

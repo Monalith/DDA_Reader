@@ -22,6 +22,7 @@ const AxisRangeSchema = z.object({
 const PanelSchema = z.object({
   id: z.string(),
   title: z.string().optional(),
+  xAxis: z.enum(['time', 'distance']).optional(),
   channels: z.array(PanelChannelSchema).default([]),
   yL: AxisRangeSchema.optional(),
   yR: AxisRangeSchema.optional(),

@@ -3,7 +3,7 @@ import uPlot from 'uplot';
 import { attachXInteractions, attachYInteractions } from './chartInteractions';
 import { DEFAULT_TURN_LABELS, type DataMarker, type Session, type Workspace } from '../core/types';
 import { activeTrack, useLab, type CursorPos, type LapRef } from '../state/store';
-import { cursorIdxFromX, findLap, markerIdxInLap, markerX, overlaySeries, xFromIdx, type OverlayLine } from '../state/selectors';
+import { cursorIdxFromX, findLap, markerIdxInLap, markerX, overlaySeries, panelXAxis, xFromIdx, type OverlayLine } from '../state/selectors';
 import { bestTurnTimes, fmtTurnDelta, turnDeltas } from '../core/turnTimes';
 
 /** Per plotted lap: gain/loss in every turn against the best loaded lap (drawn at the turn lines). */
@@ -95,6 +95,7 @@ function zeroFill(channel: string): uPlot.Series['fill'] {
     const { top, height } = u.bbox;
     if (!height) return 'transparent';
     const y0 = u.valToPos(0, scale, true);
+    if (!Number.isFinite(y0)) return 'transparent'; // scale not ready / all-NaN series
     const t = Math.min(1, Math.max(0, (y0 - top) / height));
     const g = u.ctx.createLinearGradient(0, top, 0, top + height);
     const above = invert ? LOSS : GAIN;
@@ -141,7 +142,13 @@ function monotonic(x: Float64Array, y: Float32Array): [Float64Array, Float32Arra
 /** Join per-line (x, y) tables into a single aligned uPlot data set. */
 function joinLines(lines: OverlayLine[]): uPlot.AlignedData {
   if (!lines.length) return [new Float64Array(0)];
-  const tables = lines.map((l) => monotonic(l.x, l.y) as unknown as uPlot.AlignedData);
+  // uPlot wants gaps as null: a NaN sample poisons its min/max and empties the y axis
+  const tables = lines.map((l) => {
+    const [x, y] = monotonic(l.x, l.y);
+    const yn: (number | null)[] = new Array(y.length);
+    for (let i = 0; i < y.length; i++) yn[i] = Number.isFinite(y[i]) ? y[i] : null;
+    return [x, yn] as unknown as uPlot.AlignedData;
+  });
   return uPlot.join(tables);
 }
 
@@ -169,7 +176,8 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
   const markers = useLab((s) => s.markers);
   const activeMarkerId = useLab((s) => s.activeMarkerId);
 
-  const xAxis = workspace.xAxis;
+  const xAxis = panelXAxis(panel, workspace);
+  const sharedX = xAxis === workspace.xAxis; // a time panel ignores a distance zoom and vice versa
   const unitMph = workspace.unitMph;
 
   const lines = useMemo(
@@ -284,6 +292,7 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
       return;
     }
 
+    const setRangeRef = { current: (_r: [number, number] | null) => {} };
     const opts: uPlot.Options = {
       width: host.clientWidth || 600,
       height: 150,
@@ -383,7 +392,7 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
             const min = u.posToVal(sel.left, 'x');
             const max = u.posToVal(sel.left + sel.width, 'x');
             u.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false);
-            if (Number.isFinite(min) && Number.isFinite(max) && max > min) useLab.getState().setXRange([min, max]);
+            if (Number.isFinite(min) && Number.isFinite(max) && max > min) setRangeRef.current([min, max]);
           },
         ],
         draw: [
@@ -491,6 +500,7 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
 
     const u = new uPlot(opts, data, host);
     uRef.current = u;
+    (host as HTMLDivElement & { __u?: uPlot }).__u = u; // for e2e inspection
 
     const extentOf = (): [number, number] => {
       const xs = u.data[0] as ArrayLike<number>;
@@ -507,7 +517,8 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
     const setRange = (r: [number, number] | null) => {
       const st = useLab.getState();
       const cur = st.workspace.panels.find((p) => p.id === panelRef.current.id);
-      if (cur && cur.x?.linked === false) {
+      const ownAxis = cur && (cur.xAxis ?? st.workspace.xAxis) !== st.workspace.xAxis; // own x axis → own zoom
+      if (cur && (cur.x?.linked === false || ownAxis)) {
         st.setWorkspace({
           panels: st.workspace.panels.map((p) => (p.id === cur.id ? { ...p, x: { linked: false, min: r ? r[0] : null, max: r ? r[1] : null } } : p)),
         });
@@ -515,6 +526,7 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
         st.setXRange(r);
       }
     };
+    setRangeRef.current = setRange;
     const onDblClick = () => setRange(null);
     u.over.addEventListener('dblclick', onDblClick);
     // A plain left click pins the "last clicked" sample (📍 Mark places markers there).
@@ -640,12 +652,12 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
       if (a < b) u.setScale('x', { min: a, max: b });
       return;
     }
-    if (xRange) {
+    if (xRange && sharedX) {
       u.setScale('x', { min: xRange[0], max: xRange[1] });
       return;
     }
     if (min < max) u.setScale('x', { min, max });
-  }, [xRange, data, panel.x]);
+  }, [xRange, data, panel.x, sharedX]);
 
   // ---- cursor coming from elsewhere (map click, other panels) -----------
   useEffect(() => {

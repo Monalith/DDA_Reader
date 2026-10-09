@@ -38,7 +38,8 @@ export default function ChartStack() {
     const csv = visibleCsv({
       xAxis: st.workspace.xAxis,
       range: st.xRange,
-      panels: st.workspace.panels.map((p) => ({ id: p.id, lines: overlaySeries(st, p) })),
+      // panels on their own x axis cannot share the grid of this file
+      panels: st.workspace.panels.filter((p) => (p.xAxis ?? st.workspace.xAxis) === st.workspace.xAxis).map((p) => ({ id: p.id, lines: overlaySeries(st, p) })),
     });
     if (!csv.trim()) {
       st.setStatus('Nothing plotted to export');

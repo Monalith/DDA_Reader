@@ -63,7 +63,7 @@ export default function PanelSettings({ panel, xAxis, onChange, onClose }: Props
 
   const hasR = panel.channels.some((c) => c.axis === 'R');
   const linked = panel.x?.linked ?? true;
-  const xUnit = xAxis === 'distance' ? 'm' : 's';
+  const xUnit = (panel.xAxis ?? xAxis) === 'distance' ? 'm' : 's';
   const set = (patch: Partial<ChartPanelConfig>) => onChange({ ...panel, ...patch });
 
   return (
@@ -80,6 +80,18 @@ export default function PanelSettings({ panel, xAxis, onChange, onClose }: Props
       {hasR && <RangeRow label="Right" value={panel.yR} onChange={(yR) => set({ yR })} testId={`ps-${panel.id}-yr`} />}
 
       <div className="ps-section">X axis ({xUnit})</div>
+      <div className="ps-row">
+        <span className="ps-label">Axis</span>
+        <select
+          data-testid={`ps-${panel.id}-xaxis`}
+          value={panel.xAxis ?? ''}
+          onChange={(e) => set({ xAxis: e.target.value === '' ? undefined : (e.target.value as 'time' | 'distance') })}
+        >
+          <option value="">same as workspace ({xAxis})</option>
+          <option value="distance">distance (m)</option>
+          <option value="time">lap time (s)</option>
+        </select>
+      </div>
       <label className="ps-row ps-check">
         <input
           type="checkbox"

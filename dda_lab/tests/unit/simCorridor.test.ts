@@ -26,7 +26,8 @@ function bandMosaic(bandHalfPx: number): Mosaic {
 describe('calibrateAsphalt', () => {
   it('derives thresholds that accept the band and reject the field', () => {
     const m = bandMosaic(12);
-    const samples: Array<[number, number]> = [[10, 128], [60, 128], [200, 128]];
+    const samples: Array<[number, number]> = [];
+    for (let x = 10; x < 240; x += 10) samples.push([x, 128]);
     const cal = calibrateAsphalt(m, samples);
     expect(cal.satMax).toBeLessThan(0.2);
     expect(cal.valLo).toBeLessThan(129);

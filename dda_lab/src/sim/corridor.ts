@@ -58,7 +58,7 @@ export function calibrateAsphalt(m: Mosaic, samplesPx: Array<[number, number]>):
       vals.push(v);
     }
   }
-  if (sats.length === 0) {
+  if (sats.length < 8) {
     throw new CorridorError(
       'no-traces',
       'Corridor extraction needs loaded GPS laps to learn what asphalt looks like. Open a session first.',

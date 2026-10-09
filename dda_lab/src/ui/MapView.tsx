@@ -460,19 +460,19 @@ export default function MapView() {
           const vb = bestApex.get(turn.n);
           if (va != null && vb != null && Number.isFinite(va) && Number.isFinite(vb) && txt !== 'best') {
             const dv = va - vb;
-            speedTxt = `\n${dv >= 0 ? '+' : '−'}${Math.abs(dv).toFixed(1)} km/h`;
+            speedTxt = ` (${dv >= 0 ? '+' : '−'}${Math.abs(dv).toFixed(1)} km/h)`;
           }
           const timeTxt = txt === 'best' ? 'best' : `${txt}s`;
           features.push({
             type: 'Feature',
-            properties: { label: `${multi ? `${meta.name.replace(/^.*\s(L\d+)$/, '$1')} ` : ''}${timeTxt}${speedTxt}`, color, offset: [1.1, 0.6 + row * (speedTxt ? 2.35 : 1.2)] },
+            properties: { label: `${multi ? `${meta.name.replace(/^.*\s(L\d+)$/, '$1')} ` : ''}${timeTxt}${speedTxt}`, color, offset: [1.0, 0.6 + row * 1.2] },
             geometry: { type: 'Point', coordinates: [turn.apexGeo[0], turn.apexGeo[1]] },
           });
         });
       });
     }
     setData(map, 'turn-deltas', { type: 'FeatureCollection', features });
-    if (map.getLayer('turn-deltas')) map.setLayoutProperty('turn-deltas', 'text-size', zoomRadius(Math.max(10, turnLabels.size - 2), turnLabels.size + 6));
+    if (map.getLayer('turn-deltas')) map.setLayoutProperty('turn-deltas', 'text-size', zoomRadius(Math.max(12, turnLabels.size + 1), turnLabels.size + 10));
   }, [ready, track, entries, sessions, lapMeta, turnLabels]);
 
   // ---------- user data markers (pins with the marker name) ----------
@@ -1016,7 +1016,7 @@ function addDataLayers(map: maplibregl.Map): void {
     layout: {
       'text-field': ['get', 'label'],
       'text-font': TEXT_FONT,
-      'text-size': zoomRadius(12, 20),
+      'text-size': zoomRadius(15, 24),
       'text-anchor': 'left',
       'text-justify': 'left',
       'text-max-width': 30,

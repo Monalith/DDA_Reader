@@ -178,7 +178,7 @@ export interface TurnLabelStyle {
   best: string;
 }
 
-export const DEFAULT_TURN_LABELS: TurnLabelStyle = { show: false, onMap: true, speed: true, size: 14, gain: '#00e676', loss: '#ff3d57', best: '#ffffff' };
+export const DEFAULT_TURN_LABELS: TurnLabelStyle = { show: false, onMap: true, speed: true, size: 16, gain: '#00e676', loss: '#ff3d57', best: '#ffffff' };
 
 /** A math channel: one formula for every lap, optionally overridden per lap (key = `${sessionId}:${lapN}`). */
 export interface MathChannelDef {

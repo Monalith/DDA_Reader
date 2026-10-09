@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MotoRaceLaps — free motorcycle lap data analysis in your browser</title>
+<meta name="description" content="DDA Lab: open Ducati DDA, RaceChrono and onboard-video telemetry, compare laps on a satellite map with turns and apexes, Δ time and Δ distance vs a reference lap, math channels, markers and exports. Runs in the browser, your files never leave your computer.">
+<meta property="og:title" content="MotoRaceLaps — DDA Lab">
+<meta property="og:description" content="Free motorcycle lap data analysis in the browser. Satellite map, lap compare, Δ time, math channels.">
+<meta property="og:image" content="https://motoracelaps.com/img/app-examples.jpg">
+<meta property="og:url" content="https://motoracelaps.com/">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%230e1116'/%3E%3Cpath d='M9 22 L13 9 L19 18 L23 10' fill='none' stroke='%23ff6a00' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="/"><span class="dda">MOTO</span><span class="lab">RACELAPS</span></a>
+  <nav>
+    <a href="#features">Features</a>
+    <a href="#how">How it works</a>
+    <a href="#examples">Examples</a>
+    <a href="#privacy">Privacy</a>
+    <a class="cta" href="/lab/">Open DDA Lab →</a>
+  </nav>
+</header>
+
+<section class="hero">
+  <div class="hero-text">
+    <p class="kicker">Free · runs in your browser · no account</p>
+    <h1>See where the lap time goes.</h1>
+    <p class="lead">Open your <strong>Ducati DDA</strong> files, RaceChrono or onboard-video telemetry and compare laps
+      on a satellite map with turns and apexes. Δ time, Δ distance, speed, lean, throttle and your own math channels —
+      the analysis tools of a data engineer, made simple.</p>
+    <div class="actions">
+      <a class="btn primary" href="/lab/">Open DDA Lab</a>
+      <a class="btn" href="/lab/?example=bike1000">Try the Serres example lap</a>
+    </div>
+    <p class="fine">Works with .dda (Ducati DDA / DDA+ GPS), DDA_Reader .json / .csv exports, RaceChrono &amp; onboard-video JSON, .lab.json bundles.</p>
+  </div>
+  <figure class="hero-shot">
+    <img src="img/app-examples.jpg" alt="DDA Lab: three laps compared on the Serres satellite map with Δ time and Δ distance charts" width="1600" height="1000" loading="eager">
+  </figure>
+</section>
+
+<section id="features" class="features">
+  <h2>Everything a track-day data engineer uses</h2>
+  <div class="grid">
+    <article><h3>Satellite map with turns</h3><p>Esri imagery, the track vectorised from your own GPS, turn names and apexes, brake and throttle points with km/h, gain/loss per turn written on the map.</p></article>
+    <article><h3>Lap compare</h3><p>Overlay any laps from any files. Pick a reference lap: every chart shows Δ time, Δ speed, Δ lean, Δ throttle against it — stock-chart style, green where you gain, red where you lose.</p></article>
+    <article><h3>Δ time vs distance, Δ distance vs time</h3><p>Ready-made templates: time gained along the track, or metres ahead/behind at the same lap time. Each chart panel can have its own x axis.</p></article>
+    <article><h3>Math channels</h3><p>~60 functions, filters (low-pass, Savitzky-Golay, moving average), integrals with your own x, per-lap or per-run formulas, and <code>ref()</code> / <code>run()</code> to subtract or divide one run by another.</p></article>
+    <article><h3>Markers &amp; notes</h3><p>Pin any point: values stay fixed under every chart, drag the flag along the lap, add a note. Markers are saved per file and travel in exports.</p></article>
+    <article><h3>Big, readable values</h3><p>Live cursor values in large colour-coded cards, per-panel Y zoom by dragging the axis, wheel / middle / right-button zoom, focus on a single turn.</p></article>
+    <article><h3>Laps workspace</h3><p>Merge many DDA runs, delete bad laps, name and colour laps, move the start line, edit turns. Exports contain exactly what you see.</p></article>
+    <article><h3>Reports &amp; export</h3><p>Sector tables, theoretical best, turn metrics; CSV of the visible range, per-lap CSV, .lab.json bundles that reopen anywhere.</p></article>
+  </div>
+</section>
+
+<section id="how" class="how">
+  <h2>How it works</h2>
+  <ol>
+    <li><strong>Open</strong> — click <em>Open sessions</em> and pick your files. Several at once is fine; a merged DDA file gives you the whole day.</li>
+    <li><strong>Pick laps</strong> — tick the laps to compare, set one as the reference (◉). The map, charts and the Δ channels follow.</li>
+    <li><strong>Dig in</strong> — focus on a turn, drop markers, write a formula, apply a template. Export the result when you are done.</li>
+  </ol>
+  <figure class="shot">
+    <img src="img/app-deltas.jpg" alt="Δ lap time vs distance and Δ distance vs lap time panels with green/red fill" width="1600" height="1100" loading="lazy">
+    <figcaption>Δ time along the track and Δ distance over lap time — one template, two x axes.</figcaption>
+  </figure>
+</section>
+
+<section id="examples" class="examples">
+  <h2>Serres Racing Circuit examples, built in</h2>
+  <p>Open the app and use the <em>Examples…</em> menu on the map:</p>
+  <ul>
+    <li><strong>1000 Bike</strong> — BMW S1000RR, 1:19.81 (opens by default)</li>
+    <li><strong>600 Bike</strong> — Yamaha R6 SSP, 1:19.849</li>
+    <li><strong>Intermediate</strong> — RaceChrono onboard, 1:29.2</li>
+  </ul>
+  <figure class="shot">
+    <img src="img/app-map.jpg" alt="Two runs in different colours on the Serres map, with per-turn gain/loss labels" width="1600" height="1000" loading="lazy">
+    <figcaption>Runs in their own colours, turn-by-turn gain and loss on the map.</figcaption>
+  </figure>
+</section>
+
+<section id="privacy" class="privacy">
+  <h2>Your data stays with you</h2>
+  <p>DDA Lab decodes and analyses files <strong>inside your browser</strong>. Nothing you open is uploaded. Only track models and
+    schema images you choose to save go to the server. The app is open source (MIT) and can also run on your own computer.</p>
+  <div class="actions">
+    <a class="btn primary" href="/lab/">Open DDA Lab</a>
+    <a class="btn" href="https://github.com/Monalith/DDA_Reader" rel="noopener">Source on GitHub</a>
+  </div>
+</section>
+
+<footer>
+  <span>© <span id="y"></span> MotoRaceLaps · DDA Lab is built on <a href="https://github.com/slowfastguy/DDA_Reader" rel="noopener">DDA_Reader</a> (MIT)</span>
+  <span>Map imagery © Esri, Maxar, Earthstar Geographics · © OpenStreetMap contributors</span>
+</footer>
+<script>document.getElementById('y').textContent = new Date().getFullYear();</script>
+</body>
+</html>

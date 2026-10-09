@@ -8,8 +8,11 @@ import { openFiles } from './ui/openFiles';
 function useDefaultExample(): void {
   useEffect(() => {
     if (useLab.getState().sessions.length) return;
-    if (navigator.webdriver || new URLSearchParams(location.search).has('noexample')) return;
-    const ex = EXAMPLES.find((x) => x.id === DEFAULT_EXAMPLE_ID);
+    const q = new URLSearchParams(location.search);
+    if (q.has('noexample')) return;
+    const wanted = q.get('example'); // ?example=bike600 opens that one (also under automation)
+    if (navigator.webdriver && !wanted) return;
+    const ex = EXAMPLES.find((x) => x.id === (wanted ?? DEFAULT_EXAMPLE_ID));
     if (!ex) return;
     let cancelled = false;
     fetchExampleFile(ex)

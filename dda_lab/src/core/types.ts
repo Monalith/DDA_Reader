@@ -165,6 +165,8 @@ export interface MathChannelDef {
   unit: string;
   expr: string;
   color: string;
+  /** Formula for one run (session) only, keyed by session id; overrides `expr` there. */
+  perSession?: Record<string, string>;
   perLap?: Record<string, string>;
 }
 

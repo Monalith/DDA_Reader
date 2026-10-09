@@ -34,6 +34,7 @@ const MathChannelSchema = z.object({
   unit: z.string().default(''),
   expr: z.string(),
   color: z.string().default('#ffffff'),
+  perSession: z.record(z.string(), z.string()).optional(),
   perLap: z.record(z.string(), z.string()).optional(),
 });
 

@@ -76,6 +76,37 @@ export const MATH_PRESETS: MathPreset[] = [
     expr: 'where(tq_fast > 0 || tq_slow > 0, 1, 0)', doc: '1 when the ECU is cutting torque.', needs: ['tq_fast', 'tq_slow'], group: 'Flags' },
 ];
 
+/** User-saved math templates ("My presets"), kept in localStorage. */
+export const USER_PRESETS_KEY = 'dda-lab-math-presets';
+export type UserMathPreset = Omit<MathPreset, 'group' | 'needs'> & { group: 'My presets'; needs: string[] };
+
+export function loadUserPresets(storage: Pick<Storage, 'getItem'> | undefined = typeof localStorage !== 'undefined' ? localStorage : undefined): UserMathPreset[] {
+  try {
+    const raw = storage?.getItem(USER_PRESETS_KEY);
+    const arr = raw ? (JSON.parse(raw) as unknown) : [];
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .filter((p): p is UserMathPreset => !!p && typeof p === 'object' && typeof (p as UserMathPreset).name === 'string' && typeof (p as UserMathPreset).expr === 'string')
+      .map((p) => ({ ...p, group: 'My presets', needs: Array.isArray(p.needs) ? p.needs : [] }));
+  } catch {
+    return [];
+  }
+}
+
+export function saveUserPresets(list: UserMathPreset[], storage: Pick<Storage, 'setItem'> | undefined = typeof localStorage !== 'undefined' ? localStorage : undefined): void {
+  try {
+    storage?.setItem(USER_PRESETS_KEY, JSON.stringify(list));
+  } catch {
+    /* storage unavailable (private window) */
+  }
+}
+
+/** Add or replace (by name) a user preset; `needs` is derived from the expression's identifiers. */
+export function upsertUserPreset(list: UserMathPreset[], p: Omit<UserMathPreset, 'id' | 'group' | 'needs'>, needs: string[]): UserMathPreset[] {
+  const next: UserMathPreset = { ...p, id: `user_${p.name}`, group: 'My presets', needs };
+  return [...list.filter((x) => x.name !== p.name), next];
+}
+
 export interface FilterPreset {
   id: string;
   label: string;

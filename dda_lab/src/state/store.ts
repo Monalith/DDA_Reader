@@ -82,6 +82,8 @@ export interface LabState {
   removeMathChannel(name: string): void;
   /** Set (or clear with null) the formula of one math channel for one lap only. */
   setMathLapExpr(name: string, sessionId: string, lap: number, expr: string | null): void;
+  /** Set (or clear with null) the formula of one math channel for one run (session) only. */
+  setMathSessionExpr(name: string, sessionId: string, expr: string | null): void;
   /**
    * Place a marker. `prefer: 'click'` (the 📍 button) uses the last clicked sample and falls
    * back to the hover cursor; `'hover'` (the M key) the other way round. Null when neither exists.
@@ -136,7 +138,8 @@ export function recomputeMath(session: Session, defs: MathDef[]): void {
     };
     const byName = defs.find((d) => d.name === def.name)!;
     try {
-      const data = evaluate(parseExpr(def.expr), env);
+      const baseExpr = def.perSession?.[session.id] ?? def.expr;
+      const data = evaluate(parseExpr(baseExpr), env);
       const overrides = Object.entries(def.perLap ?? {}).filter(([k]) => k.startsWith(`${session.id}:`));
       const lapErrors: string[] = [];
       for (const [k, lapExpr] of overrides) {
@@ -259,6 +262,21 @@ export const useLab = create<LabState>((set, get) => ({
       refLap: st.refLap?.sessionId === id ? undefined : st.refLap,
       cursor: st.cursor?.sessionId === id ? null : st.cursor,
       clickPos: st.clickPos?.sessionId === id ? null : st.clickPos,
+      workspace: {
+        ...st.workspace,
+        mathChannels: st.workspace.mathChannels.map((d) => {
+          if (!d.perSession?.[id] && !Object.keys(d.perLap ?? {}).some((k) => k.startsWith(`${id}:`))) return d;
+          const perSession = { ...(d.perSession ?? {}) };
+          delete perSession[id];
+          const perLap = Object.fromEntries(Object.entries(d.perLap ?? {}).filter(([k]) => !k.startsWith(`${id}:`)));
+          const next: MathDef = { ...d };
+          if (Object.keys(perSession).length) next.perSession = perSession;
+          else delete next.perSession;
+          if (Object.keys(perLap).length) next.perLap = perLap;
+          else delete next.perLap;
+          return next;
+        }),
+      },
       markers: st.markers.filter((m) => m.sessionId !== id),
       activeMarkerId: st.markers.some((m) => m.id === st.activeMarkerId && m.sessionId === id) ? null : st.activeMarkerId,
     }));
@@ -318,8 +336,9 @@ export const useLab = create<LabState>((set, get) => ({
   addMathChannel(def) {
     const st = get();
     const prev = st.workspace.mathChannels.find((d) => d.name === def.name);
-    const merged: MathDef = { ...def, perLap: def.perLap ?? prev?.perLap };
+    const merged: MathDef = { ...def, perLap: def.perLap ?? prev?.perLap, perSession: def.perSession ?? prev?.perSession };
     if (!merged.perLap || !Object.keys(merged.perLap).length) delete merged.perLap;
+    if (!merged.perSession || !Object.keys(merged.perSession).length) delete merged.perSession;
     const defs = [...st.workspace.mathChannels.filter((d) => d.name !== def.name), merged];
     for (const s of st.sessions) recomputeMath(s, defs);
     set({
@@ -338,6 +357,23 @@ export const useLab = create<LabState>((set, get) => ({
     const next: MathDef = { ...cur };
     if (Object.keys(perLap).length) next.perLap = perLap;
     else delete next.perLap;
+    const defs = st.workspace.mathChannels.map((d) => (d.name === name ? next : d));
+    for (const s of st.sessions) recomputeMath(s, defs);
+    set({
+      workspace: { ...st.workspace, mathChannels: defs },
+      sessions: st.sessions.map((s) => ({ ...s, channels: new Map(s.channels) })),
+    });
+  },
+  setMathSessionExpr(name, sessionId, expr) {
+    const st = get();
+    const cur = st.workspace.mathChannels.find((d) => d.name === name);
+    if (!cur) return;
+    const perSession = { ...(cur.perSession ?? {}) };
+    if (expr && expr.trim()) perSession[sessionId] = expr.trim();
+    else delete perSession[sessionId];
+    const next: MathDef = { ...cur };
+    if (Object.keys(perSession).length) next.perSession = perSession;
+    else delete next.perSession;
     const defs = st.workspace.mathChannels.map((d) => (d.name === name ? next : d));
     for (const s of st.sessions) recomputeMath(s, defs);
     set({

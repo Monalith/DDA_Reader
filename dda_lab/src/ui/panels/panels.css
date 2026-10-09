@@ -324,3 +324,20 @@ kbd { background: var(--panel-2); border: 1px solid var(--border); border-radius
   padding: 5px 8px; border: 1px dashed var(--border); border-radius: 6px; background: rgba(255,255,255,0.02);
 }
 .integral-builder .title { font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--fg-dim); }
+
+/* ---- math: editable cards ---- */
+.math-cards { display: flex; flex-direction: column; gap: 4px; }
+.math-card { border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; background: rgba(255,255,255,0.02); }
+.math-card .row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.expr-field { display: inline-flex; align-items: center; gap: 4px; flex: 1 1 220px; min-width: 180px; }
+.expr-field .bp-input { flex: 1; }
+.bp-input.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.bp-badge.run { color: var(--accent-2); border-color: var(--accent-2); }
+.preset-card.mine { border-color: var(--accent); }
+.preset-card .pc-expr-edit {
+  width: 100%; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px;
+  background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: 3px 5px;
+}
+.preset-card .pc-name { width: 110px; font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
+.preset-card .pc-unit { width: 52px; font-size: 11px; }
+.preset-card .pc-label { flex: 1; font-weight: 700; }

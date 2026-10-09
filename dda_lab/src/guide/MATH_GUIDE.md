@@ -101,13 +101,24 @@ parentheses for grouping. Numbers are plain: `3.6`, `0.25`.
 | Time at full throttle per lap (s) | `lap_sum(where(tps >= 95, 1, 0)) / 10` |
 | Lateral g from geometry | `kmh2ms(speed)^2 / clamp(radius, 5, 2000) / g` |
 
-## 5b. A different formula for one lap
+## 5b. A different formula for one run or one lap
 
-Every math channel has a default formula. In the editor, **Formula applies to** lets you pick one of the
-laps in your workspace instead of “all laps”: the formula you save then replaces the channel’s values
-inside that lap only (other laps keep the default). Per-lap formulas are listed under the channel with
-a **lap** badge; ✕ returns that lap to the default. Deleting the lap deletes its formula. Typical use:
-a different gear ratio or correction factor for a lap ridden with another setup.
+Every math channel has a default formula. In the editor, **Formula applies to** lets you pick
+**one run** (session: all its laps) or **one lap** instead of “all runs and laps”. The formula you save
+then replaces the channel’s values there only; everything else keeps the default. Typical use: one
+bike needs an offset or a different correction (`speed + 3`, `rpm * 1.02`) while the others stay as
+they are, on the same plot. Run and lap formulas are listed under the channel (badges **run** / **lap**);
+✕ returns to the default. Removing the run or lap removes its formula.
+
+### Editing on the cards
+Math channels are cards: change the unit, colour or **formula right on the card** (Enter saves,
+Esc reverts). Preset cards are editable too: adjust the formula or the channel name, then **Add**.
+
+### Your own templates
+**★ Save as preset** in the editor (or ★ on any channel/preset card) keeps a formula under
+**Presets → My presets**, stored in this browser. Your presets can be edited and saved on their
+card, or deleted with ✕.
+
 
 ## 5c. Markers (fixed data points)
 

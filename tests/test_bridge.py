@@ -317,15 +317,57 @@ def test_corridor_rejects_mismatched_array_lengths(corridor_client):
     assert r.status_code == 422
 
 
-def test_corridor_rejects_an_oversized_body(corridor_client):
-    huge = {
+def test_corridor_rejects_too_many_points(corridor_client):
+    # Above CORRIDOR_MAX_POINTS but comfortably under CORRIDOR_MAX_BODY_BYTES,
+    # so this exercises the pydantic point-count validator specifically,
+    # distinct from the raw body-size cap tested below.
+    n = 25_000
+    too_many_points = {
         **VALID_CORRIDOR,
-        "nPoints": 200_001,
-        "leftM": [1.0] * 200_001,
-        "rightM": [1.0] * 200_001,
-        "known": [True] * 200_001,
+        "nPoints": n,
+        "leftM": [1.0] * n,
+        "rightM": [1.0] * n,
+        "known": [True] * n,
     }
     r = corridor_client.put(
-        "/corridors/serres-23518-41073", json=huge, headers={"X-Corridor-Token": "s3cret"}
+        "/corridors/serres-23518-41073", json=too_many_points, headers={"X-Corridor-Token": "s3cret"}
     )
     assert r.status_code == 422
+
+
+def test_corridor_write_rejects_huge_body_without_token_before_validating(corridor_client):
+    # A body this large would fail CorridorPayload validation (it isn't even
+    # valid JSON), but with no token the request must never reach the
+    # validator at all: 401, not 422, proves the token check runs first.
+    huge_body = b"{" + b"x" * (3 * 1024 * 1024) + b"}"
+    r = corridor_client.put(
+        "/corridors/serres-23518-41073",
+        content=huge_body,
+        headers={"Content-Type": "application/json"},
+    )
+    assert r.status_code == 401
+    assert corridor_client.get("/corridors/serres-23518-41073").status_code == 404
+
+
+def test_corridor_write_rejects_oversized_body_with_a_valid_token(corridor_client):
+    huge_body = b"{" + b"x" * (3 * 1024 * 1024) + b"}"
+    r = corridor_client.put(
+        "/corridors/serres-23518-41073",
+        content=huge_body,
+        headers={"X-Corridor-Token": "s3cret", "Content-Type": "application/json"},
+    )
+    assert r.status_code == 413
+
+
+def test_corridor_get_self_heals_a_corrupted_file(corridor_client):
+    corridor_client.put(
+        "/corridors/serres-23518-41073",
+        json=VALID_CORRIDOR,
+        headers={"X-Corridor-Token": "s3cret"},
+    )
+    path = dda_lab_bridge._corridor_path("serres-23518-41073")
+    path.write_text("{not valid json", encoding="utf-8")
+
+    r = corridor_client.get("/corridors/serres-23518-41073")
+    assert r.status_code == 404
+    assert not path.exists()

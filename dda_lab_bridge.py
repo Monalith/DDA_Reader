@@ -23,10 +23,10 @@ import tempfile
 from pathlib import Path
 from typing import Literal, Optional
 
-from fastapi import FastAPI, File, Header, UploadFile
+from fastapi import FastAPI, File, Header, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 import os
 import sys
@@ -51,6 +51,11 @@ CORRIDOR_TOKEN = os.environ.get("DDA_CORRIDOR_TOKEN", "")
 CORRIDOR_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 # A 7 km circuit at 2 m spacing is ~3500 points; this is a generous ceiling.
 CORRIDOR_MAX_POINTS = 20000
+# A 20000-point corridor serialises to well under this; reject anything bigger
+# before it reaches the JSON parser or the pydantic validator, so an
+# unauthenticated caller (any third-party page, given allow_origins=["*"])
+# cannot spend our CPU or bandwidth on an oversized body.
+CORRIDOR_MAX_BODY_BYTES = 2 * 1024 * 1024
 
 CLAUDE_TIMEOUT_S = 180
 ALLOWED_IMAGE_EXT = {".png", ".jpg", ".jpeg"}
@@ -338,11 +343,22 @@ def get_corridor(key: str):
         return JSONResponse(status_code=400, content={"error": "bad_key"})
     if not path.exists():
         return JSONResponse(status_code=404, content={"error": "not_found"})
-    return JSONResponse(content=json.loads(path.read_text(encoding="utf-8")))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        # Corrupt file: a missing corridor is recoverable (the client just
+        # re-extracts), a corrupt one left in place would 500 forever.
+        path.unlink(missing_ok=True)
+        return JSONResponse(status_code=404, content={"error": "not_found"})
+    return JSONResponse(content=data)
 
 
 @app.put("/corridors/{key}")
-def put_corridor(key: str, payload: CorridorPayload, x_corridor_token: str = Header("")):
+async def put_corridor(key: str, request: Request, x_corridor_token: str = Header("")):
+    # Order matters: an unauthenticated caller must never reach the JSON
+    # parser or the pydantic validator (previously FastAPI validated the body
+    # during dependency injection, before this function even ran, letting
+    # anyone drive CPU and a large error response with no token at all).
     if not CORRIDOR_TOKEN:
         return JSONResponse(
             status_code=503,
@@ -353,11 +369,39 @@ def put_corridor(key: str, payload: CorridorPayload, x_corridor_token: str = Hea
     path = _corridor_path(key)
     if path is None:
         return JSONResponse(status_code=400, content={"error": "bad_key"})
+
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            too_big = int(content_length) > CORRIDOR_MAX_BODY_BYTES
+        except ValueError:
+            too_big = False
+        if too_big:
+            return JSONResponse(status_code=413, content={"error": "payload_too_large"})
+
+    body = await request.body()
+    if len(body) > CORRIDOR_MAX_BODY_BYTES:
+        return JSONResponse(status_code=413, content={"error": "payload_too_large"})
+    try:
+        payload = CorridorPayload.model_validate_json(body)
+    except ValidationError:
+        # Do not echo the caller's input back; a short reason is enough.
+        return JSONResponse(status_code=422, content={"error": "invalid_payload"})
+
     CORRIDOR_DIR.mkdir(parents=True, exist_ok=True)
-    # write to a sibling then rename, so a reader never sees a half-written file
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(payload.model_dump_json(), encoding="utf-8")
-    tmp.replace(path)
+    # Write to a per-request temp file (not a deterministic sibling, so two
+    # concurrent PUTs to the same key cannot interleave into one corrupt
+    # file), then rename, so a reader never sees a half-written file.
+    fd, tmp_name = tempfile.mkstemp(dir=CORRIDOR_DIR, suffix=".json.tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(payload.model_dump_json())
+        os.replace(tmp, path)
+    finally:
+        # No-op once the rename above succeeded; cleans up the orphan on any
+        # failure in between.
+        tmp.unlink(missing_ok=True)
     return {"ok": True, "key": key, "nPoints": payload.nPoints}
 
 

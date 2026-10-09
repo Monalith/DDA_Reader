@@ -51,6 +51,27 @@ describe('corridor cache', () => {
     expect(deserializeCorridor(t, null)).toBeNull();
     expect(deserializeCorridor(t, { version: 99 })).toBeNull();
   });
+
+  it('rejects a non-numeric firstPoint instead of treating NaN as "close enough"', () => {
+    const t = mkTrack(CL, 6);
+    const raw = { ...serializeCorridor(t, corridor), firstPoint: ['a', 'b'] };
+    expect(deserializeCorridor(t, raw)).toBeNull();
+  });
+
+  it('rejects non-numeric offset arrays instead of producing a NaN corridor', () => {
+    const t = mkTrack(CL, 6);
+    const raw = { ...serializeCorridor(t, corridor), leftM: ['x', 'y', 'z', 'w'] };
+    expect(deserializeCorridor(t, raw)).toBeNull();
+  });
+
+  it('coerces a known array of non-booleans instead of lying about its type', () => {
+    const t = mkTrack(CL, 6);
+    const raw = { ...serializeCorridor(t, corridor), known: [1, 0, 1, 0] };
+    const back = deserializeCorridor(t, raw);
+    expect(back).not.toBeNull();
+    expect(back!.known).toEqual([true, false, true, false]);
+    expect(back!.known.every((v) => typeof v === 'boolean')).toBe(true);
+  });
 });
 
 describe('corridorKey', () => {

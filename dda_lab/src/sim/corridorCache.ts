@@ -73,16 +73,26 @@ export function deserializeCorridor(track: TrackModel, raw: unknown): Corridor |
   if (typeof c.lengthM !== 'number' || Math.abs(c.lengthM - track.lengthM) > 1) return null;
   const fp = c.firstPoint;
   if (!Array.isArray(fp) || fp.length !== 2) return null;
+  if (!Number.isFinite(fp[0]) || !Number.isFinite(fp[1])) return null;
   if (
     Math.abs(fp[0] - track.centerline[0][0]) > ORIGIN_TOLERANCE_DEG ||
     Math.abs(fp[1] - track.centerline[0][1]) > ORIGIN_TOLERANCE_DEG
   ) {
     return null;
   }
+  // Every element must actually be a finite number: a non-numeric entry
+  // (e.g. a string from untrusted JSON) would otherwise survive as NaN —
+  // Math.abs(NaN) comparisons above are always false, so this check can't
+  // be folded into them.
+  if (!c.leftM.every((v) => Number.isFinite(v)) || !c.rightM.every((v) => Number.isFinite(v))) {
+    return null;
+  }
   return {
     stepM: typeof c.stepM === 'number' ? c.stepM : track.lengthM / Math.max(1, track.centerline.length - 1),
     leftM: Float32Array.from(c.leftM),
     rightM: Float32Array.from(c.rightM),
-    known: c.known,
+    // Coerce rather than trust the declared `boolean[]` type: untrusted JSON
+    // can hand back numbers (1/0) that would otherwise be stored as-is.
+    known: c.known.map(Boolean),
   };
 }

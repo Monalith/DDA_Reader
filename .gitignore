@@ -58,3 +58,7 @@ sample_run_racechrono_v3.csv
 
 # Scratch / temporary test files
 scratch/
+
+# Local corridor store (DATA_DIR == BASE_DIR when dda_lab_bridge.py isn't
+# frozen, so unfrozen dev runs write corridors here instead of outside the repo)
+corridors/

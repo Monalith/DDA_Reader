@@ -355,6 +355,46 @@ export function projectToTrack(track: TrackModel, p: LngLat): { sM: number; offM
 }
 
 /**
+ * Roll the centerline so that distance 0 is the start/finish gate. Every consumer of
+ * `turn.sRange` compares it with `lap_dist` (metres since the start line), so the two must
+ * share the same origin; a track built from a trace or whose start line was moved does not.
+ * Turn ranges are shifted accordingly (a turn straddling the line gets clamped at the end).
+ */
+export function normalizeTrackOrigin(track: TrackModel): TrackModel {
+  const n = track.centerline.length;
+  if (n < 3) return track;
+  let k = 0;
+  let bestD = Infinity;
+  for (let i = 0; i < n; i++) {
+    const d = haversine(track.centerline[i], track.startFinish.at);
+    if (d < bestD) {
+      bestD = d;
+      k = i;
+    }
+  }
+  if (k === 0) return track;
+  const L = track.lengthM;
+  const shift = track.cumDistM[k];
+  const centerline = [...track.centerline.slice(k), ...track.centerline.slice(0, k)];
+  const cumDistM = new Float64Array(n);
+  for (let i = 1; i < n; i++) cumDistM[i] = cumDistM[i - 1] + haversine(centerline[i - 1], centerline[i]);
+  const lengthM = cumDistM[n - 1] + haversine(centerline[n - 1], centerline[0]);
+  const wrap = (s: number) => (((s - shift) % L) + L) % L;
+  const turns = track.turns.map((t) => {
+    let s0 = wrap(t.sRange[0]);
+    let s1 = wrap(t.sRange[1]);
+    if (s1 < s0) {
+      // the turn crosses the new origin: keep it on the side where most of it lies
+      if (s0 > L - s1) s0 = 0;
+      else s1 = lengthM;
+    }
+    return { ...t, sRange: [s0, s1] as [number, number] };
+  });
+  turns.sort((a, b) => a.sRange[0] - b.sRange[0]);
+  return { ...track, centerline, cumDistM, lengthM, turns: turns.map((t, i) => ({ ...t, n: i + 1 })) };
+}
+
+/**
  * Distance along the track for every sample of `lap`, indexed from
  * `lap.startIdx`. Uses the `lap_dist` channel when present (cheap and exact
  * for laps that start at the start/finish line), otherwise projects the GPS

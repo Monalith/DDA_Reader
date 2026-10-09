@@ -456,15 +456,19 @@ export default function MapView() {
       const best = bestTurnTimes(sessions, track);
       const multi = entries.length > 1;
       // apex speed of the lap that owns the best time in each turn (for the km/h delta)
+      // turn-in speed per turn, from the very same points the map draws (falls back to the apex)
       const apexOf = (sid: string, lapN: number): Map<number, number> => {
         const s = sessions.find((x) => x.id === sid);
         const lap = s?.laps.find((l) => l.n === lapN);
         if (!s || !lap) return new Map();
-        try {
-          return new Map(turnMetrics(s, lap, track).map((m) => [m.turn, Number.isFinite(m.turnInKmh ?? NaN) ? (m.turnInKmh as number) : m.apexKmh]));
-        } catch {
-          return new Map();
+        const out = new Map<number, number>();
+        for (const f of markersGeoJson(track, [], s, lap, { turnLabels: false }).features) {
+          const p = f.properties;
+          if (p.kmh == null) continue;
+          if (p.kind === 'turnin') out.set(p.turn, p.kmh);
+          else if (p.kind === 'apex' && !out.has(p.turn)) out.set(p.turn, p.kmh);
         }
+        return out;
       };
       const bestApex = new Map<number, number>();
       if (turnLabels.speed !== false) {

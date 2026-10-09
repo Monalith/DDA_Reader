@@ -4,7 +4,7 @@ import { applyProc } from '../core/processing';
 import { evaluate, orderByDependencies, parseExpr, type EvalEnv } from '../core/mathExpr';
 import { detectLaps, withoutDeletedLaps } from '../core/laps';
 import { applyDeltaT, applyRefDeltas, applySectorTimes, applyTotalDist, applyTrackLapDist } from './derivedExtras';
-import { defaultSectorGates, projectToTrack } from '../core/track';
+import { defaultSectorGates, normalizeTrackOrigin, projectToTrack } from '../core/track';
 import { bearingDeg } from '../core/geo';
 import { loadSavedMarkers, markersToRestore, persistMarkers } from '../core/markerStore';
 import { parseWorkspace, serializeWorkspace } from '../core/workspace';
@@ -467,8 +467,9 @@ export const useLab = create<LabState>((set, get) => ({
       }),
     });
   },
-  setTrack(t) {
+  setTrack(t0) {
     const st = get();
+    const t = normalizeTrackOrigin(t0);
     const tracks = [...st.tracks.filter((x) => x.id !== t.id), t];
     set({
       tracks,
@@ -549,7 +550,7 @@ export const useLab = create<LabState>((set, get) => ({
     const b = bearing ?? bearingDeg(track.centerline[best], track.centerline[nx]);
     const sf: Gate = { ...track.startFinish, at: snapped, bearingDeg: b };
     const sectors = defaultSectorGates(track.centerline, track.cumDistM, sf, Math.max(2, track.sectors.length + 1));
-    const next: TrackModel = { ...track, startFinish: sf, sectors };
+    const next: TrackModel = normalizeTrackOrigin({ ...track, startFinish: sf, sectors });
     for (const s of st.sessions) if (!s.lapsFromFile) s.laps = [];
     const tracks = [...st.tracks.filter((x) => x.id !== next.id), next];
     const sessions = refreshAll({ ...st, tracks, activeTrackId: next.id }, next);

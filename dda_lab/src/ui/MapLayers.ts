@@ -26,6 +26,8 @@ export type MarkerProps = {
   color?: string;
   /** label offset [x, y] in em: laps stack downwards so their labels never overlap */
   offset?: [number, number];
+  /** speed at the point (km/h) */
+  kmh?: number;
   turn: number;
   label: string;
 };
@@ -217,6 +219,7 @@ export function markersGeoJson(
   const lean = chan(s, 'lean');
   const curvature = chan(s, 'curvature');
   const kmh = (i: number): string => (speed && Number.isFinite(speed[i]) ? `${Math.round(speed[i])}` : '');
+  const kmhNum = (i: number): number | undefined => (speed && Number.isFinite(speed[i]) ? speed[i] : undefined);
   const last = Math.min(lap.endIdx, lng.length - 1, lat.length - 1);
 
   // One projection pass over the lap samples.
@@ -251,13 +254,14 @@ export function markersGeoJson(
         lapTag: opts.lapTag,
         color,
         offset: off(1),
+        kmh: Number.isFinite(apexSpeed) ? apexSpeed : undefined,
       }),
     );
     // turn-in point: where the lean rises past the threshold before the apex
     const iTI = turnInIndex(lean, curvature, 0, apexIdx, lng.length, prevApex + 1);
     prevApex = apexIdx;
     if (iTI >= 0 && iTI !== apexIdx && Number.isFinite(lng[iTI]) && Number.isFinite(lat[iTI])) {
-      features.push(pointFeature([lng[iTI], lat[iTI]], { kind: 'turnin', turn: turn.n, label: `${tag}${kmh(iTI)}`, lapTag: opts.lapTag, color, offset: off(1) }));
+      features.push(pointFeature([lng[iTI], lat[iTI]], { kind: 'turnin', turn: turn.n, label: `${tag}${kmh(iTI)}`, lapTag: opts.lapTag, color, offset: off(1), kmh: kmhNum(iTI) }));
     }
 
     if (longG) {
@@ -268,7 +272,7 @@ export function markersGeoJson(
             let o = i;
             while (o - 1 > lap.startIdx && longG[o - 1] < -0.3) o--;
             const bi = Number.isFinite(lng[o]) && Number.isFinite(lat[o]) ? o : i;
-            features.push(pointFeature([lng[bi], lat[bi]], { kind: 'brake', turn: turn.n, label: `${tag}${kmh(bi)}`, lapTag: opts.lapTag, color, offset: off(-1) }));
+            features.push(pointFeature([lng[bi], lat[bi]], { kind: 'brake', turn: turn.n, label: `${tag}${kmh(bi)}`, lapTag: opts.lapTag, color, offset: off(-1), kmh: kmhNum(bi) }));
           }
           break;
         }
@@ -278,7 +282,7 @@ export function markersGeoJson(
       for (let i = apexIdx; i <= last; i++) {
         if (tps[i] > 20) {
           if (Number.isFinite(lng[i]) && Number.isFinite(lat[i])) {
-            features.push(pointFeature([lng[i], lat[i]], { kind: 'throttle', turn: turn.n, label: `${tag}${kmh(i)}`, lapTag: opts.lapTag, color, offset: off(1) }));
+            features.push(pointFeature([lng[i], lat[i]], { kind: 'throttle', turn: turn.n, label: `${tag}${kmh(i)}`, lapTag: opts.lapTag, color, offset: off(1), kmh: kmhNum(i) }));
           }
           break;
         }

@@ -1,5 +1,6 @@
 import { deltaT } from '../core/laps';
 import { segmentCrossing } from '../core/geo';
+import { projectToTrack } from '../core/track';
 import { DEFAULT_PROC, type Channel, type Lap, type LngLat, type Session, type TrackModel } from '../core/types';
 
 /**
@@ -44,10 +45,11 @@ export function applyTrackLapDist(s: Session, track: TrackModel): void {
     return bestD > 30 * 30 && window < n ? nearest(px, py, 0, n) : best;
   };
 
+  // the start/finish gate in centerline metres (0 once the track is normalised)
+  const sSf = projectToTrack(track, track.startFinish.at).sM;
   for (const lap of s.laps) {
     let hint = 0;
     let first = true;
-    let s0 = 0;
     let prevS = 0;
     let unwrapped = 0;
     for (let i = lap.startIdx; i <= lap.endIdx && i < s.t.length; i++) {
@@ -59,7 +61,12 @@ export function applyTrackLapDist(s: Session, track: TrackModel): void {
       hint = vi;
       const sM = track.cumDistM[vi];
       if (first) {
-        s0 = sM;
+        // every lap starts from the same origin: the start/finish gate, not its own first
+        // GPS fix (which can be seconds late). Signed offset in (−L/2, L/2].
+        let d0 = sM - sSf;
+        if (d0 > L / 2) d0 -= L;
+        else if (d0 <= -L / 2) d0 += L;
+        unwrapped = lap.kind === 'out' ? 0 : d0;
         prevS = sM;
         first = false;
       }
@@ -70,7 +77,6 @@ export function applyTrackLapDist(s: Session, track: TrackModel): void {
       prevS = sM;
       out[i] = Math.max(0, unwrapped);
     }
-    void s0;
   }
   // keep original where track projection failed
   const old = s.channels.get('lap_dist');

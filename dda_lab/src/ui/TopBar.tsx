@@ -84,7 +84,15 @@ export default function TopBar() {
       <div className="chips">
         {sessions.map((s) => (
           <span className="chip" key={s.id} style={{ borderColor: s.color }}>
-            <i style={{ background: s.color }} />
+            <input
+              type="color"
+              className="chip-color"
+              data-testid={`session-color-${s.id}`}
+              value={/^#[0-9a-f]{6}$/i.test(s.color) ? s.color : '#ffffff'}
+              title="Run colour (map trace, chart lines)"
+              aria-label={`Colour for ${s.name}`}
+              onChange={(e) => useLab.getState().setSessionColor(s.id, e.target.value)}
+            />
             {s.name}
             <small className="num">{s.laps.filter((l) => l.kind === 'flying').length} laps</small>
             <button className="chip-x" title="Remove" onClick={() => removeSession(s.id)}>

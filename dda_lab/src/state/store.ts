@@ -81,6 +81,8 @@ export interface LabState {
 
   addSession(s: Session): void;
   removeSession(id: string): void;
+  /** Change a run's colour (map trace, chart lines and lap table); laps with their own colour keep it. */
+  setSessionColor(id: string, color: string): void;
   replaceSession(s: Session): void;
   toggleLap(sessionId: string, lap: number): void;
   selectOnlyLap(sessionId: string, lap: number): void;
@@ -307,6 +309,15 @@ export const useLab = create<LabState>((set, get) => ({
   },
   replaceSession(s) {
     set((st) => ({ sessions: st.sessions.map((x) => (x.id === s.id ? s : x)) }));
+  },
+  setSessionColor(id, color) {
+    set((st) => {
+      const prev = st.sessions.find((x) => x.id === id)?.color;
+      // laps of this run that still wear the old run colour follow it; custom lap colours stay
+      const lapMeta = { ...st.lapMeta };
+      for (const [k, m] of Object.entries(lapMeta)) if (k.startsWith(`${id}:`) && m.color === prev) lapMeta[k] = { ...m, color };
+      return { sessions: st.sessions.map((x) => (x.id === id ? { ...x, color } : x)), lapMeta };
+    });
   },
   toggleLap(sessionId, lap) {
     set((st) => {

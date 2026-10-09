@@ -759,7 +759,7 @@ export default function MapView() {
           <option value="tps">Throttle</option>
           <option value="lean">Lean</option>
           <option value="brake">Braking</option>
-          <option value="solid">Solid</option>
+          <option value="solid">Run / lap colour</option>
         </select>
 
         <button className="map-btn" data-testid="map-fit" onClick={fit} title="Fit to track">

@@ -73,6 +73,9 @@ button { cursor: pointer; }
   padding: 2px 6px 2px 8px; white-space: nowrap; background: var(--panel-2);
 }
 .chip i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.chip-color { width: 16px; height: 16px; padding: 0; border: 0; background: transparent; cursor: pointer; border-radius: 50%; }
+.chip-color::-webkit-color-swatch-wrapper { padding: 0; }
+.chip-color::-webkit-color-swatch { border: 1px solid rgba(255,255,255,0.4); border-radius: 50%; }
 .chip small { color: var(--fg-dim); }
 .chip-x { background: transparent; border: 0; color: var(--fg-dim); font-size: 14px; line-height: 1; padding: 0 2px; }
 .chip-x:hover { color: var(--bad); }

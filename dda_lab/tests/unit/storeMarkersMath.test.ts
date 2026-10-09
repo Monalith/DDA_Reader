@@ -140,3 +140,19 @@ describe('store: per-lap formulas and markers', () => {
     expect(useLab.getState().markers).toHaveLength(0);
   });
 });
+
+describe('store: run colour', () => {
+  it('setSessionColor recolours the run and its default-coloured laps, keeps custom lap colours', () => {
+    useLab.setState({ sessions: [], selectedLaps: [], lapMeta: {}, markers: [], activeMarkerId: null, cursor: null, refLap: undefined });
+    const s = session();
+    s.color = '#ff0000';
+    useLab.getState().addSession(s);
+    useLab.getState().setLapMeta('s1', 1, { name: 'A' }); // default colour = run colour
+    useLab.getState().setLapMeta('s1', 2, { color: '#123456' }); // custom
+    useLab.getState().setSessionColor('s1', '#00ff00');
+    const st = useLab.getState();
+    expect(st.sessions[0].color).toBe('#00ff00');
+    expect(st.lapMeta['s1:1'].color).toBe('#00ff00');
+    expect(st.lapMeta['s1:2'].color).toBe('#123456');
+  });
+});

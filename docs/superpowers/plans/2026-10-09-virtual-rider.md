@@ -2170,7 +2170,7 @@ cd dda_lab && npm run dev
 ```
 
 Then with Playwright (or by hand in the browser):
-1. Open `http://localhost:5173/?example=serres_R6_1-19-849`.
+1. Open `http://localhost:5173/?example=bike1000`.
 2. Open the **Sim** tab, press **Extract corridor**.
 3. Wait for the status line, then screenshot the map.
 
@@ -4078,7 +4078,7 @@ Create `dda_lab/tests/e2e/sim.spec.ts`:
 import { expect, test } from '@playwright/test';
 
 test('the virtual rider produces a lap that the map and charts follow', async ({ page }) => {
-  await page.goto('/?example=serres_R6_1-19-849');
+  await page.goto('/?example=bike1000');
   await page.getByTestId('bp-tab-sim').click();
   await expect(page.getByTestId('sim-panel')).toBeVisible();
 
@@ -4120,7 +4120,7 @@ Expected: all unit tests pass, typecheck clean, the e2e test passes.
 cd dda_lab && npm run dev
 ```
 
-With the browser (or Playwright screenshots) on `http://localhost:5173/?example=serres_R6_1-19-849`:
+With the browser (or Playwright screenshots) on `http://localhost:5173/?example=bike1000`:
 
 1. Sim tab → **Extract corridor** → the orange/cyan edges sit on the asphalt.
 2. Tick **Virtual rider** → a purple lap appears in the lap table with a plausible time (Serres on a 1000 is roughly 1:35-1:50; a wildly different number means the solver or the line is wrong, not the UI).

@@ -91,6 +91,36 @@ const DEFAULTS: Required<CorridorOpts> = {
   maxWidthM: 18,
 };
 
+/**
+ * Index half-width of a ~`strideM` metre tangent stencil for this track's
+ * vertex spacing. Immediate-neighbour (`k=1`) tangents are too noisy to use
+ * directly — GPS jitter between adjacent samples swings the perpendicular
+ * around — so both the extractor and anything that draws or re-offsets the
+ * same corridor need to agree on this wider stencil, or what gets drawn is
+ * not the corridor that was actually measured.
+ */
+export function stencilK(track: Pick<TrackModel, 'centerline' | 'lengthM'>, strideM = 10): number {
+  const stepAlongM = track.lengthM / Math.max(1, track.centerline.length - 1);
+  return Math.max(1, Math.round(strideM / Math.max(0.1, stepAlongM)));
+}
+
+/**
+ * Unit normal pointing left of travel at centerline vertex `i`, using a
+ * +-`k`-vertex stencil (east/north metres). `[0, 0]` marks a degenerate
+ * (coincident) stencil.
+ */
+export function stencilLeftNormal(cl: LngLat[], i: number, k: number): [number, number] {
+  const n = cl.length;
+  const a = cl[(i - k + n) % n];
+  const b = cl[(i + k) % n];
+  const am = toLocalM(cl[i], a);
+  const bm = toLocalM(cl[i], b);
+  const tx = bm[0] - am[0];
+  const ty = bm[1] - am[1];
+  const len = Math.hypot(tx, ty);
+  return len < 1e-9 ? [0, 0] : [-ty / len, tx / len];
+}
+
 /** Median over a wrapping window; the centerline is a closed loop. */
 function medianFilterWrap(a: Float32Array, n: number): Float32Array {
   const out = new Float32Array(a.length);
@@ -149,28 +179,20 @@ export function extractCorridor(
 
   // tangent stencil: ~10 m either side
   const stepAlongM = track.lengthM / Math.max(1, n - 1);
-  const k = Math.max(1, Math.round(10 / Math.max(0.1, stepAlongM)));
+  const k = stencilK(track);
 
   const leftRaw = new Float32Array(n);
   const rightRaw = new Float32Array(n);
   const nSteps = Math.round(o.halfSearchM / o.stepM);
 
   for (let i = 0; i < n; i++) {
-    const a = cl[(i - k + n) % n];
-    const b = cl[(i + k) % n];
-    const am = toLocalM(cl[i], a);
-    const bm = toLocalM(cl[i], b);
-    const tx = bm[0] - am[0];
-    const ty = bm[1] - am[1];
-    const len = Math.hypot(tx, ty);
-    if (len < 1e-6) {
+    const [nxM, nyM] = stencilLeftNormal(cl, i, k);
+    if (nxM === 0 && nyM === 0) {
       leftRaw[i] = NaN;
       rightRaw[i] = NaN;
       continue;
     }
     // left of travel in east/north metres, then into mosaic pixels (y is down)
-    const nxM = -ty / len;
-    const nyM = tx / len;
     const [cx, cy] = toMosaic(cl[i]);
     const nxPx = nxM / mpp;
     const nyPx = -nyM / mpp;
@@ -193,16 +215,25 @@ export function extractCorridor(
 
   const leftM = medianFilterWrap(leftRaw, 15);
   const rightM = medianFilterWrap(rightRaw, 15);
-  const known = new Array<boolean>(n);
-  for (let i = 0; i < n; i++) {
-    const w = leftM[i] + rightM[i];
-    known[i] =
-      !anyMissing &&
+  // A short leak (e.g. the search escaping across an infield at a hairpin)
+  // can get smoothed into a plausible-looking width by the median filter
+  // before the ceiling below ever sees it. `known[]` must see the raw
+  // reading too — leftM/rightM stay filtered (the smoothing is still
+  // wanted for the drawn/consumed edge), but a vertex is only `known` if
+  // BOTH the raw and the filtered width pass the same checks.
+  const passes = (l: number, r: number): boolean => {
+    const w = l + r;
+    return (
       Number.isFinite(w) &&
       w > 3 &&
       w <= o.maxWidthM &&
-      leftM[i] < o.halfSearchM - o.stepM &&
-      rightM[i] < o.halfSearchM - o.stepM;
+      l < o.halfSearchM - o.stepM &&
+      r < o.halfSearchM - o.stepM
+    );
+  };
+  const known = new Array<boolean>(n);
+  for (let i = 0; i < n; i++) {
+    known[i] = !anyMissing && passes(leftM[i], rightM[i]) && passes(leftRaw[i], rightRaw[i]);
   }
 
   return { stepM: stepAlongM, leftM, rightM, known };

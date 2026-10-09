@@ -1,27 +1,22 @@
 // Map sources for the simulator: the extracted corridor and the generated line.
 import type { Feature, FeatureCollection, LineString } from 'geojson';
-import { fromLocalM, toLocalM } from '../core/geo';
+import { fromLocalM } from '../core/geo';
 import type { LngLat, TrackModel } from '../core/types';
+import { stencilK, stencilLeftNormal } from '../sim/corridor';
 import type { Corridor, Line } from '../sim/types';
 
 export type CorridorProps = { side: 'left' | 'right' };
 
-/** Unit normal pointing left of travel at centerline vertex `i`, in east/north metres. */
-function leftNormal(cl: LngLat[], i: number): [number, number] {
-  const n = cl.length;
-  const a = cl[(i - 1 + n) % n];
-  const b = cl[(i + 1) % n];
-  const am = toLocalM(cl[i], a);
-  const bm = toLocalM(cl[i], b);
-  const tx = bm[0] - am[0];
-  const ty = bm[1] - am[1];
-  const len = Math.hypot(tx, ty);
-  return len < 1e-9 ? [0, 0] : [-ty / len, tx / len];
-}
-
-/** Offset a centerline vertex sideways by `d` metres (positive = left of travel). */
-export function offsetPoint(cl: LngLat[], i: number, d: number): LngLat {
-  const [nx, ny] = leftNormal(cl, i);
+/**
+ * Offset a centerline vertex sideways by `d` metres (positive = left of
+ * travel). `k` is the tangent stencil half-width in vertices — this MUST be
+ * the same stencil `extractCorridor` used to measure the edge, or the line
+ * drawn here is not the corridor that was actually measured (a mismatch is
+ * most visible at a hairpin, where a +-1-vertex tangent and a +-10 m one can
+ * point materially differently).
+ */
+export function offsetPoint(cl: LngLat[], i: number, d: number, k: number): LngLat {
+  const [nx, ny] = stencilLeftNormal(cl, i, k);
   return fromLocalM(cl[i], [nx * d, ny * d]);
 }
 
@@ -32,6 +27,7 @@ export function offsetPoint(cl: LngLat[], i: number, d: number): LngLat {
  */
 export function corridorGeoJson(track: TrackModel, c: Corridor): FeatureCollection<LineString, CorridorProps> {
   const cl = track.centerline;
+  const k = stencilK(track);
   const features: Array<Feature<LineString, CorridorProps>> = [];
   for (const side of ['left', 'right'] as const) {
     const dist = side === 'left' ? c.leftM : c.rightM;
@@ -52,7 +48,7 @@ export function corridorGeoJson(track: TrackModel, c: Corridor): FeatureCollecti
         flush();
         continue;
       }
-      run.push(offsetPoint(cl, i, side === 'left' ? dist[i] : -dist[i]));
+      run.push(offsetPoint(cl, i, side === 'left' ? dist[i] : -dist[i], k));
     }
     flush();
   }

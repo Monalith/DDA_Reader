@@ -1,6 +1,7 @@
 // Corridor persistence.
 import type { LngLat, TrackModel } from '../core/types';
 import { fromLocalM, haversineM, toLocalM } from '../core/geo';
+import { stencilK, stencilLeftNormal } from './corridor';
 import type { Corridor } from './types';
 
 /**
@@ -49,21 +50,11 @@ export interface StoredCorridor {
   rightEdge: Array<LngLat | null>;
 }
 
-/** Unit normal pointing left of travel at centerline vertex `i`, east/north metres. */
-function leftNormal(cl: LngLat[], i: number): [number, number] {
-  const n = cl.length;
-  const a = toLocalM(cl[i], cl[(i - 1 + n) % n]);
-  const b = toLocalM(cl[i], cl[(i + 1) % n]);
-  const tx = b[0] - a[0];
-  const ty = b[1] - a[1];
-  const len = Math.hypot(tx, ty);
-  return len < 1e-9 ? [0, 0] : [-ty / len, tx / len];
-}
-
 const round6 = (v: number): number => Math.round(v * 1e6) / 1e6;
 
 export function serializeCorridor(track: TrackModel, c: Corridor): StoredCorridor {
   const cl = track.centerline;
+  const k = stencilK(track);
   const leftEdge: Array<LngLat | null> = [];
   const rightEdge: Array<LngLat | null> = [];
   for (let i = 0; i < cl.length; i++) {
@@ -72,7 +63,7 @@ export function serializeCorridor(track: TrackModel, c: Corridor): StoredCorrido
       rightEdge.push(null);
       continue;
     }
-    const [nx, ny] = leftNormal(cl, i);
+    const [nx, ny] = stencilLeftNormal(cl, i, k);
     const l = fromLocalM(cl[i], [nx * c.leftM[i], ny * c.leftM[i]]);
     const r = fromLocalM(cl[i], [-nx * c.rightM[i], -ny * c.rightM[i]]);
     leftEdge.push([round6(l[0]), round6(l[1])]);

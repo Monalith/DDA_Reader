@@ -172,6 +172,37 @@ function stripedTrack(stripeWidthPx: number): { track: TrackModel; mosaic: Mosai
   return { track, mosaic: { width, height, originPx, rgb, missing: [false] }, trace };
 }
 
+/**
+ * A straight 12 m track where `leakCount` consecutive vertices, centred in
+ * the middle of the run, have their right edge extended out to `leakM`
+ * metres instead of the normal 6 m — a short, narrow leak rather than a wide
+ * systematic one.
+ */
+function leakyRightTrack(
+  leakCount: number,
+  leakM: number,
+): { track: TrackModel; mosaic: Mosaic; trace: LngLat[]; leakStart: number } {
+  const { mpp, n, width, height, originPx, centerRow, track, trace } = straightGeometry();
+  const rgb = new Uint8ClampedArray(width * height * 3);
+  const halfPx = 6 / mpp; // normal 12 m band (6 m either side)
+  const leakPx = leakM / mpp;
+  const leakStart = Math.floor(n / 2) - Math.floor(leakCount / 2);
+  const x0 = lngLatToPixel(track.centerline[leakStart], SAT_ZOOM)[0] - originPx[0];
+  const x1 = lngLatToPixel(track.centerline[leakStart + leakCount - 1], SAT_ZOOM)[0] - originPx[0];
+  for (let y = 0; y < height; y++) {
+    const dy = y - centerRow; // negative = north (left), positive = south (right)
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 3;
+      const leaking = x >= x0 - 1 && x <= x1 + 1;
+      const rightHalfPx = leaking ? leakPx : halfPx;
+      const onBand = dy >= -halfPx && dy <= rightHalfPx;
+      if (onBand) { rgb[i] = GREY[0]; rgb[i + 1] = GREY[1]; rgb[i + 2] = GREY[2]; }
+      else { rgb[i] = GREEN[0]; rgb[i + 1] = GREEN[1]; rgb[i + 2] = GREEN[2]; }
+    }
+  }
+  return { track, mosaic: { width, height, originPx, rgb, missing: [false] }, trace, leakStart };
+}
+
 /** Median of a window of indices centred at `mid`, wrapping is not needed here. */
 function windowMedian(arr: Float32Array, mid: number, half: number): number {
   const vals: number[] = [];
@@ -256,5 +287,31 @@ describe('extractCorridor', () => {
   it('throws no-traces when no GPS points are supplied', () => {
     const { track, mosaic } = straightTrack(12);
     expect(() => extractCorridor(track, mosaic, [])).toThrowError(/no-traces|asphalt/i);
+  });
+
+  it('rejects a spurious wide reading the median filter would smooth into range', () => {
+    // A short run of vertices sees the right edge leak out to ~20 m (e.g. the
+    // search escaping across an infield at a hairpin), surrounded on both
+    // sides by an ordinary 12 m band. The leak is narrow enough (5 of 120
+    // vertices) that the 15-wide median filter smooths it back into a
+    // plausible width — that smoothing is real and wanted for leftM/rightM.
+    // known[] must NOT be fooled by it: a vertex is only known if the RAW
+    // reading also passes the same checks, and raw right ~20 m pushes the
+    // raw total past maxWidthM (18).
+    const leakCount = 5;
+    const { track, mosaic, trace, leakStart } = leakyRightTrack(leakCount, 20);
+    const c = extractCorridor(track, mosaic, trace);
+
+    const midLeak = leakStart + Math.floor(leakCount / 2);
+    // the bug this guards against: the filtered width at the leak looks fine
+    expect(c.leftM[midLeak] + c.rightM[midLeak]).toBeLessThan(18);
+    // but known[] must see through the smoothing to the raw leak
+    for (let i = leakStart; i < leakStart + leakCount; i++) {
+      expect(c.known[i]).toBe(false);
+    }
+    // well away from the leak (outside the filter's +-7 window), the track
+    // stays known — the raw gate must not be so strict it blankets everything
+    expect(c.known[10]).toBe(true);
+    expect(c.known[100]).toBe(true);
   });
 });

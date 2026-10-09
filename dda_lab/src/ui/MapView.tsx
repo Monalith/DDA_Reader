@@ -460,12 +460,12 @@ export default function MapView() {
           const vb = bestApex.get(turn.n);
           if (va != null && vb != null && Number.isFinite(va) && Number.isFinite(vb) && txt !== 'best') {
             const dv = va - vb;
-            speedTxt = `  ${dv >= 0 ? '+' : '−'}${Math.abs(dv).toFixed(1)} km/h`;
+            speedTxt = `\n${dv >= 0 ? '+' : '−'}${Math.abs(dv).toFixed(1)} km/h`;
           }
           const timeTxt = txt === 'best' ? 'best' : `${txt}s`;
           features.push({
             type: 'Feature',
-            properties: { label: `${multi ? `${meta.name.replace(/^.*\s(L\d+)$/, '$1')} ` : ''}${timeTxt}${speedTxt}`, color, offset: [1.1, 0.75 + row * 1.15] },
+            properties: { label: `${multi ? `${meta.name.replace(/^.*\s(L\d+)$/, '$1')} ` : ''}${timeTxt}${speedTxt}`, color, offset: [1.1, 0.6 + row * (speedTxt ? 2.35 : 1.2)] },
             geometry: { type: 'Point', coordinates: [turn.apexGeo[0], turn.apexGeo[1]] },
           });
         });
@@ -1018,6 +1018,9 @@ function addDataLayers(map: maplibregl.Map): void {
       'text-font': TEXT_FONT,
       'text-size': zoomRadius(12, 20),
       'text-anchor': 'left',
+      'text-justify': 'left',
+      'text-max-width': 30,
+      'text-line-height': 1.1,
       'text-offset': ['array', 'number', 2, ['get', 'offset']],
       'text-allow-overlap': true,
       'text-ignore-placement': true,

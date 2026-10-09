@@ -138,6 +138,61 @@ function medianFilterWrap(a: Float32Array, n: number): Float32Array {
   return out;
 }
 
+/** Mean over a wrapping window; the centerline is a closed loop. */
+function movingAverageWrap(a: Float32Array, n: number): Float32Array {
+  const out = new Float32Array(a.length);
+  const h = n >> 1;
+  for (let i = 0; i < a.length; i++) {
+    let sum = 0;
+    let count = 0;
+    for (let k = -h; k <= h; k++) {
+      const j = (i + k + a.length) % a.length;
+      if (Number.isFinite(a[j])) {
+        sum += a[j];
+        count++;
+      }
+    }
+    out[i] = count ? sum / count : 0;
+  }
+  return out;
+}
+
+/**
+ * Signed curvature (1/m) at vertex `i`, via the circumscribed-circle formula
+ * through `cl[i-k]`, `cl[i]`, `cl[i+k]` — the same three-point approach
+ * `src/core/track.ts`'s `curvature()` uses (computed here in a frame
+ * centred on vertex `i`, which wraps around the closed loop instead of
+ * clamping at the array ends, since `track.ts`'s version is written for an
+ * open, non-wrapping centerline).
+ */
+function stencilCurvature(cl: LngLat[], i: number, k: number): number {
+  const n = cl.length;
+  const a = toLocalM(cl[i], cl[(i - k + n) % n]); // p0, relative to vertex i
+  const b = toLocalM(cl[i], cl[(i + k) % n]); // p2, relative to vertex i
+  // p1 (= cl[i]) is this frame's origin, [0, 0]
+  const ax = -a[0];
+  const ay = -a[1];
+  const bx = b[0];
+  const by = b[1];
+  const cross = ax * by - ay * bx;
+  const la = Math.hypot(ax, ay);
+  const lb = Math.hypot(bx, by);
+  const lc = Math.hypot(b[0] - a[0], b[1] - a[1]);
+  const denom = la * lb * lc;
+  return denom > 1e-9 ? (2 * cross) / denom : 0;
+}
+
+/** Width of the wrapping moving average applied to curvature before it caps the search. */
+const CURVATURE_SMOOTH_WINDOW = 5;
+/**
+ * Search-cap safety margin: the cap sits a touch inside the true turn
+ * radius so the search can never quite reach the opposite leg of a fold,
+ * even allowing for the smoothing and the stencil's own ~10 m blur.
+ */
+const CURVATURE_CAP_FACTOR = 0.9;
+/** Curvature below this (1/m) is treated as a straight: no cap. */
+const CURVATURE_FLAT = 1e-6;
+
 /**
  * Left/right asphalt edge at every centerline vertex.
  *
@@ -181,9 +236,21 @@ export function extractCorridor(
   const stepAlongM = track.lengthM / Math.max(1, n - 1);
   const k = stencilK(track);
 
+  // Curvature-based cap on the search distance. At a hairpin of radius r the
+  // opposite leg is only ~2r away — well inside halfSearchM (25 m) for a
+  // tight turn — so an uncapped search can walk straight across the fold
+  // and find real asphalt that belongs to the other leg, not this one. A
+  // lightly smoothed curvature estimate (same +-10 m stencil as the tangent,
+  // so one noisy vertex cannot clamp its neighbours to nothing) caps each
+  // vertex's search at a touch inside its local turn radius; a straight has
+  // ~zero curvature, so its cap is effectively halfSearchM.
+  const curvRaw = new Float32Array(n);
+  for (let i = 0; i < n; i++) curvRaw[i] = stencilCurvature(cl, i, k);
+  const curv = movingAverageWrap(curvRaw, CURVATURE_SMOOTH_WINDOW);
+
   const leftRaw = new Float32Array(n);
   const rightRaw = new Float32Array(n);
-  const nSteps = Math.round(o.halfSearchM / o.stepM);
+  const nStepsMax = Math.round(o.halfSearchM / o.stepM);
 
   for (let i = 0; i < n; i++) {
     const [nxM, nyM] = stencilLeftNormal(cl, i, k);
@@ -192,6 +259,9 @@ export function extractCorridor(
       rightRaw[i] = NaN;
       continue;
     }
+    const kappa = Math.abs(curv[i]);
+    const capM = kappa < CURVATURE_FLAT ? o.halfSearchM : Math.min(o.halfSearchM, CURVATURE_CAP_FACTOR / kappa);
+    const nSteps = Math.max(1, Math.min(nStepsMax, Math.round(capM / o.stepM)));
     // left of travel in east/north metres, then into mosaic pixels (y is down)
     const [cx, cy] = toMosaic(cl[i]);
     const nxPx = nxM / mpp;

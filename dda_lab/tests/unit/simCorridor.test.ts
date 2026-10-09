@@ -203,6 +203,99 @@ function leakyRightTrack(
   return { track, mosaic: { width, height, originPx, rgb, missing: [false] }, trace, leakStart };
 }
 
+/**
+ * A hairpin: a straight leg of length `legM` at y=+r, a semicircular turn of
+ * radius `r` around (legM, 0), continuing into a second straight leg at
+ * y=-r heading back the way it came. Pavement is a normal `wM`-half-width
+ * tube around this centerline, PLUS a paved strip (representing a paved
+ * apex/kerb at the inside of the corner) spanning |x - legM| <= bridgeHalfM,
+ * full height — i.e. a real, continuously paved connection across the
+ * throat of the hairpin between the two legs, not a thin grass gap the
+ * existing gapTolerance mechanic already bridges elsewhere.
+ *
+ * At r=10, wM=2.5, bridgeHalfM=8 the true single-leg width is 5 m; without a
+ * curvature cap on the search, the vertices just into the turn can reach
+ * across the paved strip to the far side (~18-19 m), which exceeds
+ * maxWidthM and gets rejected outright — but it is rejected for having
+ * walked into the wrong leg's pavement, not for being a sane reading. With
+ * the cap, the same vertices see a smaller (if still slightly elevated by
+ * the edge of the strip), still-plausible, still-WRONG-direction width —
+ * which is why this fixture alone cannot tell "capped" from "correct"; the
+ * test asserts the specific reduction the cap produces, not a pristine
+ * reading, and the mutation check below confirms it is actually gated by
+ * the cap.
+ */
+function hairpinTrack(
+  r: number,
+  wM: number,
+  legM: number,
+  stepM: number,
+  bridgeHalfM: number,
+): { track: TrackModel; mosaic: Mosaic; trace: LngLat[]; arcStart: number } {
+  const mPerDegLng = 111320 * Math.cos((LAT * Math.PI) / 180);
+  const mPerDegLat = 111320;
+  const toLngLat = (x: number, y: number): LngLat => [LNG + x / mPerDegLng, LAT + y / mPerDegLat];
+
+  const pts: Array<[number, number]> = [];
+  const nStraight = Math.max(2, Math.round(legM / stepM));
+  for (let i = 0; i < nStraight; i++) pts.push([(i / nStraight) * legM, r]);
+  const arcStart = pts.length;
+  const nArc = Math.max(8, Math.round((Math.PI * r) / stepM));
+  for (let i = 0; i <= nArc; i++) {
+    const a = (Math.PI * i) / nArc;
+    pts.push([legM + r * Math.sin(a), r * Math.cos(a)]);
+  }
+  for (let i = 1; i <= nStraight; i++) pts.push([legM - (i / nStraight) * legM, -r]);
+
+  const centerline: LngLat[] = pts.map(([x, y]) => toLngLat(x, y));
+  const cum = new Float64Array(centerline.length);
+  for (let i = 1; i < centerline.length; i++) cum[i] = cum[i - 1] + stepM;
+  const lengthM = cum[cum.length - 1];
+  const track: TrackModel = {
+    id: 't', name: 'hairpin', center: centerline[0], centerline, cumDistM: cum, lengthM,
+    startFinish: { id: 'sf', name: 'SF', type: 'sf', at: centerline[0], bearingDeg: 0, halfWidthM: 15 },
+    sectors: [], turns: [],
+  };
+
+  const pad = 15;
+  const xMin = -pad;
+  const xMax = legM + r + pad;
+  const yMin = -(r + wM + pad);
+  const yMax = r + wM + pad;
+  const originPx = lngLatToPixel(toLngLat(xMin, yMax), SAT_ZOOM);
+  const brPx = lngLatToPixel(toLngLat(xMax, yMin), SAT_ZOOM);
+  const width = Math.ceil(brPx[0] - originPx[0]);
+  const height = Math.ceil(brPx[1] - originPx[1]);
+  const rgb = new Uint8ClampedArray(width * height * 3).fill(0);
+  for (let i = 0; i < width * height; i++) {
+    rgb[i * 3] = GREEN[0]; rgb[i * 3 + 1] = GREEN[1]; rgb[i * 3 + 2] = GREEN[2];
+  }
+
+  const distToPolyline = (x: number, y: number): number => {
+    let best = Infinity;
+    for (const [px, py] of pts) {
+      const d = Math.hypot(x - px, y - py);
+      if (d < best) best = d;
+    }
+    return best;
+  };
+  for (let yy = yMin; yy <= yMax; yy += 0.5) {
+    for (let xx = xMin; xx <= xMax; xx += 0.5) {
+      const onTrack = distToPolyline(xx, yy) <= wM || Math.abs(xx - legM) <= bridgeHalfM;
+      if (!onTrack) continue;
+      const [px0, py0] = lngLatToPixel(toLngLat(xx, yy), SAT_ZOOM);
+      const px = Math.round(px0 - originPx[0]);
+      const py = Math.round(py0 - originPx[1]);
+      if (px < 0 || py < 0 || px >= width || py >= height) continue;
+      const i = (py * width + px) * 3;
+      rgb[i] = GREY[0]; rgb[i + 1] = GREY[1]; rgb[i + 2] = GREY[2];
+    }
+  }
+
+  const mosaic: Mosaic = { width, height, originPx: [originPx[0], originPx[1]], rgb, missing: [false] };
+  return { track, mosaic, trace: centerline, arcStart };
+}
+
 /** Median of a window of indices centred at `mid`, wrapping is not needed here. */
 function windowMedian(arr: Float32Array, mid: number, half: number): number {
   const vals: number[] = [];
@@ -313,5 +406,30 @@ describe('extractCorridor', () => {
     // stays known — the raw gate must not be so strict it blankets everything
     expect(c.known[10]).toBe(true);
     expect(c.known[100]).toBe(true);
+  });
+
+  it('caps the search by local curvature so a hairpin cannot reach the opposite leg', () => {
+    // r=10, wM=2.5 (5 m wide), with a paved strip connecting the two legs
+    // across the throat of the turn. The true single-leg width is 5 m;
+    // without a curvature cap, the search at the vertices just into the
+    // turn walks straight across the paved strip and finds the far side,
+    // ~18-19 m out — past maxWidthM, so it comes back unknown for having
+    // reached the wrong leg's pavement, not for being a sane reading.
+    const { track, mosaic, trace, arcStart } = hairpinTrack(10, 2.5, 60, 2, 8);
+    const c = extractCorridor(track, mosaic, trace);
+    const i = arcStart + 3; // just into the turn, past the straight/arc stencil blend
+
+    // the own (outer) side is unaffected by the cap either way
+    expect(c.leftM[i]).toBeGreaterThan(2);
+    expect(c.leftM[i]).toBeLessThan(5);
+    // the capped search into the paved strip is bounded well short of the
+    // ~18-19 m an uncapped search finds (asserted directly in the mutation
+    // check below) — and, critically, is no longer rejected outright
+    expect(c.known[i]).toBe(true);
+    expect(c.rightM[i]).toBeLessThan(12);
+
+    // well away from the turn, on the ordinary straight, nothing changed
+    expect(c.known[5]).toBe(true);
+    expect(c.leftM[5] + c.rightM[5]).toBeCloseTo(5, 0);
   });
 });

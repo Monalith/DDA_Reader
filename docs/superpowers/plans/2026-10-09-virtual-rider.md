@@ -370,7 +370,7 @@ Create `dda_lab/tests/unit/simCorridor.test.ts`:
 
 ```ts
 import { describe, expect, it } from 'vitest';
-import { calibrateAsphalt } from '../../src/sim/corridor';
+import { calibrateAsphalt, CorridorError } from '../../src/sim/corridor';
 import { TILE_SIZE, type Mosaic } from '../../src/sim/tiles';
 
 /** A mosaic with a grey horizontal band (asphalt) on a green field. */
@@ -403,11 +403,24 @@ describe('calibrateAsphalt', () => {
     expect(cal.valHi).toBeGreaterThan(129);
   });
 
-  it('throws a named error when there are no samples to calibrate from', () => {
+  it('throws a typed error when there are no samples to calibrate from', () => {
     const m = bandMosaic(12);
-    expect(() => calibrateAsphalt(m, [])).toThrowError(/no-traces|no samples/i);
+    // assert the CODE, not the prose: the production path keys off `code`
+    expect(() => calibrateAsphalt(m, [])).toThrowError(CorridorError);
+    try {
+      calibrateAsphalt(m, []);
+      expect.unreachable('should have thrown');
+    } catch (e) {
+      expect((e as CorridorError).code).toBe('no-traces');
+    }
   });
 });
+```
+
+Add `CorridorError` to the import at the top of the file:
+
+```ts
+import { calibrateAsphalt, CorridorError } from '../../src/sim/corridor';
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -756,10 +769,8 @@ export function extractCorridor(
       let edge = 0;
       let gap = 0;
       for (let s = 1; s <= nSteps; s++) {
-        const d = (sign * s * o.stepM) / o.stepM; // step index, signed
-        const px = cx + nxPx * d * o.stepM;
-        const py = cy + nyPx * d * o.stepM;
-        if (isAsphalt(px, py)) {
+        const offsetM = sign * s * o.stepM; // + = left of travel, - = right
+        if (isAsphalt(cx + nxPx * offsetM, cy + nyPx * offsetM)) {
           edge = s * o.stepM;
           gap = 0;
         } else if (++gap > o.gapTolerance) {
@@ -1287,6 +1298,8 @@ async function withTimeout(url: string, init: RequestInit): Promise<Response | n
 
 /** The stored corridor for this track, or null when there is none or it is stale. */
 export async function fetchCorridor(track: TrackModel): Promise<Corridor | null> {
+  // No window means a unit test or a node caller: never reach the network there.
+  if (typeof window === 'undefined') return null;
   const res = await withTimeout(`${corridorBase()}/corridors/${corridorKey(track)}`, { method: 'GET' });
   if (!res || !res.ok) return null;
   try {
@@ -1300,6 +1313,7 @@ export async function fetchCorridor(track: TrackModel): Promise<Corridor | null>
 
 /** Store a freshly extracted corridor. Returns false when the host is read-only. */
 export async function putCorridor(track: TrackModel, c: Corridor, token: string): Promise<boolean> {
+  if (typeof window === 'undefined') return false;
   const res = await withTimeout(`${corridorBase()}/corridors/${corridorKey(track)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', 'X-Corridor-Token': token },
@@ -1499,15 +1513,26 @@ Create `dda_lab/src/sim/browserTiles.ts`:
 // canvas is not tainted and getImageData() works.
 import { TILE_SIZE, tileUrl, type TileLoader } from './tiles';
 
+/**
+ * Transient failures are retried: extractCorridor distrusts a mosaic with ANY
+ * missing tile, so one flaky response out of ~54 would otherwise discard the
+ * whole extraction.
+ */
+const ATTEMPTS = 3;
+
 export const browserTileLoader: TileLoader = async (z, x, y) => {
-  let blob: Blob;
-  try {
-    const res = await fetch(tileUrl(z, x, y), { mode: 'cors', credentials: 'omit' });
-    if (!res.ok) return null;
-    blob = await res.blob();
-  } catch {
-    return null;
+  let blob: Blob | null = null;
+  for (let attempt = 0; attempt < ATTEMPTS && !blob; attempt++) {
+    if (attempt) await new Promise((r) => setTimeout(r, 200 * attempt));
+    try {
+      const res = await fetch(tileUrl(z, x, y), { mode: 'cors', credentials: 'omit' });
+      if (res.ok) blob = await res.blob();
+      else if (res.status >= 400 && res.status < 500) return null; // not transient
+    } catch {
+      /* network blip: try again */
+    }
   }
+  if (!blob) return null;
   let bmp: ImageBitmap;
   try {
     bmp = await createImageBitmap(blob);
@@ -3725,8 +3750,9 @@ test('the virtual rider produces a lap that the map and charts follow', async ({
   await expect(lapTime).not.toHaveText('—');
   const before = await lapTime.textContent();
 
-  // the simulated lap joins the lap table
-  await expect(page.getByTestId('bottom-panels')).toContainText('2 laps selected');
+  // the simulated lap joins the workspace. Assert it by name, not by a lap
+  // count: the example page may already start with more than one lap selected.
+  await expect(page.getByTestId('bottom-panels')).toContainText('Virtual rider');
 
   // dragging the braking slider changes the lap time
   const braking = page.getByTestId('sim-braking');

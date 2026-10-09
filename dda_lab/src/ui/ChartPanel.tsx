@@ -413,33 +413,27 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
                 // gain (−, green) / loss (+, red) of every plotted lap in this turn vs the best loaded lap
                 const rows = turnRowsRef.current;
                 const k = t.turns.indexOf(turn);
-                // per-turn gain/loss labels: crisp monospace digits on a dark pill, colours from the workspace
+                // per-turn gain/loss labels: plain text, no box — bold sans with a dark outline so it
+                // reads on top of any trace; colours and size from the workspace (−/+ labels popover)
                 const style = turnLabelsRef.current;
                 const FS = style.size;
-                const LH = Math.round(FS * 1.3);
-                ctx.font = `700 ${FS * dpr}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
+                const LH = Math.round(FS * 1.25);
+                ctx.font = `800 ${FS * dpr}px Inter, -apple-system, "Segoe UI", system-ui, sans-serif`;
                 ctx.textBaseline = 'middle';
+                ctx.lineJoin = 'round';
                 if (style.show) rows.forEach((row, r) => {
                   const d = row.deltas[k];
                   if (!Number.isFinite(d)) return;
                   const txt = fmtTurnDelta(d);
-                  const yc = top + (16 + LH / 2 + r * (LH + 2)) * dpr;
-                  if (yc + LH * dpr / 2 > top + height - 4 * dpr) return;
-                  const w = ctx.measureText(txt).width;
-                  const x0 = px + 3 * dpr;
-                  const padX = 5 * dpr;
+                  const yc = top + (14 + LH / 2 + r * LH) * dpr;
+                  if (yc + (LH * dpr) / 2 > top + height - 4 * dpr) return;
+                  const x0 = px + 4 * dpr;
                   const color = txt === 'best' ? style.best : d > 0 ? style.loss : style.gain;
-                  ctx.fillStyle = 'rgba(12,15,20,0.9)';
-                  ctx.beginPath();
-                  ctx.roundRect(x0, yc - (LH * dpr) / 2, w + padX * 2, LH * dpr, 3 * dpr);
-                  ctx.fill();
-                  ctx.strokeStyle = color;
-                  ctx.globalAlpha = 0.45;
-                  ctx.lineWidth = 1 * dpr;
-                  ctx.stroke();
-                  ctx.globalAlpha = 1;
+                  ctx.lineWidth = 3.5 * dpr;
+                  ctx.strokeStyle = 'rgba(8,10,14,0.95)';
+                  ctx.strokeText(txt, x0, yc);
                   ctx.fillStyle = color;
-                  ctx.fillText(txt, x0 + padX, yc + 0.5 * dpr);
+                  ctx.fillText(txt, x0, yc);
                 });
                 ctx.textBaseline = 'alphabetic';
                 ctx.font = `${10 * dpr}px Inter, system-ui, sans-serif`;

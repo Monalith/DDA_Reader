@@ -15,6 +15,8 @@ import './map.css';
 import { applyAffine } from '../core/affine';
 import { bearingDeg, haversineM } from '../core/geo';
 import { turnMetrics } from '../core/track';
+import { bestTurnTimes, fmtTurnDelta, turnDeltas } from '../core/turnTimes';
+import { DEFAULT_TURN_LABELS } from '../core/types';
 import type { Gate, LngLat, SchemaLayer, TrackModel, TurnMetrics } from '../core/types';
 import { lapX, selectedLapEntries } from '../state/selectors';
 import { activeTrack, useLab, lapMetaOf } from '../state/store';
@@ -151,6 +153,7 @@ export default function MapView() {
   const xRange = useLab((s) => s.xRange);
   const xAxis = useLab((s) => s.workspace.xAxis);
   const dataMarkers = useLab((s) => s.markers);
+  const turnLabels = useLab((s) => s.workspace.turnLabels ?? DEFAULT_TURN_LABELS);
   const activeMarkerId = useLab((s) => s.activeMarkerId);
   const dataMarkerRefs = useRef<Map<string, maplibregl.Marker>>(new Map());
 
@@ -412,6 +415,34 @@ export default function MapView() {
     }
     bikeRef.current.setRotation(pos.bearing);
   }, [ready, cursor, sessions]);
+
+  // ---------- per-turn gain/loss labels next to each turn ----------
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    const features: GeoJSON.Feature[] = [];
+    if (track && track.turns.length && entries.length && turnLabels.onMap !== false) {
+      const best = bestTurnTimes(sessions, track);
+      const multi = entries.length > 1;
+      entries.forEach(({ s, lap }, row) => {
+        const deltas = turnDeltas(s, lap, track, best);
+        const meta = lapMetaOf(useLab.getState(), s.id, lap.n);
+        track.turns.forEach((turn, k) => {
+          const d = deltas[k];
+          if (!Number.isFinite(d)) return;
+          const txt = fmtTurnDelta(d);
+          const color = txt === 'best' ? turnLabels.best : d > 0 ? turnLabels.loss : turnLabels.gain;
+          features.push({
+            type: 'Feature',
+            properties: { label: multi ? `${meta.name.replace(/^.*\s(L\d+)$/, '$1')} ${txt}` : txt, color, offset: [1.1, 0.75 + row * 1.15] },
+            geometry: { type: 'Point', coordinates: [turn.apexGeo[0], turn.apexGeo[1]] },
+          });
+        });
+      });
+    }
+    setData(map, 'turn-deltas', { type: 'FeatureCollection', features });
+    if (map.getLayer('turn-deltas')) map.setLayoutProperty('turn-deltas', 'text-size', zoomRadius(Math.max(10, turnLabels.size - 2), turnLabels.size + 6));
+  }, [ready, track, entries, sessions, lapMeta, turnLabels]);
 
   // ---------- user data markers (pins with the marker name) ----------
   useEffect(() => {
@@ -842,7 +873,7 @@ function syncSchemaImage(map: maplibregl.Map, schema: SchemaLayer | null): void 
 
 /** One-time creation of the empty data sources and their layers. */
 function addDataLayers(map: maplibregl.Map): void {
-  for (const id of ['centerline', 'gates', 'markers', 'schema', 'measure']) {
+  for (const id of ['centerline', 'gates', 'markers', 'schema', 'measure', 'turn-deltas']) {
     if (!map.getSource(id)) map.addSource(id, { type: 'geojson', data: EMPTY });
   }
 
@@ -943,6 +974,27 @@ function addDataLayers(map: maplibregl.Map): void {
       'circle-color': '#3ddc84',
       'circle-stroke-color': '#0e1116',
       'circle-stroke-width': 1.5,
+    },
+  });
+
+  // time won / lost per turn, one row per selected lap, anchored right of the apex
+  map.addLayer({
+    id: 'turn-deltas',
+    type: 'symbol',
+    source: 'turn-deltas',
+    layout: {
+      'text-field': ['get', 'label'],
+      'text-font': TEXT_FONT,
+      'text-size': zoomRadius(12, 20),
+      'text-anchor': 'left',
+      'text-offset': ['array', 'number', 2, ['get', 'offset']],
+      'text-allow-overlap': true,
+      'text-ignore-placement': true,
+    },
+    paint: {
+      'text-color': ['get', 'color'],
+      'text-halo-color': 'rgba(8,10,14,0.95)',
+      'text-halo-width': 1.8,
     },
   });
 

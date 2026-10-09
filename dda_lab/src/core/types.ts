@@ -166,14 +166,17 @@ export interface Workspace {
 }
 
 export interface TurnLabelStyle {
+  /** on the charts (at the turn lines) */
   show: boolean;
+  /** on the satellite map, next to each turn */
+  onMap?: boolean;
   size: number; // px
   gain: string; // faster than the best (−)
   loss: string; // slower (+)
   best: string;
 }
 
-export const DEFAULT_TURN_LABELS: TurnLabelStyle = { show: true, size: 12, gain: '#4ade80', loss: '#fb7185', best: '#facc15' };
+export const DEFAULT_TURN_LABELS: TurnLabelStyle = { show: false, onMap: true, size: 14, gain: '#00e676', loss: '#ff3d57', best: '#ffffff' };
 
 /** A math channel: one formula for every lap, optionally overridden per lap (key = `${sessionId}:${lapN}`). */
 export interface MathChannelDef {

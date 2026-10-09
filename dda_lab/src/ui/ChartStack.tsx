@@ -205,11 +205,14 @@ export default function ChartStack() {
                 </button>
               </div>
               <label className="ps-row ps-check">
-                <input type="checkbox" checked={turnLabels.show} onChange={(e) => setTurnLabels({ show: e.target.checked })} /> Show gain/loss per turn
+                <input type="checkbox" checked={turnLabels.onMap !== false} data-testid="turn-labels-map" onChange={(e) => setTurnLabels({ onMap: e.target.checked })} /> On the map (next to each turn)
+              </label>
+              <label className="ps-row ps-check">
+                <input type="checkbox" checked={turnLabels.show} data-testid="turn-labels-charts" onChange={(e) => setTurnLabels({ show: e.target.checked })} /> On the charts (at the turn lines)
               </label>
               <div className="ps-row">
                 <span className="ps-label">Size</span>
-                <input type="range" min={9} max={20} step={1} value={turnLabels.size} data-testid="turn-labels-size" onChange={(e) => setTurnLabels({ size: Number(e.target.value) })} />
+                <input type="range" min={10} max={24} step={1} value={turnLabels.size} data-testid="turn-labels-size" onChange={(e) => setTurnLabels({ size: Number(e.target.value) })} />
                 <span className="num ps-val">{turnLabels.size}px</span>
               </div>
               {(
@@ -231,10 +234,10 @@ export default function ChartStack() {
                 <span className="ps-label">Themes</span>
                 {(
                   [
-                    ['Fresh', { gain: '#4ade80', loss: '#fb7185', best: '#facc15' }],
+                    ['Vivid', { gain: '#00e676', loss: '#ff3d57', best: '#ffffff' }],
                     ['Classic', { gain: '#3ddc84', loss: '#ff4d6d', best: '#ffd166' }],
-                    ['Cool', { gain: '#22d3ee', loss: '#f472b6', best: '#a3e635' }],
-                    ['Mono', { gain: '#e5e7eb', loss: '#9ca3af', best: '#ffffff' }],
+                    ['Cool', { gain: '#40c4ff', loss: '#ff6e40', best: '#eeff41' }],
+                    ['Mono', { gain: '#ffffff', loss: '#b0bec5', best: '#ffd600' }],
                   ] as const
                 ).map(([name, th]) => (
                   <button key={name} className="btn-mini" onClick={() => setTurnLabels(th)} title={`${th.gain} / ${th.loss} / ${th.best}`}>

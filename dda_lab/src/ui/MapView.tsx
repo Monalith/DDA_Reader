@@ -41,12 +41,26 @@ const LAYER_KEYS = [
   'centerline',
   'turns',
   'apex',
+  'turnin',
   'brake',
   'throttle',
   'gates',
   'trace',
   'schema',
 ] as const;
+
+const LAYER_LABELS: Record<string, string> = {
+  satellite: 'satellite',
+  centerline: 'centerline',
+  turns: 'turn numbers',
+  apex: 'apex (+ km/h)',
+  turnin: 'turn-in point (+ km/h)',
+  brake: 'brake point (+ km/h)',
+  throttle: 'throttle-on point (+ km/h)',
+  gates: 'gates',
+  trace: 'trace',
+  schema: 'schema',
+};
 
 const EMPTY = { type: 'FeatureCollection' as const, features: [] };
 const CLICK_RADIUS_M = 25;
@@ -367,16 +381,28 @@ export default function MapView() {
     if (!map || !ready) return;
     setData(map, 'centerline', track ? { type: 'FeatureCollection', features: [centerlineGeoJson(track)] } : EMPTY);
     setData(map, 'gates', track ? gatesGeoJson(track) : EMPTY);
-    const first = entries[0];
-    setData(
-      map,
-      'markers',
-      track && first ? markersGeoJson(track, metrics, first.s, first.lap) : EMPTY,
-    );
+    // apex / turn-in / brake / throttle points of every selected lap (turn numbers once)
+    if (track && entries.length) {
+      const multi = entries.length > 1;
+      const feats: GeoJSON.Feature[] = [];
+      entries.forEach(({ s, lap }, i) => {
+        const meta = lapMetaOf(useLab.getState(), s.id, lap.n);
+        const fc = markersGeoJson(track, i === 0 ? metrics : [], s, lap, {
+          lapTag: multi ? meta.name.replace(/^.*\s(L\d+)$/, '$1') : undefined,
+          color: meta.color,
+          turnLabels: i === 0,
+          row: i,
+        });
+        feats.push(...fc.features);
+      });
+      setData(map, 'markers', { type: 'FeatureCollection', features: feats });
+    } else {
+      setData(map, 'markers', EMPTY);
+    }
     const schema: SchemaLayer | undefined = preview ?? track?.schema;
     setData(map, 'schema', track && schema ? schemaGeoJson({ ...track, schema }) : EMPTY);
     syncSchemaImage(map, schema ?? null);
-  }, [ready, track, entries, metrics, preview]);
+  }, [ready, track, entries, metrics, preview, lapMeta]);
 
   // ---------- layer toggles ----------
   useEffect(() => {
@@ -385,8 +411,13 @@ export default function MapView() {
     setVis(map, 'centerline-line', mapLayers.centerline !== false);
     setVis(map, 'markers-turn', mapLayers.turns !== false);
     setVis(map, 'markers-apex', mapLayers.apex !== false);
+    setVis(map, 'markers-apex-label', mapLayers.apex !== false);
+    setVis(map, 'markers-turnin', mapLayers.turnin !== false);
+    setVis(map, 'markers-turnin-label', mapLayers.turnin !== false);
     setVis(map, 'markers-brake', mapLayers.brake !== false);
+    setVis(map, 'markers-brake-label', mapLayers.brake !== false);
     setVis(map, 'markers-throttle', mapLayers.throttle !== false);
+    setVis(map, 'markers-throttle-label', mapLayers.throttle !== false);
     setVis(map, 'gates-line', mapLayers.gates !== false);
     const schemaOn = mapLayers.schema !== false;
     for (const id of ['schema-outline', 'schema-racing', 'schema-apex', 'schema-marker', 'schema-label', 'schema-image']) {
@@ -430,7 +461,7 @@ export default function MapView() {
         const lap = s?.laps.find((l) => l.n === lapN);
         if (!s || !lap) return new Map();
         try {
-          return new Map(turnMetrics(s, lap, track).map((m) => [m.turn, m.apexKmh]));
+          return new Map(turnMetrics(s, lap, track).map((m) => [m.turn, Number.isFinite(m.turnInKmh ?? NaN) ? (m.turnInKmh as number) : m.apexKmh]));
         } catch {
           return new Map();
         }
@@ -788,7 +819,7 @@ export default function MapView() {
                 checked={mapLayers[k] !== false}
                 onChange={() => toggleLayer(k)}
               />
-              {k}
+              {LAYER_LABELS[k] ?? k}
             </label>
           ))}
         </div>
@@ -984,6 +1015,18 @@ function addDataLayers(map: maplibregl.Map): void {
     },
   });
   map.addLayer({
+    id: 'markers-turnin',
+    type: 'circle',
+    source: 'markers',
+    filter: ['==', ['get', 'kind'], 'turnin'],
+    paint: {
+      'circle-radius': zoomRadius(4, 8),
+      'circle-color': '#ffd166',
+      'circle-stroke-color': '#0e1116',
+      'circle-stroke-width': 1.5,
+    },
+  });
+  map.addLayer({
     id: 'markers-brake',
     type: 'circle',
     source: 'markers',
@@ -1031,6 +1074,31 @@ function addDataLayers(map: maplibregl.Map): void {
       'text-halo-width': 1.8,
     },
   });
+
+  // speed labels (km/h) next to the apex / turn-in / brake / throttle points
+  for (const [kind, color] of [['apex', '#ffffff'], ['turnin', '#ffd166'], ['brake', '#ff6b6b'], ['throttle', '#3ddc84']] as const) {
+    map.addLayer({
+      id: `markers-${kind}-label`,
+      type: 'symbol',
+      source: 'markers',
+      filter: ['==', ['get', 'kind'], kind],
+      minzoom: 14.5,
+      layout: {
+        'text-field': ['get', 'label'],
+        'text-font': TEXT_FONT,
+        'text-size': zoomRadius(12, 16),
+        'text-anchor': kind === 'brake' ? 'right' : 'left',
+        'text-offset': ['coalesce', ['array', 'number', 2, ['get', 'offset']], ['literal', [0.8, 0]]],
+        'text-allow-overlap': true,
+        'text-ignore-placement': true,
+      },
+      paint: {
+        'text-color': color,
+        'text-halo-color': 'rgba(8,10,14,0.95)',
+        'text-halo-width': 1.5,
+      },
+    });
+  }
 
   map.addLayer({
     id: 'markers-turn',

@@ -176,6 +176,9 @@ function barChart(labels: string[], values: number[], unit: string) {
 // ---------------------------------------------------------------------------
 const TURN_METRICS: Array<{ id: keyof TurnMetrics; label: string; higherBetter: boolean; digits: number }> = [
   { id: 'entryKmh', label: 'Entry km/h', higherBetter: true, digits: 1 },
+  { id: 'turnInKmh', label: 'Turn-in km/h', higherBetter: true, digits: 1 },
+  { id: 'brakeKmh', label: 'Brake km/h', higherBetter: true, digits: 1 },
+  { id: 'throttleKmh', label: 'Throttle-on km/h', higherBetter: true, digits: 1 },
   { id: 'apexKmh', label: 'Apex km/h', higherBetter: true, digits: 1 },
   { id: 'exitKmh', label: 'Exit km/h', higherBetter: true, digits: 1 },
   { id: 'maxLeanDeg', label: 'Max lean °', higherBetter: true, digits: 1 },

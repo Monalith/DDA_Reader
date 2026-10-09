@@ -427,9 +427,11 @@ export function turnMetrics(s: Session, lap: Lap, track: TrackModel): TurnMetric
   const lean = s.channels.get('lean')?.data;
   const longG = s.channels.get('long_g')?.data;
   const tps = s.channels.get('tps')?.data;
+  const curvature = s.channels.get('curvature')?.data;
   const at = (ch: Float32Array | undefined, i: number) => (ch ? ch[a + i] : NaN);
 
   const out: TurnMetrics[] = [];
+  let prevApex = -1;
   for (const turn of track.turns) {
     const [s0, s1] = turn.sRange;
     const inRange: number[] = [];
@@ -456,6 +458,7 @@ export function turnMetrics(s: Session, lap: Lap, track: TrackModel): TurnMetric
 
     // brake onset: walk back from the apex to the braking run nearest it
     let brakeDistM = NaN;
+    let brakeKmh = NaN;
     if (longG && iApex >= 0) {
       let j = iApex;
       while (j >= 0 && !(longG[a + j] < -0.3)) j--;
@@ -463,15 +466,23 @@ export function turnMetrics(s: Session, lap: Lap, track: TrackModel): TurnMetric
         let o = j;
         while (o - 1 >= 0 && longG[a + o - 1] < -0.3) o--;
         brakeDistM = sDist[iApex] - sDist[o];
+        brakeKmh = at(speed, o);
       }
     }
+    // turn-in: walking back from the apex, the sample where the lean (or the GPS curvature
+    // when there is no lean channel) first drops under the threshold
+    const iTurnIn = turnInIndex(lean, curvature, a, iApex, len, prevApex + 1);
+    const turnInKmh = iTurnIn >= 0 ? at(speed, iTurnIn) : NaN;
+    if (iApex >= 0) prevApex = iApex;
 
     // throttle-on: first sample after the apex over 20 %
     let throttleOnDistM = NaN;
+    let throttleKmh = NaN;
     if (tps && iApex >= 0) {
       for (let i = iApex + 1; i < len; i++) {
         if (tps[a + i] > 20) {
           throttleOnDistM = sDist[i] - sDist[iApex];
+          throttleKmh = at(speed, i);
           break;
         }
       }
@@ -486,10 +497,42 @@ export function turnMetrics(s: Session, lap: Lap, track: TrackModel): TurnMetric
       maxLeanDeg: maxLean,
       brakeDistM,
       throttleOnDistM,
+      turnInKmh,
+      brakeKmh,
+      throttleKmh,
       timeS: times[out.length],
     });
   }
   return out;
+}
+
+/** Lean angle (deg) from which the bike counts as "turning"; curvature fallback = radius under 350 m. */
+export const TURN_IN_LEAN_DEG = 12;
+const TURN_IN_CURV = 1 / 350;
+
+/**
+ * Index (lap-relative) where the bike starts to turn in: from the apex walk back while the
+ * lean stays above TURN_IN_LEAN_DEG; the first sample under it is the turn-in point.
+ * Uses the GPS curvature when the session has no lean channel. −1 when unknown.
+ */
+export function turnInIndex(lean: Float32Array | undefined, curvature: Float32Array | undefined, a: number, iApex: number, len: number, iMin = 0): number {
+  if (iApex < 0 || iApex >= len) return -1;
+  const turning = (i: number): boolean => {
+    if (lean) {
+      const l = Math.abs(lean[a + i]);
+      if (Number.isFinite(l)) return l >= TURN_IN_LEAN_DEG;
+    }
+    if (curvature) {
+      const k = Math.abs(curvature[a + i]);
+      if (Number.isFinite(k)) return k >= TURN_IN_CURV;
+    }
+    return false;
+  };
+  if (!turning(iApex)) return iApex;
+  let i = iApex;
+  // linked turns (no upright moment between them): never walk back past the previous apex
+  while (i - 1 >= Math.max(0, iMin) && turning(i - 1)) i--;
+  return i;
 }
 
 /** Nearest known track within 3 km of the session's GPS centre. */

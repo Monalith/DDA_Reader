@@ -61,6 +61,11 @@ export interface TurnMetrics {
   brakeDistM: number;
   throttleOnDistM: number;
   apexDevM?: number;
+  /** speed where the bike starts turning in (lean rises past the threshold before the apex) */
+  turnInKmh?: number;
+  /** speed at brake onset / at throttle re-application */
+  brakeKmh?: number;
+  throttleKmh?: number;
   /** seconds spent in the turn */
   timeS?: number;
   /** timeS minus the best loaded lap's time in this turn (filled by the reports) */

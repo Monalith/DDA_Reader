@@ -17,16 +17,26 @@ describe('tiles', () => {
     expect(metresPerPixel(SERRES[1], SAT_ZOOM)).toBeCloseTo(0.45, 2);
   });
 
-  it('covers every point, with padding, in the tile range', () => {
-    const pts: LngLat[] = [SERRES, [23.525, 41.078], [23.512, 41.069]];
-    const r = tileRangeFor(pts, SAT_ZOOM, 60);
-    for (const p of pts) {
-      const [x, y] = lngLatToPixel(p, SAT_ZOOM);
-      expect(Math.floor(x / 256)).toBeGreaterThanOrEqual(r.tx0);
-      expect(Math.floor(x / 256)).toBeLessThanOrEqual(r.tx1);
-      expect(Math.floor(y / 256)).toBeGreaterThanOrEqual(r.ty0);
-      expect(Math.floor(y / 256)).toBeLessThanOrEqual(r.ty1);
-    }
+  it('padding strictly widens the tile range', () => {
+    // Use a single point that sits well inside a tile; padding should expand the range.
+    const pts: LngLat[] = [SERRES];
+    const r0 = tileRangeFor(pts, SAT_ZOOM, 0);
+    const r300 = tileRangeFor(pts, SAT_ZOOM, 300);
+
+    // Without padding, the range should span a single tile in each direction.
+    expect(r0.tx1 - r0.tx0).toBe(0);
+    expect(r0.ty1 - r0.ty0).toBe(0);
+
+    // With 300 px padding (1+ full tiles), the range must be strictly wider.
+    expect(r300.tx1 - r300.tx0).toBeGreaterThan(r0.tx1 - r0.tx0);
+    expect(r300.ty1 - r300.ty0).toBeGreaterThan(r0.ty1 - r0.ty0);
+
+    // The padded range must still contain the original point.
+    const [x, y] = lngLatToPixel(SERRES, SAT_ZOOM);
+    expect(Math.floor(x / 256)).toBeGreaterThanOrEqual(r300.tx0);
+    expect(Math.floor(x / 256)).toBeLessThanOrEqual(r300.tx1);
+    expect(Math.floor(y / 256)).toBeGreaterThanOrEqual(r300.ty0);
+    expect(Math.floor(y / 256)).toBeLessThanOrEqual(r300.ty1);
   });
 });
 

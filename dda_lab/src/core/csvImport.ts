@@ -334,6 +334,7 @@ const LAB_CHANNELS: Record<string, { unit: string; derived?: boolean }> = {
   lat_g: { unit: 'g', derived: true }, total_g: { unit: 'g', derived: true }, curvature: { unit: '1/m', derived: true },
   radius: { unit: 'm', derived: true }, slip: { unit: '%', derived: true }, phase: { unit: '', derived: true },
   lap_dist: { unit: 'm', derived: true }, total_dist: { unit: 'm', derived: true }, delta_t: { unit: 's', derived: true },
+  time: { unit: 's', derived: true }, lap_time: { unit: 's', derived: true },
   bearing: { unit: 'deg', derived: true },
   d_speed: { unit: '', derived: true }, d_gps_speed: { unit: '', derived: true }, d_rpm: { unit: '', derived: true },
   d_tps: { unit: '', derived: true }, d_lean: { unit: '', derived: true }, d_long_g: { unit: '', derived: true },

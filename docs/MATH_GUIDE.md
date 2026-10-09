@@ -34,6 +34,8 @@ reference lap or import a new session. They are saved in the workspace.
 | `curvature`, `radius` | 1/m, m | corner geometry from GPS (derived) |
 | `slip` | % | wheel vs GPS speed (derived) |
 | `phase` | – | 0 coast, 1 brake, 2 throttle (derived) |
+| `time` | s | seconds since the start of the file (derived) |
+| `lap_time` | s | seconds since the lap start, NaN outside laps (derived) |
 | `lap_dist` | m | distance since the start line (derived) |
 | `total_dist` | m | distance covered over the laps still in the file, continuous lap after lap; deleting a lap removes its metres (derived) |
 | `delta_t` | s | time gained/lost vs the reference lap (derived) |
@@ -59,7 +61,7 @@ parentheses for grouping. Numbers are plain: `3.6`, `0.25`.
 - `accel_g(speed)` — longitudinal acceleration in **g** straight from a km/h channel.
 - `integ(ch)` — running integral over time; `integ(kmh2ms(speed))` = distance in m.
 - `integ_x(y, x)` — integral with **your own x channel** (trapezoid rule): `integ_x(long_g, lap_dist)` integrates g over
-  metres, `integ_x(rpm, lap_time(rpm))` over lap time. A wrap of x (lap distance going back to 0) is skipped.
+  metres, `integ_x(rpm, lap_time)` over lap time (`time` / `lap_time` are channels). A wrap of x (lap distance going back to 0) is skipped.
 - `lap_integ(y)`, `lap_integ_x(y, x)` — the same integrals restarting from 0 at every lap start.
 - `deriv_x(y, x)` — dy/dx with your own x channel: `deriv_x(speed, lap_dist)` = km/h per metre.
 - The **∫ Integral** builder in the Math editor writes these for you: pick y, pick dx (time or any channel), tick

@@ -335,6 +335,18 @@ export function computeDerived(s: Session, track?: TrackModel): void {
   }
   setChannel(s, 'lap_dist', 'm', lapDist);
 
+  // --- time: seconds since the start of the file; lap_time: seconds since the lap start
+  const time = new Float32Array(n);
+  const t0 = n ? s.t[0] : 0;
+  for (let i = 0; i < n; i++) time[i] = s.t[i] - t0;
+  setChannel(s, 'time', 's', time);
+  const lapTime = nanArray(n);
+  for (const lap of s.laps) {
+    const tl = s.t[lap.startIdx];
+    for (let i = lap.startIdx; i <= lap.endIdx && i < n; i++) lapTime[i] = s.t[i] - tl;
+  }
+  setChannel(s, 'lap_time', 's', lapTime);
+
   fillMissingChannels(s, { hasGps, gpsSpeed, vMs, curv, dt });
 }
 

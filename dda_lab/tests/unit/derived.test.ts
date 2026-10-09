@@ -207,3 +207,27 @@ describe('computeDerived edge cases', () => {
     expect([...s.channels.get('slip')!.data].every(Number.isNaN)).toBe(true);
   });
 });
+
+describe('time channels', () => {
+  it('time counts from the file start and lap_time from each lap start', async () => {
+    const { computeDerived } = await import('../../src/core/derived');
+    const { DEFAULT_PROC } = await import('../../src/core/types');
+    const n = 30;
+    const t = Float64Array.from({ length: n }, (_, i) => 5 + i / 10);
+    const s = {
+      id: 'x', name: 'x', source: 'csv', color: '#fff', t,
+      channels: new Map([['speed', { name: 'speed', unit: 'km/h', kind: 'raw', data: new Float32Array(n).fill(50), proc: { ...DEFAULT_PROC } }]]),
+      laps: [{ n: 1, startIdx: 10, endIdx: 19, timeS: 1, sectorsS: [], isBest: true, kind: 'flying' }],
+      meta: { track: '', rider: '', note: '' },
+    } as never;
+    computeDerived(s);
+    const time = (s as { channels: Map<string, { data: Float32Array; unit: string }> }).channels.get('time')!;
+    const lapTime = (s as { channels: Map<string, { data: Float32Array }> }).channels.get('lap_time')!;
+    expect(time.unit).toBe('s');
+    expect(time.data[0]).toBe(0);
+    expect(time.data[29]).toBeCloseTo(2.9, 5);
+    expect(Number.isNaN(lapTime.data[5])).toBe(true);
+    expect(lapTime.data[10]).toBe(0);
+    expect(lapTime.data[19]).toBeCloseTo(0.9, 5);
+  });
+});

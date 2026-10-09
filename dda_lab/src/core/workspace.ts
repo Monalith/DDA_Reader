@@ -56,6 +56,9 @@ const WorkspaceObject = z.object({
       gain: z.string().default(DEFAULT_TURN_LABELS.gain),
       loss: z.string().default(DEFAULT_TURN_LABELS.loss),
       best: z.string().default(DEFAULT_TURN_LABELS.best),
+      turnSize: z.number().min(8).max(32).optional(),
+      turnColor: z.string().optional(),
+      pointSize: z.number().min(8).max(28).optional(),
     })
     .default(clone(DEFAULT_TURN_LABELS)),
 });

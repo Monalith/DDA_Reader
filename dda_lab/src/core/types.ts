@@ -185,9 +185,14 @@ export interface TurnLabelStyle {
   gain: string; // faster than the best (−)
   loss: string; // slower (+)
   best: string;
+  /** turn names on the map (K1…) */
+  turnSize?: number;
+  turnColor?: string;
+  /** km/h labels next to apex / brake / throttle points */
+  pointSize?: number;
 }
 
-export const DEFAULT_TURN_LABELS: TurnLabelStyle = { show: false, onMap: true, speed: true, size: 16, gain: '#00e676', loss: '#ff3d57', best: '#ffffff' };
+export const DEFAULT_TURN_LABELS: TurnLabelStyle = { show: false, onMap: true, speed: true, size: 16, gain: '#00e676', loss: '#ff3d57', best: '#ffffff', turnSize: 15, turnColor: '#ffd166', pointSize: 13 };
 
 /** A math channel: one formula for every lap, optionally overridden per lap (key = `${sessionId}:${lapN}`). */
 export interface MathChannelDef {
@@ -226,9 +231,10 @@ export const DEFAULT_WORKSPACE: Workspace = {
   ],
   mathChannels: [],
   turnLabels: { ...DEFAULT_TURN_LABELS },
+  // point overlays (apex / turn-in / brake / throttle / gates / schema) start hidden: Layers menu turns them on
   mapLayers: {
-    satellite: true, centerline: true, turns: true, apex: true, brake: true,
-    throttle: true, gates: true, trace: true, schema: true,
+    satellite: true, centerline: true, turns: true, trace: true,
+    apex: false, turnin: false, brake: false, throttle: false, gates: false, schema: false,
   },
 };
 

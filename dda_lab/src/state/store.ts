@@ -14,7 +14,13 @@ export const WORKSPACE_KEY = 'dda-lab-workspace';
 function loadWorkspaceLocal(): Workspace {
   try {
     const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(WORKSPACE_KEY) : null;
-    return raw ? parseWorkspace(raw) : DEFAULT_WORKSPACE;
+    const ws = raw ? parseWorkspace(raw) : DEFAULT_WORKSPACE;
+    // one-time migration: point overlays now start hidden (older saved workspaces had them all on)
+    if (raw && typeof localStorage !== 'undefined' && !localStorage.getItem('dda-lab-layers-v2')) {
+      localStorage.setItem('dda-lab-layers-v2', '1');
+      return { ...ws, mapLayers: { ...DEFAULT_WORKSPACE.mapLayers } };
+    }
+    return ws;
   } catch {
     return DEFAULT_WORKSPACE;
   }
@@ -273,7 +279,7 @@ export const useLab = create<LabState>((set, get) => ({
   cursor: null,
   xRange: null,
   workspace: loadWorkspaceLocal(),
-  mapColorBy: 'speed',
+  mapColorBy: 'brake',
   mapMaximized: false,
   bottomTab: 'laps',
   statusMessage: null,

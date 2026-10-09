@@ -9,7 +9,7 @@ export function closeExamples(): void {
   for (const s of st.sessions) if (s.isExample) st.removeSession(s.id);
 }
 
-export async function openFiles(files: File[], opts: { example?: boolean } = {}): Promise<void> {
+export async function openFiles(files: File[], opts: { example?: boolean; colors?: Record<string, string> } = {}): Promise<void> {
   const { addSession, setStatus } = useLab.getState();
   if (!opts.example) closeExamples();
   for (const f of files) {
@@ -26,7 +26,7 @@ export async function openFiles(files: File[], opts: { example?: boolean } = {})
       setStatus(`${f.name}: ${b.sessions.length} laps restored`);
       continue;
     }
-    const color = SESSION_COLORS[useLab.getState().sessions.length % SESSION_COLORS.length];
+    const color = opts.colors?.[f.name] ?? SESSION_COLORS[useLab.getState().sessions.length % SESSION_COLORS.length];
     setStatus(`Loading ${f.name}…`);
     const s = await loadSessionFromFile(f, color, activeTrack(useLab.getState()));
     if (opts.example) s.isExample = true;

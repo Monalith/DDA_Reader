@@ -530,6 +530,23 @@ export default function MapView() {
     if (map.getLayer('turn-deltas')) map.setLayoutProperty('turn-deltas', 'text-size', zoomRadius(Math.max(12, turnLabels.size + 1), turnLabels.size + 10));
   }, [ready, track, entries, sessions, lapMeta, turnLabels]);
 
+  // ---------- map text style (turn names, km/h point labels) ----------
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    const ts = turnLabels.turnSize ?? DEFAULT_TURN_LABELS.turnSize!;
+    const tc = turnLabels.turnColor ?? DEFAULT_TURN_LABELS.turnColor!;
+    const ps = turnLabels.pointSize ?? DEFAULT_TURN_LABELS.pointSize!;
+    if (map.getLayer('markers-turn')) {
+      map.setLayoutProperty('markers-turn', 'text-size', zoomRadius(Math.max(8, ts - 2), ts + 5));
+      map.setPaintProperty('markers-turn', 'text-color', tc);
+    }
+    for (const kind of ['apex', 'turnin', 'brake', 'throttle']) {
+      const id = `markers-${kind}-label`;
+      if (map.getLayer(id)) map.setLayoutProperty(id, 'text-size', zoomRadius(Math.max(8, ps - 1), ps + 3));
+    }
+  }, [ready, turnLabels.turnSize, turnLabels.turnColor, turnLabels.pointSize]);
+
   // ---------- user data markers (pins with the marker name) ----------
   useEffect(() => {
     const map = mapRef.current;
@@ -754,7 +771,7 @@ export default function MapView() {
               return;
             }
             fetchExampleFile(ex)
-              .then((f) => openFiles([f], { example: true }))
+              .then((f) => openFiles([f], { example: true, colors: { [ex.file]: ex.color } }))
               .catch((err) => useLab.getState().setStatus(`Example error: ${(err as Error).message}`));
           }}
         >

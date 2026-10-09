@@ -234,6 +234,18 @@ export default function ChartStack() {
                   </span>
                 </div>
               ))}
+              <div className="ps-section">Map text</div>
+              <div className="ps-row">
+                <span className="ps-label" style={{ width: 80 }}>Turn names</span>
+                <input type="range" min={8} max={32} step={1} value={turnLabels.turnSize ?? 15} data-testid="map-text-turn-size" onChange={(e) => setTurnLabels({ turnSize: Number(e.target.value) })} />
+                <span className="num ps-val">{turnLabels.turnSize ?? 15}px</span>
+                <input type="color" value={turnLabels.turnColor ?? '#ffd166'} data-testid="map-text-turn-color" onChange={(e) => setTurnLabels({ turnColor: e.target.value })} />
+              </div>
+              <div className="ps-row">
+                <span className="ps-label" style={{ width: 80 }}>km/h points</span>
+                <input type="range" min={8} max={28} step={1} value={turnLabels.pointSize ?? 13} data-testid="map-text-point-size" onChange={(e) => setTurnLabels({ pointSize: Number(e.target.value) })} />
+                <span className="num ps-val">{turnLabels.pointSize ?? 13}px</span>
+              </div>
               <div className="ps-row" style={{ gap: 4, flexWrap: 'wrap' }}>
                 <span className="ps-label">Themes</span>
                 {(

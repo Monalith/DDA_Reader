@@ -115,8 +115,19 @@ MapLibre overzooms, so the extractor pins z18 and never requests deeper.
    white lines). Record left/right edge offsets.
 4. Median filter (width 15) along the track; reject and interpolate sections over the
    width ceiling or with a sharp jump against neighbours.
-5. Cache as `tracks/<trackId>/corridor.json` on disk (shareable, version-controlled,
-   no browser quota). Re-extract only on explicit request.
+5. Store it **on the server**, not per browser: a corridor is extracted once and every
+   visitor gets the same one. The store is the FastAPI bridge, which is already deployed
+   (kos-web droplet → nginx → systemd `dda-lab` on 127.0.0.1:8777 → cloudflared →
+   `https://dda.kitchenonstage.com`; `GET /health` verified live). Two endpoints:
+   `GET /corridors/<key>` public, `PUT /corridors/<key>` guarded by `DDA_CORRIDOR_TOKEN`,
+   files under `/opt/dda-lab/corridors/`. The key is geographic (slugified name plus the
+   track centre to three decimals), because `track.id` is regenerated on every load.
+   The write endpoint is internet-facing, so the key is allowlisted against
+   `^[a-z0-9][a-z0-9-]{0,63}$`, the payload is size- and shape-checked, and the write goes
+   through a temp file and a rename.
+   The stored record still carries the centerline fingerprint (point count, length, first
+   point) so a corridor saved before the start line moved is rejected rather than
+   silently misaligned.
 
 ### Solver — QSS three passes, O(n)
 
@@ -168,8 +179,10 @@ flagged `isSim: true` so file-bound features (marker persistence, re-import) ski
 
 Tiles unreachable or CORS-blocked → corridor extraction fails with a status message and
 the panel falls back to a uniform half-width slider; the simulator still runs. No track
-loaded → the sim tab explains it needs a track. Corridor cache missing → extract on
-demand, never automatically on load (it is ~54 network requests).
+loaded → the sim tab explains it needs a track. No stored corridor for this track → the
+one small `GET` on track load returns 404 and the fallback applies; tile extraction is
+only ever run from the button, never automatically (it is ~54 network requests). No
+write token → extraction still works for this session, it just is not published.
 
 ## Testing
 

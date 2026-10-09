@@ -19,6 +19,9 @@
 - Positions are `LngLat = [number, number]` i.e. `[lng, lat]` — never `[lat, lng]`.
 - Esri World Imagery native maximum zoom is **18** (`ESRI_MAX_TILE_Z` in `src/ui/MapView.tsx:71`). The extractor pins z18 and never requests deeper.
 - Reuse `src/core/geo.ts` (`haversineM`, `bearingDeg`, `toLocalM`, `fromLocalM`) and `src/core/filters.ts` (`movingAverage`) rather than writing new geodesy or filtering.
+- **Corridors live on the server, not in the browser.** They are stored once by the FastAPI bridge, which is already deployed: kos-web droplet (159.89.97.78, fra1) → nginx → systemd `dda-lab` (uvicorn, `/opt/dda-lab`, 127.0.0.1:8777) → cloudflared → `https://dda.kitchenonstage.com`. Verified live: `GET /health` → `{"ok":true,"claude":false}`. `deploy_lab.sh` uploads `dda_lab_bridge.py` and restarts the service on every deploy.
+- **Never hardcode `http://127.0.0.1:8777` for the corridor client.** `src/bridge/client.ts:5` does that and is therefore local-only; on the deployed site it would call the *visitor's* machine. The corridor client uses a same-origin relative URL in production and falls back to the local bridge in dev.
+- The corridor write endpoint is reachable from the public internet. The key is a user-supplied path component, so it is matched against a strict allowlist, the body is size-capped and shape-validated, and writes require a token. Reads stay public.
 - Commit after every task with a `feat(sim):` or `test(sim):` prefix.
 
 ## Review Focus
@@ -29,7 +32,8 @@ These are input classes the spec implies but that no task's happy-path tests wou
 2. **Partial tile failure** — a 404 or timeout leaves a black hole in the mosaic; black reads as non-asphalt, so the corridor silently collapses to zero width there rather than reporting unknown. Expected: unfetched tiles are tracked and their sections are marked unknown and interpolated, not zeroed. *(Task 2, Step 13)*
 3. **Straight sections (curvature ≈ 0)** — `v_lat = √(a_lat·r)` goes to infinity as `r → ∞`, putting `Infinity` into the velocity profile and `NaN` into every downstream channel. Expected: clamped by the drag-limited top speed. *(Task 7, Step 9)*
 4. **A slider dragged to its minimum (μ = 0, power = 0, mass = 0)** — divisions by zero send `NaN`/`Infinity` into the `Session`, which breaks every chart at once and is hard to attribute. Expected: parameters are clamped to physical floors on entry and the solver always returns a finite profile. *(Task 7, Step 13)*
-5. **Cached corridor after the start line moves** — `setStartLine()` calls `normalizeTrackOrigin()` (`src/core/track.ts:363`), which *rotates* `centerline`, so a corridor cached against the old origin is silently misaligned by the rotation offset. Expected: the cache records the centerline length and first point, and a mismatch invalidates it. *(Task 3, Step 9)*
+5. **A stored corridor after the start line moves** — `setStartLine()` calls `normalizeTrackOrigin()` (`src/core/track.ts:363`), which *rotates* `centerline`, so a corridor stored against the old origin is silently misaligned by the rotation offset. Expected: the stored record carries the centerline length and first point, and a mismatch rejects it. *(Task 3, Step 4)*
+6. **A hostile or careless corridor key on the public write endpoint** — the key is a path component chosen by the caller, so `../../etc/whatever` or a 10 MB body would write outside the corridor directory or fill the droplet's disk. Expected: keys match `^[a-z0-9][a-z0-9-]{0,63}$`, the body is capped, the shape is validated, and writes without the token are refused. *(Task 3, Step 8)* — this is a sixth item rather than a swap because it is a security hole on an internet-facing endpoint, and dropping one to keep the list at five would be the wrong trade.
 
 ---
 
@@ -811,18 +815,27 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 3: Corridor cache and staleness
+### Task 3: Corridor service — bridge endpoints and client
+
+A corridor is extracted **once** and then lives on the server, so every visitor to `dda.kitchenonstage.com` gets the same one and nobody re-downloads 54 tiles. The store is the already-deployed FastAPI bridge.
 
 **Files:**
-- Create: `dda_lab/src/sim/corridorCache.ts`
-- Test: `dda_lab/tests/unit/simCorridorCache.test.ts`
+- Create: `dda_lab/src/sim/corridorCache.ts`, `dda_lab/src/sim/corridorService.ts`
+- Modify: `dda_lab_bridge.py`
+- Test: `dda_lab/tests/unit/simCorridorCache.test.ts`, `tests/test_bridge.py` (append)
 
 **Interfaces:**
 - Consumes: `Corridor` from `src/sim/types.ts`; `TrackModel` from `src/core/types.ts`
-- Produces:
-  - `export interface CachedCorridor { version: 1; trackId: string; nPoints: number; lengthM: number; firstPoint: LngLat; stepM: number; leftM: number[]; rightM: number[]; known: boolean[] }`
-  - `export function serializeCorridor(track: TrackModel, c: Corridor): CachedCorridor`
+- Produces (`src/sim/corridorCache.ts`, pure, node-testable):
+  - `export interface StoredCorridor { version: 1; trackId: string; nPoints: number; lengthM: number; firstPoint: LngLat; stepM: number; leftM: number[]; rightM: number[]; known: boolean[] }`
+  - `export function serializeCorridor(track: TrackModel, c: Corridor): StoredCorridor`
   - `export function deserializeCorridor(track: TrackModel, raw: unknown): Corridor | null`
+  - `export function corridorKey(track: TrackModel): string`
+- Produces (`src/sim/corridorService.ts`, network):
+  - `export function corridorBase(): string`
+  - `export async function fetchCorridor(track: TrackModel): Promise<Corridor | null>`
+  - `export async function putCorridor(track: TrackModel, c: Corridor, token: string): Promise<boolean>`
+- Produces (`dda_lab_bridge.py`): `GET /corridors/{key}` (public), `PUT /corridors/{key}` (token-guarded)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -830,7 +843,7 @@ Create `dda_lab/tests/unit/simCorridorCache.test.ts`:
 
 ```ts
 import { describe, expect, it } from 'vitest';
-import { deserializeCorridor, serializeCorridor } from '../../src/sim/corridorCache';
+import { corridorKey, deserializeCorridor, serializeCorridor } from '../../src/sim/corridorCache';
 import type { Corridor } from '../../src/sim/types';
 import type { LngLat, TrackModel } from '../../src/core/types';
 
@@ -883,6 +896,26 @@ describe('corridor cache', () => {
     expect(deserializeCorridor(t, { version: 99 })).toBeNull();
   });
 });
+
+describe('corridorKey', () => {
+  it('is geographic and stable, not the runtime track id', () => {
+    const a = mkTrack(CL, 6, 'runtime-id-1');
+    const b = mkTrack(CL, 6, 'runtime-id-2');
+    expect(corridorKey(a)).toBe(corridorKey(b));
+  });
+
+  it('separates tracks that are far apart', () => {
+    const serres = mkTrack(CL, 6);
+    const elsewhere = mkTrack([[29.0, 41.0], [29.001, 41.0], [29.002, 41.0], [29.003, 41.0]], 6);
+    expect(corridorKey(serres)).not.toBe(corridorKey(elsewhere));
+  });
+
+  it('only ever produces characters the server will accept', () => {
+    const weird = mkTrack(CL, 6);
+    weird.name = '../../etc/passwd  ŞİÇ';
+    expect(corridorKey(weird)).toMatch(/^[a-z0-9][a-z0-9-]{0,63}$/);
+  });
+});
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -899,11 +932,11 @@ Create `dda_lab/src/sim/corridorCache.ts`:
 // only valid for the exact centerline it was built against. setStartLine()
 // calls normalizeTrackOrigin(), which ROTATES the centerline — the vertex count
 // and length survive but every index shifts, so the first point is fingerprinted
-// too and a rotated track invalidates the cache.
+// too and a rotated track invalidates the stored copy.
 import type { LngLat, TrackModel } from '../core/types';
 import type { Corridor } from './types';
 
-export interface CachedCorridor {
+export interface StoredCorridor {
   version: 1;
   trackId: string;
   nPoints: number;
@@ -915,7 +948,32 @@ export interface CachedCorridor {
   known: boolean[];
 }
 
-export function serializeCorridor(track: TrackModel, c: Corridor): CachedCorridor {
+/**
+ * The server-side name for this track's corridor. Geographic, not the runtime
+ * `track.id`, which is regenerated on every load: two people opening the same
+ * circuit must land on the same stored corridor. Three decimals of latitude and
+ * longitude is about 100 m, far finer than the 3 km recognition radius in
+ * `recognizeTrack()` and far coarser than any lap-to-lap variation.
+ *
+ * The result is constrained to the character set the server's key allowlist
+ * accepts, so a track name can never become a path component.
+ */
+export function corridorKey(track: TrackModel): string {
+  const slug = track.name
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 24);
+  const lng = track.center[0].toFixed(3).replace(/[^0-9]/g, (ch) => (ch === '-' ? 'w' : ''));
+  const lat = track.center[1].toFixed(3).replace(/[^0-9]/g, (ch) => (ch === '-' ? 's' : ''));
+  const key = `${slug || 'track'}-${lng}-${lat}`.slice(0, 64);
+  // guarantee the leading character and the whole shape, whatever the name was
+  return /^[a-z0-9]/.test(key) ? key : `t${key}`.slice(0, 64);
+}
+
+export function serializeCorridor(track: TrackModel, c: Corridor): StoredCorridor {
   return {
     version: 1,
     trackId: track.id,
@@ -934,7 +992,7 @@ const ORIGIN_TOLERANCE_DEG = 1e-6; // ~0.1 m
 
 export function deserializeCorridor(track: TrackModel, raw: unknown): Corridor | null {
   if (!raw || typeof raw !== 'object') return null;
-  const c = raw as Partial<CachedCorridor>;
+  const c = raw as Partial<StoredCorridor>;
   if (c.version !== 1) return null;
   if (c.trackId !== track.id) return null;
   if (c.nPoints !== track.centerline.length) return null;
@@ -963,17 +1021,315 @@ export function deserializeCorridor(track: TrackModel, raw: unknown): Corridor |
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `cd dda_lab && npx vitest run tests/unit/simCorridorCache.test.ts && npm run typecheck`
-Expected: PASS (4 tests). The rotation test covers Review Focus item 5.
+Expected: PASS (7 tests). The rotation test covers Review Focus item 5.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Write the failing test for the bridge endpoints**
+
+Append to `tests/test_bridge.py`:
+
+```python
+# --------------------------------------------------------------------------- #
+# Corridor store                                                              #
+# --------------------------------------------------------------------------- #
+
+VALID_CORRIDOR = {
+    "version": 1,
+    "trackId": "runtime-1",
+    "nPoints": 3,
+    "lengthM": 1200.0,
+    "firstPoint": [23.518, 41.073],
+    "stepM": 2.0,
+    "leftM": [5.0, 5.5, 6.0],
+    "rightM": [5.0, 4.5, 4.0],
+    "known": [True, True, False],
+}
+
+
+@pytest.fixture()
+def corridor_client(tmp_path, monkeypatch):
+    monkeypatch.setattr(dda_lab_bridge, "CORRIDOR_DIR", tmp_path / "corridors")
+    monkeypatch.setattr(dda_lab_bridge, "CORRIDOR_TOKEN", "s3cret")
+    return TestClient(dda_lab_bridge.app)
+
+
+def test_corridor_round_trip(corridor_client):
+    r = corridor_client.put(
+        "/corridors/serres-23518-41073",
+        json=VALID_CORRIDOR,
+        headers={"X-Corridor-Token": "s3cret"},
+    )
+    assert r.status_code == 200, r.text
+    got = corridor_client.get("/corridors/serres-23518-41073")
+    assert got.status_code == 200
+    assert got.json()["leftM"] == [5.0, 5.5, 6.0]
+
+
+def test_corridor_missing_is_404(corridor_client):
+    assert corridor_client.get("/corridors/nothing-here").status_code == 404
+
+
+def test_corridor_write_needs_the_token(corridor_client):
+    r = corridor_client.put("/corridors/serres-23518-41073", json=VALID_CORRIDOR)
+    assert r.status_code == 401
+    assert corridor_client.get("/corridors/serres-23518-41073").status_code == 404
+
+
+def test_corridor_write_refused_when_no_token_is_configured(tmp_path, monkeypatch):
+    monkeypatch.setattr(dda_lab_bridge, "CORRIDOR_DIR", tmp_path / "corridors")
+    monkeypatch.setattr(dda_lab_bridge, "CORRIDOR_TOKEN", "")
+    client = TestClient(dda_lab_bridge.app)
+    r = client.put(
+        "/corridors/serres-23518-41073",
+        json=VALID_CORRIDOR,
+        headers={"X-Corridor-Token": ""},
+    )
+    assert r.status_code == 503
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["../etc-passwd", "a/b", "..", "-leading-dash", "UPPER", "x" * 65, "", "a b"],
+)
+def test_corridor_rejects_keys_outside_the_allowlist(corridor_client, key):
+    r = corridor_client.put(
+        f"/corridors/{key}", json=VALID_CORRIDOR, headers={"X-Corridor-Token": "s3cret"}
+    )
+    assert r.status_code in (400, 404, 405), f"{key!r} was not rejected"
+
+
+def test_corridor_path_traversal_writes_nothing_outside_the_directory(corridor_client, tmp_path):
+    corridor_client.put(
+        "/corridors/..%2F..%2Fescaped",
+        json=VALID_CORRIDOR,
+        headers={"X-Corridor-Token": "s3cret"},
+    )
+    assert not (tmp_path / "escaped.json").exists()
+    assert not (tmp_path.parent / "escaped.json").exists()
+
+
+def test_corridor_rejects_mismatched_array_lengths(corridor_client):
+    bad = {**VALID_CORRIDOR, "rightM": [1.0]}
+    r = corridor_client.put(
+        "/corridors/serres-23518-41073", json=bad, headers={"X-Corridor-Token": "s3cret"}
+    )
+    assert r.status_code == 422
+
+
+def test_corridor_rejects_an_oversized_body(corridor_client):
+    huge = {
+        **VALID_CORRIDOR,
+        "nPoints": 200_001,
+        "leftM": [1.0] * 200_001,
+        "rightM": [1.0] * 200_001,
+        "known": [True] * 200_001,
+    }
+    r = corridor_client.put(
+        "/corridors/serres-23518-41073", json=huge, headers={"X-Corridor-Token": "s3cret"}
+    )
+    assert r.status_code == 422
+```
+
+- [ ] **Step 6: Run the Python test to verify it fails**
+
+Run: `cd /Users/macbookmini/projects/DDA_Reader && /Users/macbookmini/projects/dda_venv/bin/python -m pytest tests/test_bridge.py -k corridor -q`
+Expected: FAIL — `AttributeError: module 'dda_lab_bridge' has no attribute 'CORRIDOR_DIR'`.
+
+- [ ] **Step 7: Implement the bridge endpoints**
+
+In `dda_lab_bridge.py`, add to the imports at the top:
+
+```python
+import re
+from fastapi import Header
+```
+
+Add next to the other directory constants (after `SCHEMA_DIR`):
+
+```python
+# Corridors are extracted once and then live here, so every visitor gets the
+# same one instead of each browser re-downloading ~54 satellite tiles. On the
+# deployed droplet this is /opt/dda-lab/corridors (DATA_DIR = BASE_DIR when the
+# service is not a frozen bundle); deploy_lab.sh does not touch it.
+CORRIDOR_DIR = DATA_DIR / "corridors"
+# Reads are public; writes need this. Unset means the store is read-only, which
+# is the right default for a host that should only ever serve what it has.
+CORRIDOR_TOKEN = os.environ.get("DDA_CORRIDOR_TOKEN", "")
+# The key is a caller-supplied path component on a public endpoint: allowlist it.
+CORRIDOR_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+# A 7 km circuit at 2 m spacing is ~3500 points; this is a generous ceiling.
+CORRIDOR_MAX_POINTS = 20000
+```
+
+Add the model next to the other pydantic models:
+
+```python
+class CorridorPayload(BaseModel):
+    version: int = Field(1, ge=1, le=1)
+    trackId: str = Field(..., max_length=128)
+    nPoints: int = Field(..., ge=2, le=CORRIDOR_MAX_POINTS)
+    lengthM: float = Field(..., gt=0, le=100_000)
+    firstPoint: tuple[float, float]
+    stepM: float = Field(..., gt=0, le=1000)
+    leftM: list[float]
+    rightM: list[float]
+    known: list[bool]
+
+    @field_validator("leftM", "rightM", "known")
+    @classmethod
+    def _not_too_long(cls, v):
+        if len(v) > CORRIDOR_MAX_POINTS:
+            raise ValueError(f"at most {CORRIDOR_MAX_POINTS} points")
+        return v
+
+    @model_validator(mode="after")
+    def _lengths_agree(self):
+        n = self.nPoints
+        if not (len(self.leftM) == len(self.rightM) == len(self.known) == n):
+            raise ValueError("leftM, rightM and known must all have nPoints entries")
+        return self
+```
+
+and add `model_validator` to the pydantic import line:
+
+```python
+from pydantic import BaseModel, Field, field_validator, model_validator
+```
+
+Add the endpoints after `/analyze-schema`:
+
+```python
+def _corridor_path(key: str) -> Optional[Path]:
+    """Resolved path for `key`, or None when the key is not in the allowlist."""
+    if not CORRIDOR_KEY_RE.match(key):
+        return None
+    path = (CORRIDOR_DIR / f"{key}.json").resolve()
+    # belt and braces: the allowlist already forbids separators and dots
+    if path.parent != CORRIDOR_DIR.resolve():
+        return None
+    return path
+
+
+@app.get("/corridors/{key}")
+def get_corridor(key: str):
+    path = _corridor_path(key)
+    if path is None:
+        return JSONResponse(status_code=400, content={"error": "bad_key"})
+    if not path.exists():
+        return JSONResponse(status_code=404, content={"error": "not_found"})
+    return JSONResponse(content=json.loads(path.read_text(encoding="utf-8")))
+
+
+@app.put("/corridors/{key}")
+def put_corridor(key: str, payload: CorridorPayload, x_corridor_token: str = Header("")):
+    if not CORRIDOR_TOKEN:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "read_only", "detail": "DDA_CORRIDOR_TOKEN is not set on this host"},
+        )
+    if x_corridor_token != CORRIDOR_TOKEN:
+        return JSONResponse(status_code=401, content={"error": "unauthorized"})
+    path = _corridor_path(key)
+    if path is None:
+        return JSONResponse(status_code=400, content={"error": "bad_key"})
+    CORRIDOR_DIR.mkdir(parents=True, exist_ok=True)
+    # write to a sibling then rename, so a reader never sees a half-written file
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(payload.model_dump_json(), encoding="utf-8")
+    tmp.replace(path)
+    return {"ok": True, "key": key, "nPoints": payload.nPoints}
+```
+
+Make sure `json` and `Optional` are already imported at the top of the file; they are used by the existing code.
+
+- [ ] **Step 8: Run the Python tests to verify they pass**
+
+Run: `cd /Users/macbookmini/projects/DDA_Reader && /Users/macbookmini/projects/dda_venv/bin/python -m pytest tests/test_bridge.py -q`
+Expected: PASS — the new corridor tests and every pre-existing bridge test. These cover Review Focus item 6.
+
+- [ ] **Step 9: Implement the TypeScript service client**
+
+Create `dda_lab/src/sim/corridorService.ts`:
+
+```ts
+// Client for the corridor store on the DDA Lab bridge.
+//
+// The corridor is extracted once and kept on the server, so visitors share one
+// copy instead of each browser fetching ~54 satellite tiles.
+//
+// NOTE: src/bridge/client.ts hardcodes http://127.0.0.1:8777, which makes it
+// local-only — on the deployed site that address is the VISITOR's machine. The
+// corridor client therefore talks to its own origin in production and only
+// falls back to the local bridge in dev.
+import type { TrackModel } from '../core/types';
+import { corridorKey, deserializeCorridor, serializeCorridor } from './corridorCache';
+import type { Corridor } from './types';
+
+const LOCAL_BRIDGE = 'http://127.0.0.1:8777';
+const TIMEOUT_MS = 8000;
+
+/** Same origin in production; the local bridge when running `npm run dev`. */
+export function corridorBase(): string {
+  if (typeof window === 'undefined') return LOCAL_BRIDGE;
+  return import.meta.env.DEV ? LOCAL_BRIDGE : window.location.origin;
+}
+
+async function withTimeout(url: string, init: RequestInit): Promise<Response | null> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: ctrl.signal });
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** The stored corridor for this track, or null when there is none or it is stale. */
+export async function fetchCorridor(track: TrackModel): Promise<Corridor | null> {
+  const res = await withTimeout(`${corridorBase()}/corridors/${corridorKey(track)}`, { method: 'GET' });
+  if (!res || !res.ok) return null;
+  try {
+    // deserializeCorridor re-checks the centerline fingerprint, so a corridor
+    // stored before the start line moved is rejected rather than misaligned
+    return deserializeCorridor(track, await res.json());
+  } catch {
+    return null;
+  }
+}
+
+/** Store a freshly extracted corridor. Returns false when the host is read-only. */
+export async function putCorridor(track: TrackModel, c: Corridor, token: string): Promise<boolean> {
+  const res = await withTimeout(`${corridorBase()}/corridors/${corridorKey(track)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', 'X-Corridor-Token': token },
+    body: JSON.stringify(serializeCorridor(track, c)),
+  });
+  return Boolean(res?.ok);
+}
+```
+
+- [ ] **Step 10: Run the full suite and the type check**
+
+Run: `cd dda_lab && npm test && npm run typecheck`
+Expected: PASS, typecheck clean.
+
+- [ ] **Step 11: Commit**
 
 ```bash
-git add dda_lab/src/sim/corridorCache.ts dda_lab/tests/unit/simCorridorCache.test.ts
-git commit -m "feat(sim): corridor cache with centerline fingerprinting
+git add dda_lab/src/sim/corridorCache.ts dda_lab/src/sim/corridorService.ts \
+        dda_lab/tests/unit/simCorridorCache.test.ts dda_lab_bridge.py tests/test_bridge.py
+git commit -m "feat(sim): corridor store on the bridge, extracted once and shared
 
-A corridor is indexed by centerline vertex, and setStartLine rotates the
-centerline, so the cache fingerprints the point count, length and first
-point and invalidates itself on a rotation.
+GET /corridors/<key> is public, PUT is token-guarded. The key is a
+caller-supplied path component on an internet-facing endpoint, so it is
+allowlisted, the payload is size- and shape-checked, and writes go
+through a temp file and a rename.
+
+The key is geographic rather than the runtime track id, which is
+regenerated on every load; the stored record still carries the centerline
+fingerprint, so a corridor saved before the start line moved is rejected
+instead of silently misaligned.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
@@ -1188,12 +1544,17 @@ In `dda_lab/src/state/store.ts`, add `'sim'` to the `bottomTab` union on the `La
 Add to the `LabState` interface, after `clickPos`:
 
 ```ts
-  /** Track boundaries extracted from satellite imagery for the active track. */
+  /** Track boundaries for the active track, from the server or freshly extracted. */
   corridor?: Corridor;
-  /** True while tiles are being fetched. */
+  /** True while tiles are being fetched or the store is being read. */
   corridorBusy: boolean;
-  /** Fetch tiles for the active track and extract its corridor. */
+  /** Ask the server for this track's stored corridor. Cheap; safe to call on load. */
+  loadCorridor(): Promise<void>;
+  /** Fetch tiles, extract the corridor and store it on the server. */
   extractCorridorNow(): Promise<void>;
+  /** Write token for the corridor store; empty means this user cannot publish one. */
+  corridorToken: string;
+  setCorridorToken(t: string): void;
 ```
 
 Add these imports at the top of `store.ts`:
@@ -1201,7 +1562,7 @@ Add these imports at the top of `store.ts`:
 ```ts
 import { browserTileLoader } from '../sim/browserTiles';
 import { CorridorError, extractCorridor } from '../sim/corridor';
-import { deserializeCorridor, serializeCorridor } from '../sim/corridorCache';
+import { fetchCorridor, putCorridor } from '../sim/corridorService';
 import { buildMosaic, SAT_ZOOM, tileRangeFor } from '../sim/tiles';
 import type { Corridor } from '../sim/types';
 ```
@@ -1211,11 +1572,32 @@ Add to the store body, after `clickPos: null,`:
 ```ts
   corridor: undefined,
   corridorBusy: false,
+  corridorToken: loadCorridorToken(),
 ```
 
-And the action, after `setStatus`:
+And the actions, after `setStatus`:
 
 ```ts
+  setCorridorToken(t) {
+    set({ corridorToken: t });
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem(CORRIDOR_TOKEN_KEY, t);
+    } catch {
+      /* storage unavailable: the token still works this session */
+    }
+  },
+  async loadCorridor() {
+    const track = activeTrack(get());
+    if (!track) return;
+    set({ corridorBusy: true });
+    try {
+      const stored = await fetchCorridor(track);
+      // a track change while the request was in flight must not install the wrong corridor
+      if (stored && activeTrack(get())?.id === track.id) set({ corridor: stored });
+    } finally {
+      set({ corridorBusy: false });
+    }
+  },
   async extractCorridorNow() {
     const st = get();
     const track = activeTrack(st);
@@ -1223,10 +1605,10 @@ And the action, after `setStatus`:
       set({ statusMessage: 'Load a session first — the corridor is extracted along its track.' });
       return;
     }
-    // a corridor cached for this exact centerline is reused
-    const cached = loadCorridorCache(track);
-    if (cached) {
-      set({ corridor: cached });
+    // the server already has one for this exact centerline: use it, fetch nothing
+    const stored = await fetchCorridor(track);
+    if (stored) {
+      set({ corridor: stored, statusMessage: 'Corridor loaded from the server.' });
       return;
     }
     const trace: LngLat[] = [];
@@ -1248,9 +1630,18 @@ And the action, after `setStatus`:
         throw new CorridorError('tiles-failed', 'No satellite tiles could be fetched. Check the network connection.');
       }
       const corridor = extractCorridor(track, mosaic, trace);
-      saveCorridorCache(track, corridor);
       const pct = Math.round((100 * corridor.known.filter(Boolean).length) / corridor.known.length);
       set({ corridor, statusMessage: `Corridor extracted — ${pct} % of the track resolved.` });
+      // publish it so nobody has to extract this track again
+      const token = get().corridorToken;
+      if (token) {
+        const saved = await putCorridor(track, corridor, token);
+        set({
+          statusMessage: saved
+            ? `Corridor extracted (${pct} % resolved) and saved to the server.`
+            : `Corridor extracted (${pct} % resolved), but the server refused to store it — check the token.`,
+        });
+      }
     } catch (e) {
       const msg = e instanceof CorridorError ? e.message : `Corridor extraction failed: ${(e as Error).message}`;
       set({ statusMessage: msg });
@@ -1260,33 +1651,31 @@ And the action, after `setStatus`:
   },
 ```
 
-Add the cache helpers near `loadWorkspaceLocal` at the top of `store.ts`:
+Add the token helper near `loadWorkspaceLocal` at the top of `store.ts`:
 
 ```ts
-/** Corridors are cached per track in this browser; the key carries the track id. */
-const CORRIDOR_KEY = 'dda-lab-corridor';
+/**
+ * The corridor write token. Corridors themselves live on the server; only this
+ * one secret is per-user, because it decides who may publish one.
+ */
+const CORRIDOR_TOKEN_KEY = 'dda-lab-corridor-token';
 
-function loadCorridorCache(track: TrackModel): Corridor | undefined {
+function loadCorridorToken(): string {
   try {
-    if (typeof localStorage === 'undefined') return undefined;
-    const raw = localStorage.getItem(`${CORRIDOR_KEY}:${track.id}`);
-    return (raw ? deserializeCorridor(track, JSON.parse(raw)) : null) ?? undefined;
+    return typeof localStorage !== 'undefined' ? (localStorage.getItem(CORRIDOR_TOKEN_KEY) ?? '') : '';
   } catch {
-    return undefined;
-  }
-}
-
-function saveCorridorCache(track: TrackModel, c: Corridor): void {
-  try {
-    if (typeof localStorage === 'undefined') return;
-    localStorage.setItem(`${CORRIDOR_KEY}:${track.id}`, JSON.stringify(serializeCorridor(track, c)));
-  } catch {
-    /* quota or storage unavailable: the corridor still works this session */
+    return '';
   }
 }
 ```
 
-In `setStartLine`, after the `set({ tracks, activeTrackId: next.id, sessions, selectedLaps, cursor: null });` line, add `corridor: undefined` to that same `set` call so a rotated centerline drops the in-memory corridor too.
+In `setTrack`, after the existing `set({...})`, ask the server for the corridor — it is one small GET and it means the simulator is usable the moment a track appears:
+
+```ts
+    void get().loadCorridor();
+```
+
+In `setStartLine`, add `corridor: undefined` to the final `set({ tracks, activeTrackId: next.id, sessions, selectedLaps, cursor: null })` call so a rotated centerline drops the in-memory corridor, then `void get().loadCorridor();` after it — the fingerprint check in `deserializeCorridor` will reject the stored one if the rotation really changed the geometry.
 
 - [ ] **Step 7: Add the map layers**
 
@@ -1439,8 +1828,9 @@ git add dda_lab/src/sim/browserTiles.ts dda_lab/src/ui/SimLayers.ts dda_lab/src/
 git commit -m "feat(sim): extract and draw the track corridor on the map
 
 Sim tab with an Extract corridor button; edges drawn orange (left) and
-cyan (right), broken where extraction could not decide. Corridor cached
-per track in localStorage and dropped when the start line moves.
+cyan (right), broken where extraction could not decide. The corridor is
+read from the server when a track loads and dropped when the start line
+moves.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
@@ -3155,6 +3545,8 @@ export default function SimPanel() {
   const corridor = useLab((s) => s.corridor);
   const busy = useLab((s) => s.corridorBusy);
   const extract = useLab((s) => s.extractCorridorNow);
+  const corridorToken = useLab((s) => s.corridorToken);
+  const setCorridorToken = useLab((s) => s.setCorridorToken);
   const params = useLab((s) => s.simParams);
   const enabled = useLab((s) => s.simEnabled);
   const lapTimeS = useLab((s) => s.simLapTimeS);
@@ -3209,6 +3601,15 @@ export default function SimPanel() {
             {resolved} % · {medianWidth.toFixed(1)} m wide
           </span>
         )}
+        <input
+          type="password"
+          className="sim-token"
+          placeholder="Publish token"
+          title="Set to store a newly extracted corridor on the server for everyone. Reading never needs it."
+          value={corridorToken}
+          data-testid="sim-token"
+          onChange={(e) => setCorridorToken(e.target.value)}
+        />
         {layer('corridor', 'Corridor')}
         {layer('idealLine', 'Line')}
       </div>
@@ -3281,6 +3682,7 @@ Append to `dda_lab/src/ui/panels/panels.css`:
 .sim-slider-label { color: #9aa7b8; font-size: 12px; }
 .sim-slider-value { font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
 .sim-slider input[type='range'] { width: 100%; }
+.sim-token { width: 120px; font-size: 11px; }
 ```
 
 - [ ] **Step 6: Draw the ideal line on the map**
@@ -3366,7 +3768,36 @@ With the browser (or Playwright screenshots) on `http://localhost:5173/?example=
 
 Capture a screenshot of each of steps 3, 4 and 7. If the line does not look like a racing line, fix `line.ts` before calling this done.
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 10: Configure the write token on the droplet and deploy**
+
+The corridor store is read-only until `DDA_CORRIDOR_TOKEN` is set on the service. Generate a secret, put it in the systemd unit, and restart:
+
+```bash
+TOKEN=$(openssl rand -hex 24)
+echo "corridor publish token: $TOKEN"   # paste this into the Sim panel's token box
+ssh root@159.89.97.78 "mkdir -p /etc/systemd/system/dda-lab.service.d && \
+  printf '[Service]\nEnvironment=DDA_CORRIDOR_TOKEN=$TOKEN\n' > /etc/systemd/system/dda-lab.service.d/corridor.conf && \
+  systemctl daemon-reload && systemctl restart dda-lab && sleep 2 && systemctl is-active dda-lab"
+```
+
+Then deploy the app and the updated bridge:
+
+```bash
+cd /Users/macbookmini/projects/DDA_Reader && ./deploy_lab.sh
+```
+
+Verify end to end against the live host, and confirm the endpoint is not writable without the token:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' https://dda.kitchenonstage.com/corridors/does-not-exist   # 404
+curl -s -o /dev/null -w '%{http_code}\n' -X PUT -H 'Content-Type: application/json' \
+  -d '{"version":1,"trackId":"x","nPoints":2,"lengthM":10,"firstPoint":[0,0],"stepM":2,"leftM":[1,1],"rightM":[1,1],"known":[true,true]}' \
+  https://dda.kitchenonstage.com/corridors/probe-0-0                                              # 401
+```
+
+Expected: `404` then `401`. A `200` on the second means the token is not being enforced — stop and fix it before going further. The secret belongs in the project's credential notes, not in the repo.
+
+- [ ] **Step 11: Commit**
 
 ```bash
 git add dda_lab/src/state/store.ts dda_lab/src/ui/panels/SimPanel.tsx dda_lab/src/ui/panels/panels.css \
@@ -3384,6 +3815,8 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ## Self-review notes
 
-- **Spec coverage.** Corridor extraction → Tasks 1-4. κ line → Task 6. QSS solver → Task 7. Rider lag layer → Task 8. Synthetic Session + extension seam → Task 9. Three parameter groups + presets → Tasks 5, 10. Map layers → Tasks 4, 10. Error handling → Task 4 Step 6 (status messages) and Task 7 (clamping). Testing → every task. Disk-cache: the spec said `tracks/<trackId>/corridor.json`; the browser has no filesystem, so this is `localStorage` keyed by track id, with the same fingerprinting. Raise it with the owner if they want an export button instead.
-- **Review Focus coverage.** Item 1 → Task 2 Step 9. Item 2 → Task 2 Step 9. Item 3 → Task 7 Step 4. Item 4 → Task 7 Step 4. Item 5 → Task 3 Step 4.
+- **Spec coverage.** Corridor extraction → Tasks 1-4. κ line → Task 6. QSS solver → Task 7. Rider lag layer → Task 8. Synthetic Session + extension seam → Task 9. Three parameter groups + presets → Tasks 5, 10. Map layers → Tasks 4, 10. Error handling → Task 4 Step 6 (status messages) and Task 7 (clamping). Testing → every task.
+- **Deviation from the spec, agreed with the owner.** The spec said the corridor is cached in `tracks/<trackId>/corridor.json` on disk. It is instead stored **on the server**, by the already-deployed bridge at `https://dda.kitchenonstage.com`, under `/opt/dda-lab/corridors/<key>.json`: extracted once, shared by every visitor, nobody re-downloads 54 tiles. The key is geographic rather than the runtime `track.id`, which is regenerated on every load. Update the spec's "Corridor extraction" section to match when Task 3 lands.
+- **Review Focus coverage.** Item 1 → Task 2 Step 9. Item 2 → Task 2 Step 9. Item 3 → Task 7 Step 4. Item 4 → Task 7 Step 4. Item 5 → Task 3 Step 4. Item 6 → Task 3 Step 8, plus the live probe in Task 10 Step 10.
+- **Open question for the owner.** Right now only someone holding the token can publish a corridor, so a visitor who opens a circuit nobody has extracted yet gets the uniform-half-width fallback rather than a real corridor. That is the safe default. If new tracks should populate themselves from any visitor, that is a different design (rate limiting, size quotas, a review step) and should be its own spec.
 - **Known tuning risk.** The κ ordering in Task 6 and the lap-time plausibility in Task 10 depend on weights that may need one round of adjustment against the real Serres data. Both tests assert the *property* (κ=1 concentrates curvature more than κ=0; the lap time is in a plausible band), not a specific constant, so tuning does not mean rewriting tests.

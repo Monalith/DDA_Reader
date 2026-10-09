@@ -7,7 +7,7 @@
 import type { Feature, FeatureCollection, LineString, Point } from 'geojson';
 import { applyAffine } from '../core/affine';
 import { haversineM } from '../core/geo';
-import { turnInIndex } from '../core/track';
+import { TURN_IN_APPROACH_M, TURN_IN_LEAN_DEG, turnInIndex } from '../core/track';
 import type { Lap, LngLat, Session, TrackModel, TurnMetrics } from '../core/types';
 
 export type ColorBy = 'speed' | 'tps' | 'lean' | 'brake' | 'solid';
@@ -28,6 +28,8 @@ export type MarkerProps = {
   offset?: [number, number];
   /** speed at the point (km/h) */
   kmh?: number;
+  /** track distance of the point (m from the start line) */
+  sM?: number;
   turn: number;
   label: string;
 };
@@ -235,9 +237,17 @@ export function markersGeoJson(
     if (!wanted.has(turn.n)) continue;
     let apexIdx = -1;
     let apexSpeed = Infinity;
+    let maxLean = 0;
+    let iApproach = lap.startIdx;
+    let approachFound = false;
     for (let i = lap.startIdx; i <= last; i++) {
       const sM = sAt[i - lap.startIdx];
+      if (!approachFound && Number.isFinite(sM) && inRange(sM, [turn.sRange[0] - TURN_IN_APPROACH_M, turn.sRange[1]], t.lengthM)) {
+        iApproach = i;
+        approachFound = true;
+      }
       if (!Number.isFinite(sM) || !inRange(sM, turn.sRange, t.lengthM)) continue;
+      if (lean && Number.isFinite(lean[i])) maxLean = Math.max(maxLean, Math.abs(lean[i]));
       const v = speed ? speed[i] : 0;
       if (!Number.isFinite(v)) continue;
       if (v < apexSpeed) {
@@ -255,24 +265,25 @@ export function markersGeoJson(
         color,
         offset: off(1),
         kmh: Number.isFinite(apexSpeed) ? apexSpeed : undefined,
+        sM: sAt[apexIdx - lap.startIdx],
       }),
     );
     // turn-in point: where the lean rises past the threshold before the apex
-    const iTI = turnInIndex(lean, curvature, 0, apexIdx, lng.length, prevApex + 1);
-    prevApex = apexIdx;
+    const iTI = turnInIndex(lean, curvature, 0, apexIdx, lng.length, Math.max(prevApex + 1, iApproach), Math.max(TURN_IN_LEAN_DEG, 0.3 * maxLean));
     if (iTI >= 0 && iTI !== apexIdx && Number.isFinite(lng[iTI]) && Number.isFinite(lat[iTI])) {
-      features.push(pointFeature([lng[iTI], lat[iTI]], { kind: 'turnin', turn: turn.n, label: `${tag}${kmh(iTI)}`, lapTag: opts.lapTag, color, offset: off(1), kmh: kmhNum(iTI) }));
+      features.push(pointFeature([lng[iTI], lat[iTI]], { kind: 'turnin', turn: turn.n, label: `${tag}${kmh(iTI)}`, lapTag: opts.lapTag, color, offset: off(1), kmh: kmhNum(iTI), sM: sAt[iTI - lap.startIdx] }));
     }
 
     if (longG) {
-      for (let i = apexIdx; i > lap.startIdx; i--) {
+      const floor = Math.max(lap.startIdx, prevApex);
+      for (let i = apexIdx; i > floor; i--) {
         if (longG[i] < -0.3) {
           if (Number.isFinite(lng[i]) && Number.isFinite(lat[i])) {
-            // brake onset = start of this braking run
+            // brake onset = start of this braking run (never before the previous apex)
             let o = i;
-            while (o - 1 > lap.startIdx && longG[o - 1] < -0.3) o--;
+            while (o - 1 > floor && longG[o - 1] < -0.3) o--;
             const bi = Number.isFinite(lng[o]) && Number.isFinite(lat[o]) ? o : i;
-            features.push(pointFeature([lng[bi], lat[bi]], { kind: 'brake', turn: turn.n, label: `${tag}${kmh(bi)}`, lapTag: opts.lapTag, color, offset: off(-1), kmh: kmhNum(bi) }));
+            features.push(pointFeature([lng[bi], lat[bi]], { kind: 'brake', turn: turn.n, label: `${tag}${kmh(bi)}`, lapTag: opts.lapTag, color, offset: off(-1), kmh: kmhNum(bi), sM: sAt[bi - lap.startIdx] }));
           }
           break;
         }
@@ -282,12 +293,13 @@ export function markersGeoJson(
       for (let i = apexIdx; i <= last; i++) {
         if (tps[i] > 20) {
           if (Number.isFinite(lng[i]) && Number.isFinite(lat[i])) {
-            features.push(pointFeature([lng[i], lat[i]], { kind: 'throttle', turn: turn.n, label: `${tag}${kmh(i)}`, lapTag: opts.lapTag, color, offset: off(1), kmh: kmhNum(i) }));
+            features.push(pointFeature([lng[i], lat[i]], { kind: 'throttle', turn: turn.n, label: `${tag}${kmh(i)}`, lapTag: opts.lapTag, color, offset: off(1), kmh: kmhNum(i), sM: sAt[i - lap.startIdx] }));
           }
           break;
         }
       }
     }
+    prevApex = apexIdx;
   }
   return { type: 'FeatureCollection', features };
 }

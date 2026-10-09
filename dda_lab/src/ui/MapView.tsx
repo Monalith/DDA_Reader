@@ -17,7 +17,7 @@ import { bearingDeg, haversineM } from '../core/geo';
 import { turnMetrics } from '../core/track';
 import { bestTurnTimes, fmtTurnDelta, turnDeltas } from '../core/turnTimes';
 import { DEFAULT_TURN_LABELS } from '../core/types';
-import type { Gate, LngLat, SchemaLayer, TrackModel, TurnMetrics } from '../core/types';
+import type { Gate, Lap, LngLat, SchemaLayer, Session, TrackModel, TurnMetrics } from '../core/types';
 import { lapX, selectedLapEntries } from '../state/selectors';
 import { activeTrack, useLab, lapMetaOf } from '../state/store';
 import { backgroundColorByZoom, inRangeSegments, rasterOpacityByZoom, zoomRadius, zoomWidth } from './focus';
@@ -200,6 +200,7 @@ export default function MapView() {
       attributionControl: { compact: true },
     });
     mapRef.current = map;
+    (window as unknown as { __map: maplibregl.Map }).__map = map; // debugging hook
     map.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'bottom-right');
     map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left');
 
@@ -456,44 +457,61 @@ export default function MapView() {
       const best = bestTurnTimes(sessions, track);
       const multi = entries.length > 1;
       // apex speed of the lap that owns the best time in each turn (for the km/h delta)
-      // turn-in speed per turn, from the very same points the map draws (falls back to the apex)
-      const apexOf = (sid: string, lapN: number): Map<number, number> => {
+      // Speed comparison at ONE place per turn: where the best lap (in that turn) starts turning
+      // in. Every lap's speed is read at that same track distance, so detection noise in the
+      // other laps cannot inflate the delta.
+      const turnInOf = (sid: string, lapN: number): Map<number, { kmh: number; sM: number }> => {
         const s = sessions.find((x) => x.id === sid);
         const lap = s?.laps.find((l) => l.n === lapN);
         if (!s || !lap) return new Map();
-        const out = new Map<number, number>();
+        const out = new Map<number, { kmh: number; sM: number }>();
         for (const f of markersGeoJson(track, [], s, lap, { turnLabels: false }).features) {
           const p = f.properties;
-          if (p.kmh == null) continue;
-          if (p.kind === 'turnin') out.set(p.turn, p.kmh);
-          else if (p.kind === 'apex' && !out.has(p.turn)) out.set(p.turn, p.kmh);
+          if (p.kmh == null || p.sM == null || !Number.isFinite(p.sM)) continue;
+          if (p.kind === 'turnin' || (p.kind === 'apex' && !out.has(p.turn))) out.set(p.turn, { kmh: p.kmh, sM: p.sM });
         }
         return out;
       };
-      const bestApex = new Map<number, number>();
+      const bestAt = new Map<number, { kmh: number; sM: number }>();
       if (turnLabels.speed !== false) {
-        const cache = new Map<string, Map<number, number>>();
+        const cache = new Map<string, Map<number, { kmh: number; sM: number }>>();
         best.who.forEach((w, k) => {
           if (!w) return;
           const key = `${w.sessionId}:${w.lap}`;
-          if (!cache.has(key)) cache.set(key, apexOf(w.sessionId, w.lap));
+          if (!cache.has(key)) cache.set(key, turnInOf(w.sessionId, w.lap));
           const v = cache.get(key)!.get(track.turns[k].n);
-          if (v != null && Number.isFinite(v)) bestApex.set(track.turns[k].n, v);
+          if (v) bestAt.set(track.turns[k].n, v);
         });
       }
+      /** speed of a lap at a track distance (nearest lap_dist sample) */
+      const speedAt = (s: Session, lap: Lap, sM: number): number => {
+        const d = s.channels.get('lap_dist')?.data;
+        const v = s.channels.get('speed')?.data;
+        if (!d || !v) return NaN;
+        let bi = -1;
+        let bd = Infinity;
+        for (let i = lap.startIdx; i <= lap.endIdx && i < d.length; i++) {
+          const dd = Math.abs(d[i] - sM);
+          if (dd < bd) {
+            bd = dd;
+            bi = i;
+          }
+        }
+        return bi >= 0 && bd < 15 ? v[bi] : NaN;
+      };
       entries.forEach(({ s, lap }, row) => {
         const deltas = turnDeltas(s, lap, track, best);
         const meta = lapMetaOf(useLab.getState(), s.id, lap.n);
-        const myApex = turnLabels.speed !== false ? apexOf(s.id, lap.n) : new Map<number, number>();
         track.turns.forEach((turn, k) => {
           const d = deltas[k];
           if (!Number.isFinite(d)) return;
           const txt = fmtTurnDelta(d);
           const color = txt === 'best' ? turnLabels.best : d > 0 ? turnLabels.loss : turnLabels.gain;
           let speedTxt = '';
-          const va = myApex.get(turn.n);
-          const vb = bestApex.get(turn.n);
-          if (va != null && vb != null && Number.isFinite(va) && Number.isFinite(vb) && txt !== 'best') {
+          const b = bestAt.get(turn.n);
+          const va = b ? speedAt(s, lap, b.sM) : NaN;
+          const vb = b?.kmh;
+          if (vb != null && Number.isFinite(va) && Number.isFinite(vb) && txt !== 'best') {
             const dv = va - vb;
             speedTxt = ` (${dv >= 0 ? '+' : '−'}${Math.abs(dv).toFixed(1)} km/h)`;
           }

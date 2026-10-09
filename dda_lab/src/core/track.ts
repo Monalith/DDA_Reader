@@ -500,18 +500,29 @@ export function turnMetrics(s: Session, lap: Lap, track: TrackModel): TurnMetric
     let brakeDistM = NaN;
     let brakeKmh = NaN;
     if (longG && iApex >= 0) {
+      const floor = Math.max(0, prevApex);
       let j = iApex;
-      while (j >= 0 && !(longG[a + j] < -0.3)) j--;
-      if (j >= 0) {
+      while (j > floor && !(longG[a + j] < -0.3)) j--;
+      if (j > floor) {
         let o = j;
-        while (o - 1 >= 0 && longG[a + o - 1] < -0.3) o--;
+        while (o - 1 > floor && longG[a + o - 1] < -0.3) o--;
         brakeDistM = sDist[iApex] - sDist[o];
         brakeKmh = at(speed, o);
       }
     }
     // turn-in: walking back from the apex, the sample where the lean (or the GPS curvature
     // when there is no lean channel) first drops under the threshold
-    const iTurnIn = turnInIndex(lean, curvature, a, iApex, len, prevApex + 1);
+    // threshold adapts to the turn (30 % of its max lean, at least 12°) and the search never
+    // leaves the turn's approach (40 m before its range) or the previous apex
+    const thr = Math.max(TURN_IN_LEAN_DEG, Number.isFinite(maxLean) ? 0.3 * maxLean : 0);
+    let iApproach = 0;
+    for (let i = 0; i < len; i++) {
+      if (sDist[i] >= s0 - TURN_IN_APPROACH_M) {
+        iApproach = i;
+        break;
+      }
+    }
+    const iTurnIn = turnInIndex(lean, curvature, a, iApex, len, Math.max(prevApex + 1, iApproach), thr);
     const turnInKmh = iTurnIn >= 0 ? at(speed, iTurnIn) : NaN;
     if (iApex >= 0) prevApex = iApex;
 
@@ -548,6 +559,8 @@ export function turnMetrics(s: Session, lap: Lap, track: TrackModel): TurnMetric
 
 /** Lean angle (deg) from which the bike counts as "turning"; curvature fallback = radius under 350 m. */
 export const TURN_IN_LEAN_DEG = 12;
+/** How far before the turn's range the turn-in search may reach (m). */
+export const TURN_IN_APPROACH_M = 40;
 const TURN_IN_CURV = 1 / 350;
 
 /**
@@ -555,12 +568,20 @@ const TURN_IN_CURV = 1 / 350;
  * lean stays above TURN_IN_LEAN_DEG; the first sample under it is the turn-in point.
  * Uses the GPS curvature when the session has no lean channel. −1 when unknown.
  */
-export function turnInIndex(lean: Float32Array | undefined, curvature: Float32Array | undefined, a: number, iApex: number, len: number, iMin = 0): number {
+export function turnInIndex(
+  lean: Float32Array | undefined,
+  curvature: Float32Array | undefined,
+  a: number,
+  iApex: number,
+  len: number,
+  iMin = 0,
+  leanThresholdDeg = TURN_IN_LEAN_DEG,
+): number {
   if (iApex < 0 || iApex >= len) return -1;
   const turning = (i: number): boolean => {
     if (lean) {
       const l = Math.abs(lean[a + i]);
-      if (Number.isFinite(l)) return l >= TURN_IN_LEAN_DEG;
+      if (Number.isFinite(l)) return l >= leanThresholdDeg;
     }
     if (curvature) {
       const k = Math.abs(curvature[a + i]);

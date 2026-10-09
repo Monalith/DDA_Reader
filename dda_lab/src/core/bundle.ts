@@ -25,6 +25,16 @@ export interface LabBundle {
   workspace: unknown;
   track: SerializedTrackJson | null;
   laps: BundleLap[];
+  /** markers placed on the exported laps (lapIndex = position in `laps`) */
+  markers?: BundleMarker[];
+}
+
+export interface BundleMarker {
+  lapIndex: number;
+  idxInLap: number;
+  name: string;
+  color: string;
+  note?: string;
 }
 
 export type SerializedTrackJson = Omit<TrackModel, 'cumDistM'> & { cumDistM: number[] };
@@ -67,13 +77,14 @@ export function lapToBundleLap(s: Session, lap: Lap, name: string, color: string
   };
 }
 
-export function makeBundle(laps: BundleLap[], track: TrackModel | undefined, workspace: Workspace): string {
+export function makeBundle(laps: BundleLap[], track: TrackModel | undefined, workspace: Workspace, markers: BundleMarker[] = []): string {
   const bundle: LabBundle = {
     version: BUNDLE_VERSION,
     createdAt: new Date().toISOString(),
     workspace: JSON.parse(serializeWorkspace(workspace)),
     track: track ? serializeTrackJson(track) : null,
     laps,
+    markers,
   };
   return JSON.stringify(bundle);
 }
@@ -103,6 +114,9 @@ const BundleZ = z.object({
   workspace: z.unknown(),
   track: z.unknown().nullable(),
   laps: z.array(BundleLapZ),
+  markers: z
+    .array(z.object({ lapIndex: z.number(), idxInLap: z.number(), name: z.string(), color: z.string(), note: z.string().optional() }))
+    .optional(),
 });
 
 export interface ParsedBundle {
@@ -110,6 +124,7 @@ export interface ParsedBundle {
   track: TrackModel | null;
   /** One Session per lap, each with a single flying lap n=1, plus its display meta. */
   sessions: { session: Session; name: string; color: string }[];
+  markers: BundleMarker[];
 }
 
 let seq = 0;
@@ -155,7 +170,7 @@ export function parseBundle(json: string, makeId: () => string = () => `b${Date.
     };
     return { session, name: bl.name, color: bl.color };
   });
-  return { workspace, track, sessions };
+  return { workspace, track, sessions, markers: b.markers ?? [] };
 }
 
 /**

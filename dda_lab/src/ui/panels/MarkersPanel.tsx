@@ -1,4 +1,5 @@
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
+import { markersToJson, parseMarkersJson } from '../../core/markerStore';
 import { lapMetaOf, useLab } from '../../state/store';
 import { allChannelNames, fmtLapTime, markerIdxInLap, markerX, selectedLapEntries, xFromIdx } from '../../state/selectors';
 
@@ -25,6 +26,33 @@ export default function MarkersPanel() {
   const { updateMarker, removeMarker, clearMarkers, setActiveMarker, setCursor } = useLab.getState();
 
   const active = markers.find((m) => m.id === activeMarkerId) ?? markers[0];
+  const fileRef = useRef<HTMLInputElement>(null);
+  const exportJson = () => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([markersToJson(markers, sessions)], { type: 'application/json' }));
+    a.download = `dda-lab-markers-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
+  const importJson = async (f: File | undefined) => {
+    if (!f) return;
+    try {
+      const saved = parseMarkersJson(await f.text());
+      let n = 0;
+      for (const m of saved) {
+        const s = sessions.find((x) => x.name === m.sessionName);
+        if (!s || m.idx < 0 || m.idx >= s.t.length) continue;
+        if (markers.some((e) => e.sessionId === s.id && e.idx === m.idx)) continue;
+        useLab.getState().addMarker(s.id, m.idx, { name: m.name, color: m.color, note: m.note });
+        n++;
+      }
+      useLab.getState().setStatus(`${n} marker${n === 1 ? '' : 's'} imported (${saved.length - n} skipped: file not open or already present)`);
+    } catch (e) {
+      useLab.getState().setStatus(`Error: ${(e as Error).message}`);
+    } finally {
+      if (fileRef.current) fileRef.current.value = '';
+    }
+  };
   const entries = useMemo(() => selectedLapEntries({ sessions, selectedLaps }), [sessions, selectedLaps]);
   const names = useMemo(() => allChannelNames(sessions), [sessions]);
 
@@ -47,11 +75,20 @@ export default function MarkersPanel() {
   }, [active, entries, sessions, lapMeta, xAxis]);
 
   if (!sessions.length) return <div className="bp-empty">Load a session.</div>;
+  const importRow = (
+    <>
+      <input ref={fileRef} type="file" accept=".json" hidden data-testid="markers-import-input" onChange={(e) => importJson(e.target.files?.[0])} />
+      <button className="bp-btn" data-testid="markers-import" onClick={() => fileRef.current?.click()} title="Load a markers file saved with Export">
+        Import…
+      </button>
+    </>
+  );
   if (!markers.length) {
     return (
       <div className="bp-empty" data-testid="markers-empty">
-        No markers yet. Hover a chart (or click the map) and press <kbd>M</kbd> or the <strong>📍 Mark</strong> button
-        above the charts. Each marker pins the data at that point: its values stay visible under every chart and here.
+        No markers yet. Click a chart (or the map) and press <strong>📍 Mark</strong>, or hover and press <kbd>M</kbd>. Each marker pins the
+        data at that point: its values stay visible under every chart and here. Markers are remembered per file (reopen the same file and
+        they come back) and travel inside .lab.json bundles. {importRow}
       </div>
     );
   }
@@ -71,6 +108,10 @@ export default function MarkersPanel() {
         <div className="bp-row" style={{ marginBottom: 6 }}>
           <span className="ch-group-title" style={{ margin: 0 }}>Markers ({markers.length})</span>
           <span className="bp-spacer" style={{ flex: 1 }} />
+          <button className="bp-btn" data-testid="markers-export" onClick={exportJson} title="Save the markers (names, notes, positions) to a JSON file">
+            Export
+          </button>
+          {importRow}
           <button className="bp-btn danger" onClick={clearMarkers} title="Remove every marker">
             Clear all
           </button>
@@ -133,7 +174,7 @@ export default function MarkersPanel() {
         ))}
         <p className="bp-label" style={{ marginTop: 8 }}>
           A marker is fixed to one sample. In other laps it is read at the same {xAxis === 'distance' ? 'lap distance' : 'lap time'}, so
-          the table compares laps at exactly that point.
+          the table compares laps at exactly that point. Markers are saved automatically per file and inside .lab.json bundles.
         </p>
       </div>
 

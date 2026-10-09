@@ -61,6 +61,10 @@ export interface TurnMetrics {
   brakeDistM: number;
   throttleOnDistM: number;
   apexDevM?: number;
+  /** seconds spent in the turn */
+  timeS?: number;
+  /** timeS minus the best loaded lap's time in this turn (filled by the reports) */
+  vsBestS?: number;
 }
 
 export interface Turn {

@@ -3,6 +3,7 @@
 //
 // NOTE: the small geo helpers below are private on purpose — `src/core/geo.ts`
 // is written in parallel (Task 2) and this module must stay independent of it.
+import { turnTimesForLap } from './turnTimes';
 import type { Gate, Lap, LngLat, Session, TrackModel, Turn, TurnMetrics } from './types';
 
 const R_EARTH = 6371008.8; // IUGG mean radius, metres
@@ -417,6 +418,7 @@ function idxNearestDist(sDist: Float64Array, sM: number): number {
  */
 export function turnMetrics(s: Session, lap: Lap, track: TrackModel): TurnMetrics[] {
   if (!track.turns.length) return [];
+  const times = turnTimesForLap(s, lap, track);
   const a = Math.max(0, lap.startIdx);
   const sDist = trackDistanceForLap(s, lap, track);
   const len = sDist.length;
@@ -484,6 +486,7 @@ export function turnMetrics(s: Session, lap: Lap, track: TrackModel): TurnMetric
       maxLeanDeg: maxLean,
       brakeDistM,
       throttleOnDistM,
+      timeS: times[out.length],
     });
   }
   return out;

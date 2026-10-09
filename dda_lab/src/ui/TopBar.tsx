@@ -32,10 +32,11 @@ export default function TopBar() {
           const b = await loadBundleFromFile(f, activeTrack(useLab.getState()));
           if (b.track) useLab.getState().setTrack(b.track);
           useLab.setState({ workspace: b.workspace });
-          for (const { session, name, color: c } of b.sessions) {
+          b.sessions.forEach(({ session, name, color: c }, li) => {
             addSession(session);
             useLab.getState().setLapMeta(session.id, session.laps[0].n, { name, color: c });
-          }
+            for (const m of b.markers.filter((x) => x.lapIndex === li)) useLab.getState().addMarker(session.id, m.idxInLap, { name: m.name, color: m.color, note: m.note });
+          });
           setStatus(`${f.name}: ${b.sessions.length} laps restored`);
           continue;
         }

@@ -6,6 +6,7 @@ import { detectLaps, withoutDeletedLaps } from '../core/laps';
 import { applyDeltaT, applyRefDeltas, applySectorTimes, applyTotalDist, applyTrackLapDist } from './derivedExtras';
 import { defaultSectorGates, projectToTrack } from '../core/track';
 import { bearingDeg } from '../core/geo';
+import { loadSavedMarkers, markersToRestore, persistMarkers } from '../core/markerStore';
 import {
   DEFAULT_PROC,
   DEFAULT_WORKSPACE,
@@ -253,6 +254,17 @@ export const useLab = create<LabState>((set, get) => ({
       selectedLaps: best ? [...get().selectedLaps, { sessionId: s.id, lap: best.n }] : get().selectedLaps,
       refLap,
     });
+    // markers saved earlier for a file of the same name come back
+    const restored = markersToRestore(loadSavedMarkers(), s, get().markers);
+    if (restored.length) {
+      const n0 = get().markers.length;
+      set({
+        markers: [
+          ...get().markers,
+          ...restored.map((m, i) => ({ id: `m${Date.now().toString(36)}r${n0 + i}`, name: m.name, color: m.color, note: m.note, sessionId: s.id, idx: m.idx })),
+        ],
+      });
+    }
   },
   removeSession(id) {
     set((st) => ({
@@ -393,6 +405,7 @@ export const useLab = create<LabState>((set, get) => ({
       note: patch?.note,
     };
     set({ markers: [...st.markers, m], activeMarkerId: m.id });
+    persistMarkers(get().markers, get().sessions);
     return m;
   },
   addMarkerAtCursor(prefer = 'click') {
@@ -406,15 +419,18 @@ export const useLab = create<LabState>((set, get) => ({
   },
   updateMarker(id, patch) {
     set((st) => ({ markers: st.markers.map((m) => (m.id === id ? { ...m, ...patch } : m)) }));
+    persistMarkers(get().markers, get().sessions);
   },
   removeMarker(id) {
     set((st) => {
       const markers = st.markers.filter((m) => m.id !== id);
       return { markers, activeMarkerId: st.activeMarkerId === id ? (markers[markers.length - 1]?.id ?? null) : st.activeMarkerId };
     });
+    persistMarkers(get().markers, get().sessions);
   },
   clearMarkers() {
     set({ markers: [], activeMarkerId: null });
+    persistMarkers([], get().sessions);
   },
   setActiveMarker(id) {
     set({ activeMarkerId: id });

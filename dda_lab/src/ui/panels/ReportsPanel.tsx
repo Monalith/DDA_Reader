@@ -1,3 +1,4 @@
+import { bestTurnTimes } from '../../core/turnTimes';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   gearUsagePct,
@@ -181,6 +182,8 @@ const TURN_METRICS: Array<{ id: keyof TurnMetrics; label: string; higherBetter: 
   { id: 'brakeDistM', label: 'Brake dist m', higherBetter: false, digits: 1 },
   { id: 'throttleOnDistM', label: 'Throttle-on m', higherBetter: false, digits: 1 },
   { id: 'apexDevM', label: 'Apex dev m', higherBetter: false, digits: 2 },
+  { id: 'timeS', label: 'Turn time s', higherBetter: false, digits: 2 },
+  { id: 'vsBestS', label: 'vs best lap in turn (s)', higherBetter: false, digits: 2 },
 ];
 
 function concatLap(s: Session, name: string, laps: Lap[]): Float32Array {
@@ -242,8 +245,16 @@ export default function ReportsPanel() {
       }
       return { lap, byTurn: new Map(m.map((x) => [x.turn, x])) };
     });
+    // gain/loss against the best loaded lap in each turn
+    const best = bestTurnTimes(sessions, track);
+    for (const p of perLap) {
+      for (const m of p.byTurn.values()) {
+        const b = best.best[m.turn - 1];
+        m.vsBestS = Number.isFinite(m.timeS ?? NaN) && Number.isFinite(b) ? (m.timeS as number) - b : NaN;
+      }
+    }
     return perLap;
-  }, [session, track, laps]);
+  }, [session, track, laps, sessions]);
 
   const turnRows = useMemo<Rows>(() => {
     if (!turnTable || !track) return [];

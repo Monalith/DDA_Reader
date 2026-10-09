@@ -4,6 +4,31 @@ import { attachXInteractions, attachYInteractions } from './chartInteractions';
 import type { DataMarker, Session, Workspace } from '../core/types';
 import { activeTrack, useLab, type CursorPos, type LapRef } from '../state/store';
 import { cursorIdxFromX, findLap, markerIdxInLap, markerX, overlaySeries, xFromIdx, type OverlayLine } from '../state/selectors';
+import { bestTurnTimes, fmtTurnDelta, turnDeltas } from '../core/turnTimes';
+
+/** Per plotted lap: gain/loss in every turn against the best loaded lap (drawn at the turn lines). */
+interface TurnDeltaRow {
+  label: string;
+  color: string;
+  deltas: number[];
+}
+
+function resolveTurnDeltas(lines: OverlayLine[], sessions: Session[], track: ReturnType<typeof activeTrack>): TurnDeltaRow[] {
+  if (!track || !track.turns.length) return [];
+  const best = bestTurnTimes(sessions, track);
+  const seen = new Set<string>();
+  const rows: TurnDeltaRow[] = [];
+  for (const l of lines) {
+    const k = `${l.sessionId}:${l.lap}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    const s = sessions.find((x) => x.id === l.sessionId);
+    const lap = s && findLap(s, l.lap);
+    if (!s || !lap) continue;
+    rows.push({ label: l.label.replace(new RegExp(` ${l.channel}$`), ''), color: l.color, deltas: turnDeltas(s, lap, track, best) });
+  }
+  return rows;
+}
 
 /** A marker resolved for one panel: its x on this axis and its fixed value on every line. */
 interface MarkerCol {
@@ -153,6 +178,9 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
   );
   const data = useMemo(() => joinLines(lines), [lines]);
   const markerCols = useMemo(() => resolveMarkers(markers, sessions, lines, xAxis), [markers, sessions, lines, xAxis]);
+  const turnRows = useMemo(() => resolveTurnDeltas(lines, sessions, track), [lines, sessions, track]);
+  const turnRowsRef = useRef<TurnDeltaRow[]>(turnRows);
+  turnRowsRef.current = turnRows;
   const markersRef = useRef<MarkerCol[]>(markerCols);
   markersRef.current = markerCols;
   const activeMarkerRef = useRef(activeMarkerId);
@@ -379,6 +407,29 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
                 ctx.lineTo(px, top + height);
                 ctx.stroke();
                 ctx.fillText(turn.name || `T${turn.n}`, px + 2 * dpr, top + 10 * dpr);
+                // gain (−, green) / loss (+, red) of every plotted lap in this turn vs the best loaded lap
+                const rows = turnRowsRef.current;
+                const k = t.turns.indexOf(turn);
+                ctx.font = `bold ${10 * dpr}px Inter, system-ui, sans-serif`;
+                rows.forEach((row, r) => {
+                  const d = row.deltas[k];
+                  if (!Number.isFinite(d)) return;
+                  const txt = fmtTurnDelta(d);
+                  const y = top + (21 + r * 11) * dpr;
+                  if (y > top + height - 14 * dpr) return;
+                  const w = ctx.measureText(txt).width;
+                  ctx.fillStyle = 'rgba(16,20,26,0.75)';
+                  ctx.fillRect(px + 1 * dpr, y - 9 * dpr, w + 4 * dpr, 11 * dpr);
+                  ctx.fillStyle = txt === 'best' ? '#3ddc84' : d > 0 ? '#ff4d6d' : '#3ddc84';
+                  if (rows.length > 1) {
+                    ctx.fillStyle = row.color;
+                    ctx.fillRect(px + 1 * dpr, y - 9 * dpr, 2 * dpr, 11 * dpr);
+                    ctx.fillStyle = txt === 'best' ? '#3ddc84' : d > 0 ? '#ff4d6d' : '#3ddc84';
+                  }
+                  ctx.fillText(txt, px + 4 * dpr, y);
+                });
+                ctx.font = `${10 * dpr}px Inter, system-ui, sans-serif`;
+                ctx.fillStyle = 'rgba(139,149,165,0.9)';
               }
             }
             // ---- zero line for "stock" panels ----
@@ -616,7 +667,7 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
   // ---- markers changed: repaint the overlay ----------------------------
   useEffect(() => {
     uRef.current?.redraw(false, true);
-  }, [markerCols, activeMarkerId]);
+  }, [markerCols, activeMarkerId, turnRows]);
 
   legendRefs.current.length = lines.length;
 

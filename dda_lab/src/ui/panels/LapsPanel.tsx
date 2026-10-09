@@ -1,7 +1,7 @@
 // Laps panel: the user's working set of laps — import from file, name/colour each lap,
 // pick the reference, reorder, remove, and export the set as a bundle or per-lap CSVs.
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { lapToBundleLap, lapToCsv, makeBundle, type BundleLap } from '../../core/bundle';
+import { lapToBundleLap, lapToCsv, makeBundle, type BundleLap, type BundleMarker } from '../../core/bundle';
 import { isBundle, loadBundleFromFile, loadSessionFromFile } from '../../core/sessionLoader';
 import type { Lap, Session } from '../../core/types';
 import { activeTrack, lapMetaOf, SESSION_COLORS, useLab, type LapRef } from '../../state/store';
@@ -85,10 +85,11 @@ export default function LapsPanel() {
           // a bundle: its laps join the workspace directly with their saved names/colours
           const b = await loadBundleFromFile(f, activeTrack(st));
           if (b.track && !activeTrack(st)) useLab.getState().setTrack(b.track);
-          for (const { session, name, color: c } of b.sessions) {
+          b.sessions.forEach(({ session, name, color: c }, li) => {
             addSession(session);
             useLab.getState().setLapMeta(session.id, session.laps[0].n, { name, color: c });
-          }
+            for (const m of b.markers.filter((x) => x.lapIndex === li)) useLab.getState().addMarker(session.id, m.idxInLap, { name: m.name, color: m.color, note: m.note });
+          });
           setStatus(`${f.name}: ${b.sessions.length} lap${b.sessions.length === 1 ? '' : 's'} added to the workspace`);
           continue;
         }
@@ -132,16 +133,23 @@ export default function LapsPanel() {
   // ---- export ------------------------------------------------------------
   function exportBundle() {
     const st = useLab.getState();
-    const laps: BundleLap[] = selectedLapEntries(st).map(({ s, lap }) => {
+    const entriesNow = selectedLapEntries(st);
+    const laps: BundleLap[] = entriesNow.map(({ s, lap }) => {
       const meta = lapMetaOf(st, s.id, lap.n);
       return lapToBundleLap(s, lap, meta.name, meta.color);
     });
+    // markers that sit on an exported lap travel with it
+    const markers: BundleMarker[] = [];
+    for (const m of st.markers) {
+      const li = entriesNow.findIndex((e) => e.s.id === m.sessionId && m.idx >= e.lap.startIdx && m.idx <= e.lap.endIdx);
+      if (li >= 0) markers.push({ lapIndex: li, idxInLap: m.idx - entriesNow[li].lap.startIdx, name: m.name, color: m.color, note: m.note });
+    }
     if (!laps.length) {
       st.setStatus('No laps in the workspace to export');
       return;
     }
-    download(`dda-lab-${today()}.lab.json`, makeBundle(laps, activeTrack(st), st.workspace));
-    st.setStatus(`Bundle exported: ${laps.length} lap${laps.length === 1 ? '' : 's'}`);
+    download(`dda-lab-${today()}.lab.json`, makeBundle(laps, activeTrack(st), st.workspace, markers));
+    st.setStatus(`Bundle exported: ${laps.length} lap${laps.length === 1 ? '' : 's'}${markers.length ? `, ${markers.length} marker${markers.length === 1 ? '' : 's'}` : ''}`);
   }
 
   function exportCsv() {

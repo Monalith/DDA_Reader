@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { parseWorkspace, serializeWorkspace } from '../core/workspace';
-import { activeTrack, SESSION_COLORS, useLab } from '../state/store';
+import { activeTrack, useLab } from '../state/store';
 import { openFiles } from './openFiles';
 
 function download(name: string, text: string, mime = 'application/json') {
@@ -19,7 +19,7 @@ export default function TopBar() {
   const workspace = useLab((s) => s.workspace);
   const status = useLab((s) => s.statusMessage);
   const track = useLab((s) => activeTrack(s));
-  const { addSession, removeSession, setWorkspace, setStatus } = useLab.getState();
+  const { removeSession, setWorkspace, setStatus } = useLab.getState();
 
   async function onFiles(files: FileList | null) {
     if (!files?.length) return;

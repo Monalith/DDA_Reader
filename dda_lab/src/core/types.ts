@@ -123,7 +123,7 @@ export interface TurnHint {
 export interface Session {
   id: string;
   name: string;
-  source: 'dda' | 'json' | 'csv';
+  source: 'dda' | 'json' | 'csv' | 'sim';
   color: string;
   t: Float64Array;
   channels: Map<string, Channel>;
@@ -136,6 +136,8 @@ export interface Session {
   lapsFromFile?: boolean;
   /** Bundled example (Examples menu on the map); closed when real data is opened. */
   isExample?: boolean;
+  /** Produced by the virtual rider, not by a file; marker persistence skips it. */
+  isSim?: boolean;
   /** Sample-index ranges of laps the user deleted; re-detected laps centred in one stay dropped. */
   deletedRanges?: Array<[number, number]>;
 }

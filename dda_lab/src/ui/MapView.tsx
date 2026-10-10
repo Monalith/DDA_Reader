@@ -21,7 +21,7 @@ import type { Gate, Lap, LngLat, SchemaLayer, Session, TrackModel, TurnMetrics }
 import { lapX, selectedLapEntries } from '../state/selectors';
 import { activeTrack, useLab, lapMetaOf } from '../state/store';
 import { backgroundColorByZoom, inRangeSegments, rasterOpacityByZoom, zoomRadius, zoomWidth } from './focus';
-import { corridorGeoJson } from './SimLayers';
+import { corridorGeoJson, idealLineGeoJson } from './SimLayers';
 import {
   IMAGE_CORNERS,
   centerlineGeoJson,
@@ -173,6 +173,7 @@ export default function MapView() {
   const turnLabels = useLab((s) => s.workspace.turnLabels ?? DEFAULT_TURN_LABELS);
   const activeMarkerId = useLab((s) => s.activeMarkerId);
   const corridor = useLab((s) => s.corridor);
+  const simLine = useLab((s) => s.simLine);
   const dataMarkerRefs = useRef<Map<string, maplibregl.Marker>>(new Map());
 
   const track = useMemo(() => activeTrack({ tracks, activeTrackId }), [tracks, activeTrackId]);
@@ -408,7 +409,8 @@ export default function MapView() {
     setData(map, 'schema', track && schema ? schemaGeoJson({ ...track, schema }) : EMPTY);
     syncSchemaImage(map, schema ?? null);
     setData(map, 'corridor', track && corridor ? corridorGeoJson(track, corridor) : EMPTY);
-  }, [ready, track, entries, metrics, preview, lapMeta, corridor]);
+    setData(map, 'idealLine', simLine ? idealLineGeoJson(simLine) : EMPTY);
+  }, [ready, track, entries, metrics, preview, lapMeta, corridor, simLine]);
 
   // ---------- layer toggles ----------
   useEffect(() => {

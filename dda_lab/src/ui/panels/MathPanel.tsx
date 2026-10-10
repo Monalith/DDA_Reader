@@ -60,7 +60,7 @@ function firstFunction(sig: string): string | null {
 
 /** Scope value encoding: 'all' | 'session:<id>' | 'lap:<sessionId>:<lapN>' */
 type Scope = { kind: 'all' } | { kind: 'session'; sessionId: string } | { kind: 'lap'; sessionId: string; lap: number };
-const scopeToValue = (s: Scope): string => (s.kind === 'all' ? 'all' : s.kind === 'session' ? `session:${s.sessionId}` : `lap:${lapKey(s.sessionId, s.lap)}`);
+export const scopeToValue = (s: Scope): string => (s.kind === 'all' ? 'all' : s.kind === 'session' ? `session:${s.sessionId}` : `lap:${lapKey(s.sessionId, s.lap)}`);
 function scopeFromValue(v: string): Scope {
   if (v.startsWith('session:')) return { kind: 'session', sessionId: v.slice(8) };
   if (v.startsWith('lap:')) {
@@ -225,8 +225,8 @@ export default function MathPanel() {
     setSub('editor');
   };
 
-  const allPresets: MathPreset[] = useMemo(() => [...userPresets, ...MATH_PRESETS], [userPresets]);
-  const missingOf = (p: MathPreset) => p.needs.filter((n) => !known.has(n));
+  const allPresets = useMemo<Array<MathPreset | UserMathPreset>>(() => [...userPresets, ...MATH_PRESETS], [userPresets]);
+  const missingOf = (p: MathPreset | UserMathPreset) => p.needs.filter((n) => !known.has(n));
 
   const filteredPresets = useMemo(() => {
     const q = search.trim().toLowerCase();

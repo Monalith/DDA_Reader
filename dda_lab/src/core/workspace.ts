@@ -3,7 +3,7 @@
 // workspace.json files keep loading.
 
 import { z } from 'zod';
-import { DEFAULT_TURN_LABELS, DEFAULT_WORKSPACE, type Workspace } from './types';
+import { DEFAULT_TURN_LABELS, DEFAULT_WORKSPACE, type TurnLabelStyle, type Workspace } from './types';
 
 const clone = <T>(v: T): T => structuredClone(v);
 
@@ -60,7 +60,7 @@ const WorkspaceObject = z.object({
       turnColor: z.string().optional(),
       pointSize: z.number().min(8).max(28).optional(),
     })
-    .default(clone(DEFAULT_TURN_LABELS)),
+    .default(() => clone(DEFAULT_TURN_LABELS) as Required<Pick<TurnLabelStyle, 'show' | 'size' | 'gain' | 'loss' | 'best'>> & { onMap: boolean; speed: boolean; turnSize?: number; turnColor?: string; pointSize?: number }),
 });
 
 export const WorkspaceSchema = WorkspaceObject as unknown as z.ZodType<Workspace>;

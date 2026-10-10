@@ -38,7 +38,6 @@ describe('files DDA Lab writes can be opened again', () => {
     expect(back.channels.get('my_math')!.kind).toBe('external'); // unknown name kept as external
   });
   it('the "Export visible" CSV explains that it is a spreadsheet export', () => {
-    const s = session();
     const csv = visibleCsv({
       xAxis: 'distance', range: null,
       panels: [{ id: 'p', lines: [{ key: 'k', label: 's L1 speed', color: '#fff', x: Float64Array.from([0, 2, 4]), y: Float32Array.from([1, 2, 3]), axis: 'L', sessionId: 's', lap: 1, startIdx: 0, channel: 'speed' }] }],

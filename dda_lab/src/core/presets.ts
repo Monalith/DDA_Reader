@@ -10,7 +10,7 @@ export interface MathPreset {
   expr: string;
   doc: string;
   needs: string[]; // channels that must exist
-  group: 'Dynamics' | 'Rider inputs' | 'Engine' | 'GPS & lap' | 'Signal' | 'Flags';
+  group: 'Dynamics' | 'Rider inputs' | 'Engine' | 'GPS & lap' | 'Signal' | 'Flags' | 'My presets';
 }
 
 export const MATH_PRESETS: MathPreset[] = [

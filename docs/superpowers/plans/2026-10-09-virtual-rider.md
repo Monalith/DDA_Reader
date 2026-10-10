@@ -2215,7 +2215,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - Produces (in `src/sim/types.ts`):
   - `export interface MachineParams { presetId: string; powerKw: number; massKg: number; cdA: number; wheelbaseM: number; cgHeightM: number; finalDrive: number; gearRatios: number[] }`
   - `export interface TyreTrackParams { mu: number; maxLeanDeg: number; kerbMarginM: number; gripScale: number }`
-  - `export interface RiderParams { lineDeviationM: number; brakingG: number; throttleDelayS: number; tcThreshold: number; leanUsage: number; kappa: number }`
+  - `export interface RiderParams { lineDeviationM: number; brakingG: number; throttleDelayS: number; tcThreshold: number; leanUsage: number; kappa: number; trailBrakeDepth: number; trailBrakeProfile: number }`
   - `export interface SimParams { machine: MachineParams; tyre: TyreTrackParams; rider: RiderParams }`
 - Produces (in `src/sim/presets.ts`):
   - `export interface MachinePreset { id: string; label: string; machine: Omit<MachineParams, 'presetId'>; tyre: TyreTrackParams; kappa: number }`
@@ -2335,6 +2335,19 @@ export interface RiderParams {
   leanUsage: number;
   /** Line style: 0 = C line (even curvature), 1 = V line (squared off). */
   kappa: number;
+  /**
+   * How deep into the corner braking is carried, 0..1. 0 = all braking done
+   * upright before turn-in; 1 = brake pressure carried to the apex, using the
+   * full remaining longitudinal share of the friction ellipse at lean.
+   * Consumed by the SOLVER, because it changes the velocity envelope.
+   */
+  trailBrakeDepth: number;
+  /**
+   * The shape of the brake release, 0..1. 0 = abrupt — pressure dumped in a
+   * step; 1 = long progressive bleed-off. Consumed by the RIDER layer, because
+   * it changes the trace, not the envelope.
+   */
+  trailBrakeProfile: number;
 }
 
 export interface SimParams {
@@ -2932,8 +2945,37 @@ describe('solve', () => {
     const env = solve(circleLine(60), P);
     for (let i = 1; i < env.tS.length; i++) expect(env.tS[i]).toBeGreaterThan(env.tS[i - 1]);
   });
+
+  it('carrying the brakes deeper gives a faster lap than braking upright', () => {
+    // A corner needs a braking zone for trail braking to mean anything, so use
+    // the straight-then-corner line rather than a constant-radius circle.
+    const line = cornerLine();
+    const upright = solve(line, clampParams({ ...P, rider: { ...P.rider, trailBrakeDepth: 0 } }));
+    const deep = solve(line, clampParams({ ...P, rider: { ...P.rider, trailBrakeDepth: 1 } }));
+    expect(deep.lapTimeS).toBeLessThan(upright.lapTimeS);
+  });
+
+  it('never lets the tyre demand exceed the friction circle on its own output', () => {
+    for (const r of [40, 80, 200]) {
+      const env = solve(circleLine(r), P);
+      const worst = Math.max(...Array.from(env.gripUse));
+      expect(Number.isFinite(worst)).toBe(true);
+      // the three passes are what keep this at or under 1; a little numerical
+      // slack is expected, a lot would mean a pass is not doing its job
+      expect(worst).toBeLessThan(1.1);
+    }
+  });
+
+  it('reports grip use that actually tracks the demand', () => {
+    const tight = solve(circleLine(40), P);
+    const open = solve(circleLine(400), P);
+    const mean = (a: Float32Array): number => a.reduce((s, x) => s + x, 0) / a.length;
+    expect(mean(tight.gripUse)).toBeGreaterThan(mean(open.gripUse));
+  });
 });
 ```
+
+`cornerLine()` is the straight-corner-straight fixture; copy it from the Task 8 test file, or define it in this file and have Task 8 import it — either is fine, but do not maintain two divergent copies.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
@@ -2990,8 +3032,9 @@ export function solve(line: Line, params: SimParams): Envelope {
   const longG = new Float32Array(n);
   const latG = new Float32Array(n);
   const leanDeg = new Float32Array(n);
+  const gripUse = new Float32Array(n);
   const tS = new Float64Array(n);
-  if (n < 2) return { v, longG, latG, leanDeg, tS, lapTimeS: 0 };
+  if (n < 2) return { v, longG, latG, leanDeg, gripUse, tS, lapTimeS: 0 };
 
   const mu = p.tyre.mu * p.tyre.gripScale;
   const leanLimitDeg = p.tyre.maxLeanDeg * p.rider.leanUsage;
@@ -3017,11 +3060,29 @@ export function solve(line: Line, params: SimParams): Envelope {
     v[i] = Math.max(V_MIN, Math.min(vTop, vLat));
   }
 
+  /** How much of the tyre's lateral capacity is in use at speed `vv`, 0..1. */
+  const latUse = (vv: number, k: number): number => Math.min(1, (vv * vv * Math.abs(k)) / aLatMax);
+
   /** Fraction of grip still available longitudinally at speed `vv` and curvature `k`. */
   const ellipse = (vv: number, k: number): number => {
-    const aLat = vv * vv * Math.abs(k);
-    const used = Math.min(1, aLat / aLatMax);
+    const used = latUse(vv, k);
     return Math.sqrt(Math.max(0, 1 - used * used));
+  };
+
+  /**
+   * Longitudinal share available for BRAKING, which is not the same as the raw
+   * ellipse: a rider chooses how much of it to spend at lean.
+   *
+   * `trailBrakeDepth` = 1 spends the whole remaining share, carrying brake
+   * pressure to the apex. `trailBrakeDepth` = 0 fades braking out as soon as
+   * the bike is leaned at all, which is straight-line braking — the bike is
+   * upright, stopped, then turned. Both reach zero at full lean, as they must.
+   */
+  const brakeEllipse = (vv: number, k: number): number => {
+    const used = latUse(vv, k);
+    const full = Math.sqrt(Math.max(0, 1 - used * used));
+    const depth = p.rider.trailBrakeDepth;
+    return full * (depth + (1 - depth) * (1 - used));
   };
 
   // ---- pass 2: backward (braking) --------------------------------------
@@ -3031,7 +3092,7 @@ export function solve(line: Line, params: SimParams): Envelope {
       const i = step;
       const j = (i + 1) % n;
       const ds = dsAt(j);
-      const a = aBrakeMax * ellipse(v[j], line.curvature[j]);
+      const a = aBrakeMax * brakeEllipse(v[j], line.curvature[j]);
       const vMax = Math.sqrt(v[j] * v[j] + 2 * a * ds);
       if (v[i] > vMax) v[i] = Math.max(V_MIN, vMax);
     }
@@ -3067,9 +3128,17 @@ export function solve(line: Line, params: SimParams): Envelope {
     const aLat = (v[i] * v[i] * line.curvature[i]) / G;
     latG[i] = aLat;
     leanDeg[i] = (Math.atan(aLat) * 180) / Math.PI;
+    // Combined tyre demand as a fraction of the friction circle. Above 1 the
+    // tyre is being asked for more than it has — that is a fall, not a lap.
+    // The solver's own passes keep this at or under 1 by construction, so a
+    // value over 1 means a parameter combination the rider cannot actually
+    // ride, and the UI warns rather than quietly reporting a fast lap.
+    const lu = Math.min(1.5, Math.abs(aLat) / (aLatMax / G));
+    const lo = Math.min(1.5, Math.abs(longG[i]) / mu);
+    gripUse[i] = Math.hypot(lu, lo);
   }
 
-  return { v, longG, latG, leanDeg, tS, lapTimeS: t };
+  return { v, longG, latG, leanDeg, gripUse, tS, lapTimeS: t };
 }
 ```
 
@@ -3232,12 +3301,22 @@ import { clampParams, } from './presets';
 export interface RiderChannels {
   /** Throttle position, %. */
   tps: Float32Array;
+  /** Brake application, %. Separate from tps on purpose — see the rate limits. */
+  brake: Float32Array;
   /** Selected gear, 1..n. */
   gear: Float32Array;
   rpm: Float32Array;
   /** Traction-control intervention, % of torque cut. */
   dtc: Float32Array;
 }
+
+/**
+ * How much brake the rider may still be holding at full throttle, as a
+ * multiplier on the brake channel. Above 1 the two are mutually exclusive with
+ * margin; at 1 they simply cannot sum past 100 %. Trail braking is a small
+ * overlap, not a large one.
+ */
+const OVERLAP = 1.15;
 
 /** Rolling radius of a 190/55-17 rear, metres. */
 const WHEEL_RADIUS_M = 0.31;
@@ -3248,31 +3327,75 @@ export function riderChannels(line: Line, env: Envelope, params: SimParams): Rid
   const p = clampParams(params);
   const n = line.points.length;
   const tps = new Float32Array(n);
+  const brake = new Float32Array(n);
   const gear = new Float32Array(n);
   const rpm = new Float32Array(n);
   const dtc = new Float32Array(n);
-  if (!n) return { tps, gear, rpm, dtc };
+  if (!n) return { tps, brake, gear, rpm, dtc };
 
   // ---- raw demand from the envelope ------------------------------------
-  // longG > 0 means driving, < 0 braking. Map drive demand to throttle and
-  // braking to a closed throttle; coasting sits in between.
-  const demand = new Float32Array(n);
+  // longG > 0 means driving, < 0 braking. These are the two demands a rider is
+  // answering; they are deliberately kept as separate channels, because the
+  // interesting part of a lap is what happens BETWEEN them.
+  const thrDemand = new Float32Array(n);
+  const brkDemand = new Float32Array(n);
   for (let i = 0; i < n; i++) {
     const g = env.longG[i];
-    demand[i] = g > 0 ? Math.min(100, (g / 0.9) * 100) : Math.max(0, 12 + g * 30);
+    thrDemand[i] = g > 0 ? Math.min(100, (g / 0.9) * 100) : 0;
+    brkDemand[i] = g < 0 ? Math.min(100, (-g / p.rider.brakingG) * 100) : 0;
   }
 
-  // ---- first-order lag on the throttle ---------------------------------
-  // The delay is in seconds, so it is applied against the envelope's own time
+  // ---- rate limits: the reason a lap has transitions at all -------------
+  //
+  // A rider cannot step from 100 % throttle to 100 % brake. Hands and levers
+  // move at a finite speed, load transfers onto the front tyre over a real
+  // interval, and asking for full brake before that load has arrived is how you
+  // tuck the front. So every channel is rate-limited in %/s, asymmetrically,
+  // because applying and releasing are not the same action:
+  //
+  //   - the brake comes ON fast but not instantly (initial bite, then squeeze)
+  //   - the brake comes OFF at a rate the `trailBrakeProfile` slider sets:
+  //     abrupt at 0, a long progressive bleed at 1. That release is the whole
+  //     craft of trail braking — it is what keeps load on the front while the
+  //     bike is turning.
+  //   - the throttle comes ON slowly (and is additionally delayed by
+  //     `throttleDelayS`), because cracking it open at lean is the other way to
+  //     crash
+  //   - the throttle comes OFF fast; shutting it is a reflex
+  const BRAKE_ON_PCT_S = 700; // ~0.14 s to full pressure
+  const BRAKE_OFF_PCT_S = 1400 - 1250 * p.rider.trailBrakeProfile; // 1400 -> 150
+  const THROTTLE_ON_PCT_S = 350; // ~0.3 s to full
+  const THROTTLE_OFF_PCT_S = 1200;
+
+  const rateLimit = (prev: number, target: number, dt: number, upPctS: number, downPctS: number): number => {
+    const maxStep = (target > prev ? upPctS : downPctS) * dt;
+    const delta = target - prev;
+    return Math.abs(delta) <= maxStep ? target : prev + Math.sign(delta) * maxStep;
+  };
+
+  // ---- throttle lag, then both channels through their rate limits -------
+  // The lag is in seconds, so it is applied against the envelope's own time
   // vector: the same delay costs more samples where the bike is slow.
   const tau = Math.max(1e-3, p.rider.throttleDelayS);
-  let y = demand[0];
+  let lagged = thrDemand[0];
+  let thr = thrDemand[0];
+  let brk = brkDemand[0];
   for (let i = 0; i < n; i++) {
     const dt = i === 0 ? 0.01 : Math.max(1e-3, env.tS[i] - env.tS[i - 1]);
     const alpha = 1 - Math.exp(-dt / tau);
-    // opening the throttle lags; shutting it is immediate (riders close fast)
-    y = demand[i] < y ? demand[i] : y + alpha * (demand[i] - y);
-    tps[i] = Math.min(100, Math.max(0, y));
+    lagged = thrDemand[i] < lagged ? thrDemand[i] : lagged + alpha * (thrDemand[i] - lagged);
+
+    brk = rateLimit(brk, brkDemand[i], dt, BRAKE_ON_PCT_S, BRAKE_OFF_PCT_S);
+    thr = rateLimit(thr, lagged, dt, THROTTLE_ON_PCT_S, THROTTLE_OFF_PCT_S);
+
+    // Mutual exclusion. A rider can hold a trickle of throttle against the
+    // brakes, but not drive and stop at once: the throttle available is what is
+    // left after the brake has taken its share, with a little overlap allowed.
+    const allowance = Math.max(0, 100 - OVERLAP * brk);
+    thr = Math.min(thr, allowance);
+
+    tps[i] = Math.min(100, Math.max(0, thr));
+    brake[i] = Math.min(100, Math.max(0, brk));
   }
 
   // ---- gear and rpm -----------------------------------------------------
@@ -3306,8 +3429,64 @@ export function riderChannels(line: Line, env: Envelope, params: SimParams): Rid
     if (total > allowed) dtc[i] = Math.min(100, ((total - allowed) / Math.max(0.05, 1 - allowed)) * 100);
   }
 
-  return { tps, gear, rpm, dtc };
+  return { tps, brake, gear, rpm, dtc };
 }
+```
+
+Add these tests to `dda_lab/tests/unit/simRider.test.ts`, which are the point of the rate limits:
+
+```ts
+  it('never steps straight from full throttle to full brake', () => {
+    const line = cornerLine();
+    const env = solve(line, P);
+    const ch = riderChannels(line, env, P);
+    // find the hardest throttle-to-brake transition and measure how long it took
+    let worstPctPerS = 0;
+    for (let i = 1; i < ch.tps.length; i++) {
+      const dt = Math.max(1e-3, env.tS[i] - env.tS[i - 1]);
+      worstPctPerS = Math.max(worstPctPerS, Math.abs(ch.brake[i] - ch.brake[i - 1]) / dt);
+    }
+    // the brake-on rate limit is 700 %/s; nothing may exceed it
+    expect(worstPctPerS).toBeLessThan(760);
+  });
+
+  it('does not drive and stop at the same time', () => {
+    const line = cornerLine();
+    const ch = riderChannels(line, solve(line, P), P);
+    for (let i = 0; i < ch.tps.length; i++) {
+      expect(ch.tps[i] + ch.brake[i] / 1.15).toBeLessThan(101);
+    }
+  });
+
+  it('bleeds the brake off more slowly at a higher trailBrakeProfile', () => {
+    const line = cornerLine();
+    const env = solve(line, P);
+    const abrupt = riderChannels(line, env, clampParams({ ...P, rider: { ...P.rider, trailBrakeProfile: 0 } }));
+    const smooth = riderChannels(line, env, clampParams({ ...P, rider: { ...P.rider, trailBrakeProfile: 1 } }));
+    const fallRate = (b: Float32Array): number => {
+      let worst = 0;
+      for (let i = 1; i < b.length; i++) {
+        const dt = Math.max(1e-3, env.tS[i] - env.tS[i - 1]);
+        worst = Math.max(worst, (b[i - 1] - b[i]) / dt);
+      }
+      return worst;
+    };
+    expect(fallRate(smooth)).toBeLessThan(fallRate(abrupt));
+  });
+
+  it('holds some brake past turn-in when the rider trail brakes', () => {
+    const line = cornerLine();
+    const env = solve(line, P);
+    const ch = riderChannels(line, env, clampParams({
+      ...P,
+      rider: { ...P.rider, trailBrakeDepth: 1, trailBrakeProfile: 1 },
+    }));
+    let apex = 0;
+    for (let i = 1; i < env.v.length; i++) if (env.v[i] < env.v[apex]) apex = i;
+    // somewhere in the second half of the entry there is still brake pressure
+    const entry = ch.brake.slice(Math.floor(apex * 0.75), apex);
+    expect(Math.max(...Array.from(entry))).toBeGreaterThan(5);
+  });
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
@@ -3534,8 +3713,11 @@ export function toSession(
   channels.set('lat_g', channel('lat_g', 'g', onTimeGrid(env.latG, srcT, t)));
   channels.set('lean', channel('lean', 'deg', onTimeGrid(env.leanDeg, srcT, t)));
   channels.set('tps', channel('tps', '%', onTimeGrid(ch.tps, srcT, t)));
+  channels.set('brake', channel('brake', '%', onTimeGrid(ch.brake, srcT, t)));
   channels.set('rpm', channel('rpm', 'rpm', onTimeGrid(ch.rpm, srcT, t)));
   channels.set('dtc', channel('dtc', '%', onTimeGrid(ch.dtc, srcT, t)));
+  // 1.0 = the tyre is exactly at its limit; above that is a fall, not a lap
+  channels.set('grip_use', channel('grip_use', '', onTimeGrid(env.gripUse, srcT, t)));
   channels.set('gear', channel('gear', '', onTimeGridStep(ch.gear, srcT, t)));
   channels.set(
     'lap_dist',
@@ -3929,6 +4111,27 @@ export default function SimPanel() {
     : [];
   const medianWidth = widths.length ? widths[widths.length >> 1] : NaN;
 
+  // Warn when the parameter combination asks the tyre for more than it has.
+  // The solver's own passes hold grip use at or under 1, so the warning fires
+  // on the combinations that get there — a rider carrying the brakes to a lean
+  // angle the tyre cannot also support is the classic front-end tuck, and the
+  // lap time it produces is not one anybody rides twice.
+  const risk = useLab((s) => {
+    const sim = s.sessions.find((x) => x.isSim);
+    const g = sim?.channels.get('grip_use')?.data;
+    if (!g) return null;
+    let peak = 0;
+    let overCount = 0;
+    for (let i = 0; i < g.length; i++) {
+      if (!Number.isFinite(g[i])) continue;
+      peak = Math.max(peak, g[i]);
+      if (g[i] > 0.98) overCount++;
+    }
+    if (peak <= 0.98) return null;
+    const pct = Math.round((100 * overCount) / g.length);
+    return `Tyre demand peaks at ${(peak * 100).toFixed(0)} % of the friction circle, over ${pct} % of the lap. At these settings the front would let go on the brakes — lower the trail brake depth, the braking g, or the lean usage.`;
+  });
+
   const layer = (key: 'corridor' | 'idealLine', label: string) => (
     <label>
       <input
@@ -3976,6 +4179,12 @@ export default function SimPanel() {
         {layer('corridor', 'Corridor')}
         {layer('idealLine', 'Line')}
       </div>
+
+      {risk && (
+        <p className="sim-risk" data-testid="sim-risk" role="status">
+          ⚠ {risk}
+        </p>
+      )}
 
       <div className="sim-groups">
         <fieldset>
@@ -4026,6 +4235,10 @@ export default function SimPanel() {
             testId="sim-leanusage" onChange={(v) => setSimParams({ rider: { leanUsage: v } })} />
           <Slider label="Line style (C↔V)" value={params.rider.kappa} min={0} max={1} step={0.01}
             testId="sim-kappa" onChange={(v) => setSimParams({ rider: { kappa: v } })} />
+          <Slider label="Trail brake depth" value={params.rider.trailBrakeDepth} min={0} max={1} step={0.01}
+            testId="sim-tb-depth" onChange={(v) => setSimParams({ rider: { trailBrakeDepth: v } })} />
+          <Slider label="Brake release" value={params.rider.trailBrakeProfile} min={0} max={1} step={0.01}
+            testId="sim-tb-profile" onChange={(v) => setSimParams({ rider: { trailBrakeProfile: v } })} />
         </fieldset>
       </div>
     </div>
@@ -4046,6 +4259,15 @@ Append to `dda_lab/src/ui/panels/panels.css`:
 .sim-slider-value { font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
 .sim-slider input[type='range'] { width: 100%; }
 .sim-token { width: 120px; font-size: 11px; }
+.sim-risk {
+  margin: 6px 0 0;
+  padding: 6px 10px;
+  border-left: 3px solid #ff4d6d;
+  background: rgba(255, 77, 109, 0.12);
+  color: #ffb3c0;
+  font-size: 12px;
+  line-height: 1.4;
+}
 ```
 
 - [ ] **Step 6: Draw the ideal line on the map**
@@ -4171,6 +4393,62 @@ git commit -m "feat(sim): virtual rider panel with live sliders
 Three parameter groups drive simulate() on every change; the result goes
 through refreshAll() as an ordinary session, so the map, the charts, the
 cursor and delta_t pick it up with no new visualisation code.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+---
+
+### Task 11: Cross-check the virtual rider against the real BMW lap
+
+**Why this task exists.** Everything before it proves the simulator is internally consistent. Nothing proves it is *right*. The repo ships a real Serres lap — `bike1000`, a BMW at 1:19.81 — and the virtual rider now produces a lap on the same circuit with the same channels. Putting them side by side is the only honest test of whether the model describes a motorcycle.
+
+The deliverable is **a documented comparison and the parameter changes it justifies**, not a passing test. Expect to find the model wrong somewhere; say where.
+
+**Files:**
+- Modify: `dda_lab/src/sim/presets.ts` (only if the comparison justifies it)
+- Modify: `dda_lab/src/sim/rider.ts` / `solver.ts` (only if the comparison exposes a defect)
+- Create: `docs/superpowers/notes/2026-10-10-virtual-vs-real.md`
+
+- [ ] **Step 1: Get both laps' channels side by side**
+
+Load `?example=bike1000` with the simulator enabled on the `panigale-v4` or `1000` preset, select both laps, and export the visible channels (the Reports tab has an Export CSV, and `src/core/exportVisible.ts` already does this). Work against **distance**, not time, so the two laps align.
+
+Compare, per channel, over the whole lap and over two or three individual corners:
+`speed`, `long_g`, `lat_g`, `lean`, `tps`, `brake`, `rpm`, `gear`.
+
+- [ ] **Step 2: Characterise the differences before explaining them**
+
+For each channel write down *what* differs, in numbers, before reaching for *why*: peak values, where the peaks sit relative to the apex, how long the rider holds each state, and the shape of the transitions. Specific questions worth answering:
+
+- Does the real rider reach peak braking earlier or later than the simulator, relative to turn-in?
+- How long is the real throttle-to-brake transition, in seconds? Does the rate limit in `rider.ts` match it, or is it too fast or too slow?
+- Does the real rider carry brake past turn-in, and how far? That is what `trailBrakeDepth` is supposed to reproduce — read the real value off the data rather than guessing it.
+- Is the simulated apex speed systematically high or low? By how much, and is it consistent across corner types (slow hairpin vs fast sweeper)?
+- Does the simulated lean angle reach the same peaks, and at the same places?
+- Is the simulated lap time plausible against 1:19.81, and if it is wrong, is it wrong everywhere or in one sector?
+
+- [ ] **Step 3: Form hypotheses and test them one at a time**
+
+For each systematic difference, name the parameter or model term that would cause it, change only that, re-run, and record the effect. Keep a table: hypothesis, what you changed, what happened, kept or reverted.
+
+Resist the temptation to fit the preset numbers until the lap time matches. A model that reproduces 1:19.81 with a 2.0 friction coefficient has not been validated, it has been bent. Prefer a change that makes a *shape* match — the braking trace, the throttle pickup, where the apex falls — over one that only moves the total.
+
+- [ ] **Step 4: Write it up**
+
+Create `docs/superpowers/notes/2026-10-10-virtual-vs-real.md` with: the measured differences, the hypotheses tested and their outcomes, what was changed and why, and — most importantly — **what still does not match and what you think it would take**. An honest list of remaining discrepancies is the real output of this task.
+
+- [ ] **Step 5: Re-run the full suite and commit**
+
+Any parameter or model change must leave `npm test` green and the typecheck clean. If a change breaks a test, decide whether the test or the change is wrong, and say which in the write-up.
+
+```bash
+git add dda_lab/src/sim docs/superpowers/notes/2026-10-10-virtual-vs-real.md
+git commit -m "feat(sim): cross-check the virtual rider against the real BMW lap
+
+<one line per change the comparison justified>
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```

@@ -231,3 +231,58 @@ describe('time channels', () => {
     expect(lapTime.data[19]).toBeCloseTo(0.9, 5);
   });
 });
+
+describe('channel ownership (C1)', () => {
+  // `computeDerived` used to mutate every channel it recomputes IN PLACE and
+  // `fillMissingChannels` used to treat any channel carrying `note` as a
+  // replaceable placeholder. A simulated session's channels are neither: the
+  // solver computed them, and refitting them from a Float32 GPS polyline
+  // replaces physics with an estimate. Ownership is the `isSim` flag.
+  it('leaves a sim session its own channels, and still adds the ones it lacks', () => {
+    const { s } = circleSession();
+    s.isSim = true;
+    const before = new Map([...s.channels].map(([k, c]) => [k, c.data.slice()]));
+    // a channel the sim does not provide, so computeDerived must still fill it
+    expect(s.channels.has('long_g')).toBe(false);
+    // and one it does, carrying a hand-made value that no GPS fit would produce
+    const lean = new Float32Array(s.t.length).fill(-42);
+    s.channels.set('lean', { name: 'lean', unit: 'deg', kind: 'raw', data: lean, proc: { ...DEFAULT_PROC } });
+    const latG = new Float32Array(s.t.length).fill(0.9);
+    s.channels.set('lat_g', { name: 'lat_g', unit: 'g', kind: 'raw', data: latG, proc: { ...DEFAULT_PROC } });
+
+    computeDerived(s);
+
+    expect([...s.channels.get('lean')!.data]).toEqual([...lean]);
+    expect([...s.channels.get('lat_g')!.data]).toEqual([...latG]);
+    expect([...s.channels.get('speed')!.data]).toEqual([...before.get('speed')!]);
+    // long_g was missing, so it is computed as usual
+    expect(s.channels.get('long_g')).toBeTruthy();
+    // total_g is built from the channels the session kept, not from the refit
+    expect(s.channels.get('total_g')!.data[5]).toBeCloseTo(
+      Math.hypot(s.channels.get('long_g')!.data[5], 0.9),
+      5,
+    );
+  });
+
+  it('keeps a sim channel even when it carries a note', () => {
+    // `note` means "estimated placeholder" everywhere else, and
+    // `fillMissingChannels` still honours it — but not against the owner.
+    const { s } = circleSession();
+    s.isSim = true;
+    s.channels.get('speed')!.note = 'simulated';
+    const before = s.channels.get('speed')!.data.slice();
+    computeDerived(s);
+    expect([...s.channels.get('speed')!.data]).toEqual([...before]);
+    expect(s.channels.get('speed')!.note).toBe('simulated');
+  });
+
+  it('still replaces a noted placeholder channel on an ordinary session', () => {
+    // the other half: ownership must not have broken the estimate path that
+    // every real lap without a wheel-speed channel depends on
+    const { s } = circleSession();
+    s.channels.get('speed')!.note = 'estimated: whatever';
+    computeDerived(s);
+    expect(s.channels.get('speed')!.note).toMatch(/^estimated: GPS ground speed/);
+    expect(s.channels.get('lean')!.note).toMatch(/^estimated:/);
+  });
+});

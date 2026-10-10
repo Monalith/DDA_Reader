@@ -51,7 +51,12 @@ export function solve(line: Line, params: SimParams): Envelope {
   const leanLimitDeg = p.tyre.maxLeanDeg * p.rider.leanUsage;
   // the lean angle and the tyre both cap lateral acceleration; the lower wins
   const aLatMax = Math.max(0.1, Math.min(mu, Math.tan((leanLimitDeg * Math.PI) / 180)) * G);
-  const aBrakeMax = Math.max(0.1, p.rider.brakingG * G);
+  // Braking is friction-limited too. `brakingG` is how hard the rider is
+  // WILLING to brake; it cannot exceed what the tyre has. Without the min, a
+  // mu*gripScale of 0.24 still braked at 1.54 g — 6.4x the available friction —
+  // and that spare deceleration is most of what let gripUse reach 1.65-1.80.
+  // The remaining friction ellipse is applied per sample in the pass below.
+  const aBrakeMax = Math.max(0.1, Math.min(p.rider.brakingG, mu) * G);
   const vTop = topSpeedMs(p);
   // wheelie limit: beyond this the front lifts and no more torque gets through
   const aWheelie = (G * p.machine.wheelbaseM) / (2 * p.machine.cgHeightM);
@@ -128,6 +133,19 @@ export function solve(line: Line, params: SimParams): Envelope {
   }
 
   // ---- integrate and fill the g channels -------------------------------
+  //
+  // Every channel below is a POINT quantity at index i. The mean acceleration
+  // over the segment i -> i+1 is a SEGMENT quantity, so it is accumulated
+  // separately and then averaged onto the points: `longG[i]` is the mean of the
+  // segment arriving at i and the segment leaving it.
+  //
+  // That matters because `gripUse` combines `longG[i]` with `latG[i]`. While
+  // `longG[i]` held the segment value, a corner entry compared the lateral
+  // demand AT i with the longitudinal demand just AFTER i, and the mismatch —
+  // not "numerical slack" — is what put gripUse at 1.001-1.044 on the solver's
+  // own output, enough to trip the UI's over-the-limit banner on the shipped
+  // defaults even though each pass respects the friction circle exactly.
+  const segG = new Float32Array(n);
   let t = 0;
   for (let i = 0; i < n; i++) {
     tS[i] = t;
@@ -135,17 +153,15 @@ export function solve(line: Line, params: SimParams): Envelope {
     const vNext = v[(i + 1) % n];
     const vAvg = Math.max(V_MIN, (v[i] + vNext) / 2);
     t += ds / vAvg;
-    // INDEX STAGGER: longG[i] is a SEGMENT value — the mean acceleration over
-    // i -> i+1 — while latG[i] and leanDeg[i] are POINT values at i. gripUse
-    // below combines the two, so at a point where the lateral and longitudinal
-    // demands are changing fast (a corner entry) it reads the lateral demand
-    // at i against the longitudinal demand just after i. That stagger, not
-    // "numerical slack", is what lets gripUse come out at 1.001-1.044 on the
-    // solver's own output even though each pass respects the circle exactly.
-    longG[i] = (vNext * vNext - v[i] * v[i]) / (2 * ds * G);
+    segG[i] = (vNext * vNext - v[i] * v[i]) / (2 * ds * G);
+  }
+  for (let i = 0; i < n; i++) {
+    longG[i] = (segG[(i - 1 + n) % n] + segG[i]) / 2;
     const aLat = (v[i] * v[i] * line.curvature[i]) / G;
     latG[i] = aLat;
-    leanDeg[i] = (Math.atan(aLat) * 180) / Math.PI;
+    // app convention: left = negative, so lean is the NEGATED arctangent of the
+    // lateral acceleration (see `Envelope.leanDeg`)
+    leanDeg[i] = (-Math.atan(aLat) * 180) / Math.PI;
     // Combined tyre demand as a fraction of the FRICTION CIRCLE: both axes are
     // divided by the same mu, so 1.0 means the tyre is at its limit and above
     // 1 means it is being asked for more than it has — a fall, not a lap. The

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildLine, curvatureVariance, effectiveHalfWidths, smoothClosed, strideSchedule } from '../../src/sim/line';
+import { buildLine, effectiveHalfWidths, smoothClosed, strideSchedule } from '../../src/sim/line';
 import { DEFAULT_SIM_PARAMS } from '../../src/sim/presets';
 import type { Corridor } from '../../src/sim/types';
 import type { LngLat, TrackModel } from '../../src/core/types';
@@ -164,9 +164,10 @@ describe('buildLine', () => {
     // quantities are unambiguous and there is no corridor shape for the
     // solver to exploit instead, so the ordering has to come from kappa.
     //
-    // This replaces an earlier `curvatureVariance(kappa=0) < (kappa=1)` check
-    // whose two values on this fixture differ only at noise level, and which
-    // the previous (diverging) solver passed by crossing its own instability.
+    // This replaces an earlier curvature-variance check whose two values on
+    // this fixture differed only at noise level, and which the previous
+    // (diverging) solver passed by crossing its own instability. That metric
+    // had no other consumer and has been deleted with its self-test.
     const { track, corridor } = circleTrack(60, 8);
     const at = (kappa: number) =>
       buildLine(track, corridor, {
@@ -353,18 +354,6 @@ describe('buildLine', () => {
     const mid = Math.round((arcFrom + arcTo) / 2);
     expect(Math.abs(line.curvature[mid])).toBeGreaterThan(0.8 / 60);
     expect(Math.abs(line.curvature[mid])).toBeLessThan(1.2 / 60);
-  });
-
-  it('curvatureVariance is zero for a uniform bend and positive for a concentrated one', () => {
-    const mk = (curvature: Float32Array) => ({
-      points: [] as LngLat[], curvature, cumDistM: new Float64Array(0), lengthM: 0,
-      offsetM: new Float32Array(0),
-    });
-    expect(curvatureVariance(mk(new Float32Array(100).fill(0.01)))).toBeCloseTo(0, 12);
-    const concentrated = new Float32Array(100);
-    for (let i = 0; i < 10; i++) concentrated[i] = 0.1;
-    expect(curvatureVariance(mk(concentrated))).toBeGreaterThan(0);
-    expect(curvatureVariance(mk(new Float32Array(0)))).toBe(0);
   });
 
   it('reads a fast corner through a long-wavelength centerline wobble, and still reads a hairpin', () => {

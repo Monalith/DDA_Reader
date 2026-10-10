@@ -110,7 +110,29 @@ function circleCurvature(
   return sign / r;
 }
 
+/**
+ * True when `name` belongs to the session rather than to this module.
+ *
+ * A simulated session's channels come out of the solver, which knows the exact
+ * velocity profile, the exact curvature of the line it solved and the g's that
+ * produced them. Recomputing any of those here — from a Float32 lng/lat
+ * polyline quantised to about a metre — replaces physics with a refit, and the
+ * refit disagrees: measured on the Serres sim session, `long_g` came back as
+ * −0.085 g where the solver said −1.059 g, and `lean` came back with the
+ * opposite sign. So for a sim session this module only ADDS channels that are
+ * not already there.
+ *
+ * Ownership is the session's own `isSim` flag and deliberately NOT `note`:
+ * `note` means "estimated placeholder, replace me when the real thing turns
+ * up", which is the opposite of authoritative, and using it as a label is what
+ * made `fillMissingChannels` overwrite the solver's `speed` and `lean`.
+ */
+function sessionOwns(s: Session, name: string): boolean {
+  return s.isSim === true && s.channels.has(name);
+}
+
 function setChannel(s: Session, name: string, unit: string, data: Float32Array): void {
+  if (sessionOwns(s, name)) return;
   const existing = s.channels.get(name);
   if (existing) {
     existing.data = data;
@@ -154,6 +176,15 @@ export function computeDerived(s: Session, track?: TrackModel): void {
   };
   const speedKmh = own('speed');
   const tps = s.channels.get('tps')?.data;
+  /**
+   * The data the session ended up with for `name` after `setChannel` — which is
+   * the session's own copy when it owns the channel. Downstream channels
+   * (`total_g`, `phase`) are built from these rather than from the local
+   * recomputation, so a sim session's `total_g` is the hypotenuse of the
+   * `long_g` and `lat_g` the charts actually show.
+   */
+  const effective = (name: string, computed: Float32Array): Float32Array =>
+    sessionOwns(s, name) ? (s.channels.get(name)!.data ?? computed) : computed;
 
   const hasGps = !!lonRaw && !!latRaw;
   // Sanitised fixes: the DDA logger writes 0/0 before the GPS has a fix.
@@ -280,10 +311,12 @@ export function computeDerived(s: Session, track?: TrackModel): void {
   setChannel(s, 'radius', 'm', radius);
   setChannel(s, 'lat_g', 'g', latG);
 
+  const longGEff = effective('long_g', longG);
+  const latGEff = effective('lat_g', latG);
   const totalG = nanArray(n);
   for (let i = 0; i < n; i++) {
-    if (Number.isNaN(longG[i]) || Number.isNaN(latG[i])) continue;
-    totalG[i] = Math.hypot(longG[i], latG[i]);
+    if (Number.isNaN(longGEff[i]) || Number.isNaN(latGEff[i])) continue;
+    totalG[i] = Math.hypot(longGEff[i], latGEff[i]);
   }
   setChannel(s, 'total_g', 'g', totalG);
 
@@ -301,7 +334,7 @@ export function computeDerived(s: Session, track?: TrackModel): void {
   // --- phase: 0 coast, 1 brake, 2 throttle
   const phase = nanArray(n);
   for (let i = 0; i < n; i++) {
-    const lg = longG[i];
+    const lg = longGEff[i];
     const th = tps ? tps[i] : NaN;
     if (Number.isNaN(lg) && Number.isNaN(th)) continue;
     if (!Number.isNaN(lg) && lg < -0.15) phase[i] = 1;
@@ -369,7 +402,12 @@ export function fillMissingChannels(
   const n = s.t.length;
   const missing = (name: string) => {
     const c = s.channels.get(name);
-    return !c || !!c.note;
+    if (!c) return true;
+    // A channel the session owns is never a placeholder, whatever it carries in
+    // `note` — see `sessionOwns`. Without this, a sim session's solver `speed`
+    // and `lean` were replaced by the GPS estimates below on every refresh.
+    if (sessionOwns(s, name)) return false;
+    return !!c.note;
   };
   if (missing('speed') && d.hasGps && d.gpsSpeed.some(Number.isFinite)) {
     setEstimated(s, 'speed', 'km/h', d.gpsSpeed.slice(), 'GPS ground speed (no wheel speed in the file)');

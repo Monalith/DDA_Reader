@@ -36,7 +36,15 @@ export interface Envelope {
   longG: Float32Array;
   /** Lateral acceleration, g (signed, positive = turning left). */
   latG: Float32Array;
-  /** Lean angle, degrees (signed, positive = leaning left). */
+  /**
+   * Lean angle, degrees, signed in the APP's convention: left = NEGATIVE, the
+   * same as every recorded lap (`fillMissingChannels` in `core/derived.ts`
+   * estimates `lean` as −atan(v²κ/g)). So `tan(leanDeg) = −latG`: the two are
+   * opposite in sign by construction, because `latG` is positive for a left
+   * turn and `lean` is negative for one. Writing it the other way round — as
+   * this field used to — put the sim's `lean` trace upside down against every
+   * real lap in the chart stack.
+   */
   leanDeg: Float32Array;
   /** Combined tyre demand as a fraction of the friction circle; 1.0 is the limit. */
   gripUse: Float32Array;

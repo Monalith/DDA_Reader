@@ -39,8 +39,15 @@ function onTimeGridStep(src: ArrayLike<number>, srcT: Float64Array, t: Float64Ar
   return out;
 }
 
+/**
+ * NO `note` HERE. `note` means "estimated placeholder, replace me when the real
+ * thing turns up" — `fillMissingChannels` gates on it — so labelling the
+ * solver's own output with it made `refreshSession()` throw the solver's
+ * `speed` and `lean` away and substitute GPS estimates. The session carries
+ * `isSim: true` instead, and `derived.ts` reads that as ownership.
+ */
 function channel(name: string, unit: string, data: Float32Array, color?: string): Channel {
-  return { name, unit, kind: 'raw', data, proc: { ...DEFAULT_PROC }, color, note: 'simulated' };
+  return { name, unit, kind: 'raw', data, proc: { ...DEFAULT_PROC }, color };
 }
 
 export function toSession(

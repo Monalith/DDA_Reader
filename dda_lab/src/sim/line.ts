@@ -467,15 +467,3 @@ export function buildLine(
 
   return { points, curvature: polylineCurvature(points, CURV_SCALE_M), cumDistM, lengthM, offsetM: d };
 }
-
-/** Variance of |curvature| — low means the turn is spread out, high means squared off. */
-export function curvatureVariance(line: Line): number {
-  const k = line.curvature;
-  if (!k.length) return 0;
-  let mean = 0;
-  for (let i = 0; i < k.length; i++) mean += Math.abs(k[i]);
-  mean /= k.length;
-  let v = 0;
-  for (let i = 0; i < k.length; i++) v += (Math.abs(k[i]) - mean) ** 2;
-  return v / k.length;
-}

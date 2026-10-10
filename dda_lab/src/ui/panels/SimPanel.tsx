@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useLab } from '../../state/store';
 import { MACHINE_PRESETS } from '../../sim/presets';
+import { gripRiskMessage } from '../../sim/risk';
 import type { SimParams } from '../../sim/types';
 import { fmtLapTime } from '../../state/selectors';
 
@@ -95,25 +96,9 @@ export default function SimPanel() {
   const medianWidth = widths.length ? widths[widths.length >> 1] : NaN;
 
   // Warn when the parameter combination asks the tyre for more than it has.
-  // The solver's own passes hold grip use at or under 1, so the warning fires
-  // on the combinations that get there — a rider carrying the brakes to a lean
-  // angle the tyre cannot also support is the classic front-end tuck, and the
-  // lap time it produces is not one anybody rides twice.
-  const risk = useLab((s) => {
-    const sim = s.sessions.find((x) => x.isSim);
-    const g = sim?.channels.get('grip_use')?.data;
-    if (!g) return null;
-    let peak = 0;
-    let overCount = 0;
-    for (let i = 0; i < g.length; i++) {
-      if (!Number.isFinite(g[i])) continue;
-      peak = Math.max(peak, g[i]);
-      if (g[i] > 0.98) overCount++;
-    }
-    if (peak <= 0.98) return null;
-    const pct = Math.round((100 * overCount) / g.length);
-    return `Tyre demand peaks at ${(peak * 100).toFixed(0)} % of the friction circle, over ${pct} % of the lap. At these settings the front would let go on the brakes — lower the trail brake depth, the braking g, or the lean usage.`;
-  });
+  // The threshold and the wording live in `sim/risk.ts` so they can be measured
+  // against real solver output in a node test instead of being guessed here.
+  const risk = useLab((s) => gripRiskMessage(s.sessions.find((x) => x.isSim)?.channels.get('grip_use')?.data));
 
   const layer = (key: 'corridor' | 'idealLine', label: string) => (
     <label>

@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { clampParams, DEFAULT_SIM_PARAMS, MACHINE_PRESETS, presetById } from '../../src/sim/presets';
+import { riderChannels } from '../../src/sim/rider';
+import { solve } from '../../src/sim/solver';
+import { cornerLine } from './simSolver.test';
 
 describe('presets', () => {
   it('ships the three classes the research covers plus the owner bike and custom', () => {
@@ -60,6 +63,43 @@ describe('clampParams', () => {
     expect(c.rider.kappa).toBe(1);
     expect(c.rider.leanUsage).toBe(0);
     expect(c.rider.tcThreshold).toBe(1);
+  });
+
+  it('clamps the gear ratios themselves, not just the length of the list', () => {
+    // Deferred #3: the length was guarded but the elements were not, and each
+    // ratio is a DIVISOR in the rpm/gear model (`vAtLimit`), so a zero put
+    // Infinity into `gear` and a NaN put NaN into `rpm` — for the whole lap,
+    // from one bad slider value.
+    const c = clampParams({
+      ...DEFAULT_SIM_PARAMS,
+      machine: { ...DEFAULT_SIM_PARAMS.machine, gearRatios: [0, -3, Number.NaN, 2.5, 99] },
+    });
+    expect(c.machine.gearRatios).toHaveLength(5);
+    for (const r of c.machine.gearRatios) {
+      expect(Number.isFinite(r)).toBe(true);
+      expect(r).toBeGreaterThan(0);
+      expect(r).toBeLessThanOrEqual(6);
+    }
+    // the one legal value is untouched
+    expect(c.machine.gearRatios[3]).toBeCloseTo(2.5, 12);
+  });
+
+  it('keeps the rpm and gear channels finite when the gear ratios are nonsense', () => {
+    // The NaN has to be in FIRST gear to be observable: `riderChannels` picks a
+    // gear by comparing the speed against each ratio's rev-limited speed, and a
+    // zero or negative ratio further up the box only makes that comparison
+    // false, leaving the bike in a gear whose own ratio is sound. A NaN in
+    // first is used at every sample, so without the clamp the whole `rpm`
+    // channel comes out NaN.
+    const p = clampParams({
+      ...DEFAULT_SIM_PARAMS,
+      machine: { ...DEFAULT_SIM_PARAMS.machine, gearRatios: [Number.NaN, 2.5, 0, -3] },
+    });
+    const line = cornerLine();
+    const ch = riderChannels(line, solve(line, p), p);
+    expect(ch.rpm.every(Number.isFinite)).toBe(true);
+    expect(ch.rpm.every((r) => r > 0)).toBe(true);
+    expect(ch.gear.every((g) => Number.isFinite(g) && g >= 1 && g <= 4)).toBe(true);
   });
 
   it('keeps trail-brake depth and profile inside 0..1', () => {

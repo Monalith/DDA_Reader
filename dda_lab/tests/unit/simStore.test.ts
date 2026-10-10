@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { SIM_SESSION_ID, useLab } from '../../src/state/store';
 import { DEFAULT_SIM_PARAMS } from '../../src/sim/presets';
+import { simulate } from '../../src/sim';
+import { circuitTrack } from './circuitFixture';
 import type { LngLat, TrackModel } from '../../src/core/types';
 
 function circleTrack(radiusM = 300): TrackModel {
@@ -83,6 +85,84 @@ describe('sim store', () => {
     expect(useLab.getState().selectedLaps.some((l) => l.sessionId === SIM_SESSION_ID)).toBe(true);
     useLab.getState().setSimEnabled(false);
     expect(useLab.getState().selectedLaps.some((l) => l.sessionId === SIM_SESSION_ID)).toBe(false);
+  });
+
+  // C1. `toSession` used to label every channel `note: 'simulated'`, and two
+  // mechanisms in `refreshSession()` then destroyed the solver's output:
+  // `computeDerived` recomputed long_g/lat_g/curvature from `speed` and the
+  // Float32 GPS polyline and mutated the channels in place, and
+  // `fillMissingChannels` read `note` as "placeholder" and replaced `speed` and
+  // `lean` with GPS estimates. Measured on the Serres sim session: speed
+  // 117.7 -> 109.6 km/h, long_g -1.059 -> -0.085 g, lat_g -0.024 -> -18.63 g,
+  // lean +52.4 -> -54.9 deg (sign flipped).
+  //
+  // Nothing covered it: simToSession.test.ts tests `simulate()` directly and
+  // this file only asserted existence, lap time and selection. This is the
+  // store-level round trip — through refreshAll(), twice.
+  it('keeps the solver channels through refreshAll instead of refitting them from GPS', () => {
+    // The 3044 m synthetic circuit, not `circleTrack`: a constant-radius
+    // circle has long_g ~ 0 and one unchanging curvature everywhere, so the
+    // GPS refit would happen to agree with the solver and the test would pass
+    // either way. This fixture has a 600 m straight into a fast sweeper, a
+    // 25 m hairpin, corners both ways and 0.25 m of centerline scatter.
+    const { track, corridor } = circuitTrack(6, 2, 0.25);
+    useLab.setState({ corridor });
+    useLab.getState().setTrack(track);
+    useLab.getState().setSimEnabled(true);
+
+    // the same call the store makes, so the comparison is against the solver
+    const expected = simulate(track, corridor, DEFAULT_SIM_PARAMS, SIM_SESSION_ID, 'Virtual rider', '#c77dff');
+
+    const worstDiff = (name: string): number => {
+      const got = useLab.getState().sessions.find((s) => s.isSim)!.channels.get(name)!.data;
+      const want = expected.session.channels.get(name)!.data;
+      expect(got).toHaveLength(want.length);
+      let worst = 0;
+      for (let i = 0; i < want.length; i++) worst = Math.max(worst, Math.abs(got[i] - want[i]));
+      return worst;
+    };
+    const check = () => {
+      for (const name of ['speed', 'long_g', 'lat_g', 'lean']) {
+        // exact, to Float32 round-off: these channels must be carried through
+        // untouched, not merely be close to the refit
+        expect(worstDiff(name)).toBeLessThan(1e-6);
+      }
+      // and the channels are mutually consistent, which is what the overwrite
+      // destroyed: the app writes lean as -atan(lat_g) (left = negative), so
+      // tan(lean) + lat_g is zero up to resampling error everywhere. The
+      // residual is 1.1e-3, from `toSession` interpolating `lean` and `lat_g`
+      // onto the 10 Hz grid independently (interpolating an angle and
+      // interpolating its tangent do not commute). Before this fix the same
+      // measure was 385.
+      const sim = useLab.getState().sessions.find((s) => s.isSim)!;
+      const lean = sim.channels.get('lean')!.data;
+      const latG = sim.channels.get('lat_g')!.data;
+      let worst = 0;
+      let leaning = 0;
+      for (let i = 0; i < lean.length; i++) {
+        worst = Math.max(worst, Math.abs(Math.tan((lean[i] * Math.PI) / 180) + latG[i]));
+        if (Math.abs(lean[i]) > 10) leaning++;
+      }
+      expect(worst).toBeLessThan(0.01);
+      expect(leaning).toBeGreaterThan(0); // an all-zero lean channel cannot pass
+    };
+
+    check();
+    // a second refresh must be just as stable — the overwrite was idempotent in
+    // the wrong direction, so one pass was enough to lose the data for good
+    useLab.getState().setTrack(track);
+    check();
+
+    // the solver's speed really is a solver speed, not the GPS ground speed
+    // `fillMissingChannels` used to substitute
+    const sim = useLab.getState().sessions.find((s) => s.isSim)!;
+    const speed = sim.channels.get('speed')!.data;
+    const gps = sim.channels.get('gps_speed')!.data;
+    let maxSpeedGap = 0;
+    for (let i = 0; i < speed.length; i++) {
+      if (Number.isFinite(gps[i])) maxSpeedGap = Math.max(maxSpeedGap, Math.abs(speed[i] - gps[i]));
+    }
+    expect(maxSpeedGap).toBeGreaterThan(0);
   });
 
   it('does nothing when enabled with no track loaded', () => {

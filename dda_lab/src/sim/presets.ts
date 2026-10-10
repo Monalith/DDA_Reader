@@ -5,9 +5,13 @@
 //   low-powered machines must use the corner-speed style because they cannot
 //   recover exit speed; powerful ones square the corner off. So kappa tracks
 //   power-to-weight rather than being an independent taste.
-// - Cycle World "MotoGP Extreme Lean": with identical tyres a ZX-10R, GSX-R750
-//   and R6 reached the SAME lateral g, so mu is shared across the classes and
-//   only the lean limit (tyre construction) and the line differ.
+// - Cycle World "MotoGP Extreme Lean": on IDENTICAL tyres a ZX-10R, GSX-R750
+//   and R6 reached the SAME lateral g. That is a statement about the tyre, not
+//   about the bike: it says engine size does not buy grip. It does NOT say the
+//   classes below share a mu, because they are not on identical tyres — each
+//   preset carries the rubber its class actually races on, so mu rises with
+//   the tyre class (1.25 street race -> 1.35 Panigale-class) while the bikes
+//   themselves contribute nothing to it.
 // - Brembo MotoGP data (Le Mans, Austria, Aragon): peak deceleration ~1.5 g.
 //   Production machinery on road-legal race rubber sits well below that.
 // - Lean limits ~50-55 deg (street race tyre) to ~63 deg (MotoGP tyre) are
@@ -102,7 +106,12 @@ export function clampParams(p: SimParams): SimParams {
       wheelbaseM: clamp(p.machine.wheelbaseM, 1.0, 2.0),
       cgHeightM: clamp(p.machine.cgHeightM, 0.2, 1.0),
       finalDrive: clamp(p.machine.finalDrive, 1.5, 5),
-      gearRatios: p.machine.gearRatios.length ? p.machine.gearRatios : [...presetById('custom').machine.gearRatios],
+      // Each ratio is a divisor in the rpm/gear model, so a zero, a negative or
+      // a NaN would put Infinity or NaN into `rpm` and `gear`. Clamp the
+      // elements as well as the length.
+      gearRatios: p.machine.gearRatios.length
+        ? p.machine.gearRatios.map((r) => clamp(r, 0.5, 6))
+        : [...presetById('custom').machine.gearRatios],
     },
     tyre: {
       mu: clamp(p.tyre.mu, 0.3, 1.8),

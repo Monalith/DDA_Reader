@@ -10,15 +10,38 @@ import type { LngLat } from '../../src/core/types';
 
 const P = clampParams(DEFAULT_SIM_PARAMS);
 
+/** The OVERLAP clamp's own constant, repeated here so the test states the bound it checks. */
+const OVERLAP = 1.15;
+/** The throttle the clamp leaves available beside a given brake level. */
+const allowanceFor = (brakePct: number): number => Math.max(0, 100 - OVERLAP * brakePct);
+
 /**
- * A synthetic envelope that forces the condition the OVERLAP clamp exists
- * for: full brake demand, released slowly (as a deep trailBrakeProfile
- * does), followed immediately by full throttle demand. `cornerLine()`'s own
- * geometry never produces this — the envelope's longG decays fast enough on
- * its own there that the clamp happens not to bind — so this fixture drives
- * the two channels into genuine conflict on purpose.
+ * A synthetic envelope that actually drives the OVERLAP clamp into binding.
+ *
+ * T4: the previous version of this fixture (50 samples of −1.1 g at 100 Hz,
+ * then +0.9 g) was silently invalidated by the brake-EVENT layer added in
+ * 1981f1c. Inside an event the filtered throttle demand is forced to zero, and
+ * the event now runs ~0.39 s past the demand drop — by which time the brake has
+ * bled from 100 % to about 40 % and is still falling at the rate limit, while
+ * the throttle is only starting from zero. The two never met: the clamp never
+ * bound, and replacing `allowance` with a constant 100 left all 31 rider tests
+ * green.
+ *
+ * What makes them meet is a COARSE time grid. The braking event ends at the
+ * last sample whose filtered demand is still above `BRAKE_OFF_PCT`, so a
+ * 33 Hz grid ends it up to one sample early and leaves the brake correspondingly
+ * higher (47 % rather than 42 %); and one sample is then 350 * 0.03 = 10.5
+ * points of throttle, so the throttle catches the falling brake inside the
+ * overlap band instead of stepping past it. Measured at this exact
+ * configuration the clamp holds the throttle at 93.68 % against a brake of
+ * 5.50 % — `tps + 1.15 * brake` exactly 100.000.
+ *
+ * The brake demand is ONE sample of −1.8 g against a `brakingG` of 0.4, which
+ * saturates the brake demand at 100 % immediately (`riderChannels` seeds its
+ * running brake value from the raw demand at sample 0), then full throttle
+ * demand for the rest of the fixture.
  */
-function brakeToThrottleEnvelope(n = 200, dtS = 0.01): { line: Line; env: Envelope } {
+function brakeToThrottleEnvelope(dtS = 0.03, n = 200): { line: Line; env: Envelope } {
   const points: LngLat[] = Array.from({ length: n }, () => [23.518, 41.073] as LngLat);
   const line: Line = {
     points,
@@ -30,7 +53,7 @@ function brakeToThrottleEnvelope(n = 200, dtS = 0.01): { line: Line; env: Envelo
   const longG = new Float32Array(n);
   const tS = new Float64Array(n);
   for (let i = 0; i < n; i++) {
-    longG[i] = i < 50 ? -1.1 : 0.9; // full brake demand, then full throttle demand
+    longG[i] = i === 0 ? -1.8 : 0.9;
     tS[i] = i * dtS;
   }
   const env: Envelope = {
@@ -160,10 +183,15 @@ describe('riderChannels', () => {
   });
 
   it('does not drive and stop at the same time', () => {
+    // T4: this used to assert `tps + brake/1.15 < 101`, DIVIDING where the
+    // clamp multiplies. `tps <= 100 - 1.15*brake` bounds `tps + brake/1.15` at
+    // `100 - 0.28*brake`, which cannot reach 101 for any brake level at all,
+    // so the assertion was unfalsifiable. The clamp's actual guarantee is that
+    // the throttle never exceeds what the brake leaves.
     const line = cornerLine();
     const ch = riderChannels(line, solve(line, P), P);
     for (let i = 0; i < ch.tps.length; i++) {
-      expect(ch.tps[i] + ch.brake[i] / 1.15).toBeLessThan(101);
+      expect(ch.tps[i]).toBeLessThanOrEqual(allowanceFor(ch.brake[i]) + 1e-3);
     }
   });
 
@@ -183,19 +211,29 @@ describe('riderChannels', () => {
     expect(fallRate(smooth.brake)).toBeLessThan(fallRate(abrupt.brake));
   });
 
-  it('clamps throttle against a slowly-released brake so the two never sum past the overlap margin', () => {
-    // Deep, slow brake release (trailBrakeProfile 1) immediately followed by
-    // a full throttle demand: the brake is still well above zero when the
-    // throttle wants to be at 100, which is exactly the case the OVERLAP
-    // clamp exists for. cornerLine()'s own demand pattern never reaches this
-    // case because its throttle decays to zero faster than its brake rises,
-    // so this uses a synthetic envelope built to conflict on purpose.
+  it('clamps the throttle against a still-falling brake, and the clamp really binds', () => {
+    // The OVERLAP clamp, exercised. See `brakeToThrottleEnvelope` for why the
+    // previous fixture could not reach it. Two assertions: the invariant holds
+    // everywhere, AND there is at least one sample where the clamp is what is
+    // holding the throttle down — without the second, replacing `allowance`
+    // with a constant 100 would leave the first green, which is exactly what
+    // happened before.
     const { line, env } = brakeToThrottleEnvelope();
-    const pp = clampParams({ ...P, rider: { ...P.rider, trailBrakeProfile: 1, throttleDelayS: 0 } });
+    const pp = clampParams({
+      ...P,
+      rider: { ...P.rider, trailBrakeProfile: 1, throttleDelayS: 0, brakingG: 0.4 },
+    });
     const ch = riderChannels(line, env, pp);
-    let maxSum = 0;
-    for (let i = 0; i < ch.tps.length; i++) maxSum = Math.max(maxSum, ch.tps[i] + ch.brake[i]);
-    expect(maxSum).toBeLessThan(101);
+    let binding = 0;
+    for (let i = 0; i < ch.tps.length; i++) {
+      const allow = allowanceFor(ch.brake[i]);
+      expect(ch.tps[i]).toBeLessThanOrEqual(allow + 1e-3);
+      // the clamp's fingerprint: the brake is still on, the throttle is open,
+      // and the throttle is sitting exactly on the allowance rather than on
+      // its own rate limit
+      if (ch.brake[i] > 1 && ch.tps[i] > 1 && Math.abs(ch.tps[i] - allow) < 1e-3) binding++;
+    }
+    expect(binding).toBeGreaterThan(0);
   });
 
   it('holds some brake past turn-in when the rider trail brakes', () => {
@@ -343,9 +381,52 @@ describe('riderChannels', () => {
     }
     expect(overlapSamples).toBeGreaterThan(0);
     expect(overlapSamples).toBeLessThanOrEqual(10);
-    // and even during that overlap the two never sum past the trail-brake
-    // margin — this is the pre-existing OVERLAP clamp, still doing its job
-    expect(maxSum).toBeLessThan(101);
+    // and even during that overlap the throttle never exceeds what the brake
+    // leaves it — the OVERLAP clamp's actual bound, not the `< 101` on the raw
+    // sum, which the clamp makes unreachable on its own (see T4)
+    expect(maxSum).toBeLessThanOrEqual(100 + 1e-3);
+  });
+
+  it('drops a braking run too short for a rider to have made', () => {
+    // Deferred #7: MIN_EVENT_S (0.15 s) never fired on any fixture — setting it
+    // to 0 left all 113 sim tests passing, so an unverified filter sat in the
+    // brake path. Getting a run UNDER 0.15 s past the dead-band is delicate,
+    // because the hysteresis keeps a run alive until the filtered demand falls
+    // below BRAKE_OFF_PCT (4 %) and that release is itself a 0.12 s exponential:
+    // from the 12 % ON level down to 4 % takes 0.12*ln(3) = 0.133 s on its own.
+    // So the run has to cross ON by the smallest possible margin and stop
+    // immediately: two samples of 79 % demand at 100 Hz put the filtered demand
+    // at 12.13 %, just over ON, and the decay back under OFF then takes 0.133 s,
+    // for a total run of 0.14 s.
+    const dtS = 0.01;
+    const mkRun = (len: number, level: number) => {
+      const n = 200;
+      const points: LngLat[] = Array.from({ length: n }, () => [23.518, 41.073] as LngLat);
+      const longG = new Float32Array(n);
+      const tS = new Float64Array(n);
+      for (let i = 0; i < n; i++) {
+        longG[i] = i >= 1 && i <= len ? -level * P.rider.brakingG : 0;
+        tS[i] = i * dtS;
+      }
+      const line: Line = {
+        points, curvature: new Float32Array(n), cumDistM: new Float64Array(n),
+        lengthM: n, offsetM: new Float32Array(n),
+      };
+      const env: Envelope = {
+        v: new Float32Array(n).fill(40), longG, latG: new Float32Array(n),
+        leanDeg: new Float32Array(n), gripUse: new Float32Array(n), tS, lapTimeS: n * dtS,
+      };
+      return riderChannels(line, env, P);
+    };
+    // 0.14 s of run: under MIN_EVENT_S, so no lever movement at all
+    const tooShort = mkRun(2, 0.79);
+    expect(Math.max(...Array.from(tooShort.brake))).toBe(0);
+    // one more sample of the same demand carries the run to 0.17 s, past
+    // MIN_EVENT_S, and the brake is applied. The two fixtures differ by a
+    // single sample, so this pins the threshold rather than merely bracketing
+    // it: with MIN_EVENT_S at 0 the first case applies the brake too.
+    const longEnough = mkRun(3, 0.79);
+    expect(Math.max(...Array.from(longEnough.brake))).toBeGreaterThan(10);
   });
 
   it('ignores a trivial lift but answers a real deceleration', () => {

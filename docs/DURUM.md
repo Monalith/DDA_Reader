@@ -57,10 +57,39 @@ Her biri bağımsız review'dan geçti; bulgular ve kararlar ledger'da.
 - **Her ziyaretçi kendi centerline'ını kurar** (`buildCenterline`, `trackActions.ts:127`), bu yüzden
   koridor vertex-indeksli saklanamaz — coğrafi kenar polyline'ı olarak saklanıyor.
 
-## Açık işler
+## Sonuç
 
-- Task 7 (QSS çözücü), 8 (sürücü gecikme katmanı), 9 (sentetik Session), 10 (SimPanel + canlı
-  slider), 11 (gerçek BMW turuna karşı karakter kıyası).
-- Kullanıcı istekleri (2026-10-10 sabahı): gaz↔fren geçişinde faz farkı; trail-braking için iki
-  slider (viraja ne kadar derin + fren profili); risk/düşme uyarısı.
-- Deploy adımı (`DDA_CORRIDOR_TOKEN` + `./deploy_lab.sh`) henüz yapılmadı.
+**11 görevin hepsi bitti, 456 test geçiyor, `src/sim/` tipte temiz.**
+Bütünsel dal review'u (opus) → bir Critical + birkaç Important buldu → tek düzeltme dalgası →
+kapsamlı re-review bağımsız olarak doğruladı → **birleştirmeye hazır**.
+
+**Simüle tur 1:20,47 — gerçek BMW 1:19,81'e karşı %0,8.** Tur süresine göre ayarlanmadı.
+
+Kullanıcının üç gözlemi de ölçülerek kapandı: gaz/fren takırtısı (tur başına 72 → viraj başına 1),
+düzlükte tepe hız (195 → 275 km/h), hızlı virajlarda yavaşlık (apeks 116,6 → 173,9 km/h).
+
+**Kararların tam kaydı:** `docs/superpowers/notes/2026-10-10-virtual-rider-decisions.md`
+**Gerçek tura karşı kıyas:** `docs/superpowers/notes/2026-10-10-virtual-vs-real.md`
+
+## Bilinmesi gerekenler
+
+- **Referans tur gerçek telemetri DEĞİL.** `serres_BMW_1-19-81.json`'da `gaz_pct` ve `vites` 3186
+  satırın hepsinde null, GPS yok — lat/lon elle konmuş ±15-20 m'lik harita çizgisi, mesafe hızdan
+  integre edilmiş. Sadece `hiz_kmh` ve türevi gerçek. Yani `rider.ts`'teki dört hız sabiti ve
+  gerçek yarış çizgisi bu dosyadan ölçülemez; μ=1.33 bir varsayım ve 0,1 başına ~±2,5 s değerinde.
+  %0,8'lik uyum bu bandın içinde — göründüğünden daha az doğrulama.
+- Kalan viraj hataları (K3 −11, K4 −15, K16 +12 km/h) toplamda birbirini götürüyor. Kapatmak için
+  konumsal doğruluğu olan bir centerline lazım: uydudan çıkarılmış kenarlar veya GPS'li bir tur.
+
+## Açık işler (bloke etmeyen)
+
+- `leanUsage` 1000/Panigale preset'lerinde 0,915'in üstünde etkisiz (μ bağlıyor).
+- Çözücü ve sürücü katmanının TC modelleri birbirine uymuyor; `dtc` her apekste ~%99 raporluyor.
+- Gaz kanalı sabit 0,9 g'ye normalize — 250cc hiçbir zaman tam gaza ulaşmıyor.
+- `aLatMax` üç yerde inline, ikisi farklı taban kullanıyor (latent).
+- Risk uyarısı artık hiçbir parametre kombinasyonuyla tetiklenemiyor (fren μ ile sınırlandıktan
+  sonra `grip_use` 1'i aşamıyor). Üründe kalsın mı, yoksa kullanıcının gerçekten aşabileceği bir
+  kısıtla mı değiştirilsin — bu bir ürün kararı.
+- Deploy adımı (`DDA_CORRIDOR_TOKEN` + `./deploy_lab.sh`) **yapılmadı**; koridor deposu şu an
+  read-only.
+- İki dalın merge'i yapılmadı (paylaşılan ağaçta başka bir oturumun commit'lenmemiş işi var).

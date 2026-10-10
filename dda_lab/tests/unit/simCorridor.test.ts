@@ -204,6 +204,55 @@ function leakyRightTrack(
 }
 
 /**
+ * A pit lane: a straight `mainWidthM`-wide asphalt band, and — over
+ * `leakCount` consecutive vertices — a SECOND, parallel strip of real asphalt
+ * offset to the right (south) side, separated from the main band by
+ * `gapM` metres of grass. This is the Serres failure mode: the gap is narrow
+ * enough for `gapTolerance` to bridge, so the perpendicular search walks
+ * across it and records the far edge of the parallel strip as "the track
+ * edge" — real asphalt, in the right direction, at a plausible-looking
+ * distance, on a dead straight piece of track.
+ *
+ * Nothing already in the extractor catches this: it is straight (no
+ * curvature cap engages), the leak is far longer than the 15-wide median
+ * window (no raw-vs-filtered spike), and the resulting width lands just
+ * under the 18 m absolute ceiling.
+ *
+ * `leakCount` is deliberately a MAJORITY of the vertices, mirroring what the
+ * real circuit's numbers show: by the time you measure it, the leak has
+ * already contaminated the median, so a gate anchored on the median cannot
+ * see it. Only a lower-quantile (or equivalently robust) anchor can.
+ */
+function pitLaneTrack(
+  leakCount: number,
+  mainWidthM = 13,
+  gapM = 1.5,
+  stripWidthM = 2.5,
+): { track: TrackModel; mosaic: Mosaic; trace: LngLat[]; leakStart: number } {
+  const { mpp, n, width, height, originPx, centerRow, track, trace } = straightGeometry();
+  const rgb = new Uint8ClampedArray(width * height * 3);
+  const halfM = mainWidthM / 2;
+  const stripInnerM = halfM + gapM;
+  const stripOuterM = stripInnerM + stripWidthM;
+  const leakStart = Math.floor((n - leakCount) / 2);
+  const x0 = lngLatToPixel(track.centerline[leakStart], SAT_ZOOM)[0] - originPx[0];
+  const x1 = lngLatToPixel(track.centerline[leakStart + leakCount - 1], SAT_ZOOM)[0] - originPx[0];
+  for (let y = 0; y < height; y++) {
+    const dyM = (y - centerRow) * mpp; // negative = north (left), positive = south (right)
+    const onMain = dyM >= -halfM && dyM <= halfM;
+    const onStrip = dyM >= stripInnerM && dyM <= stripOuterM;
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 3;
+      const leaking = x >= x0 - 1 && x <= x1 + 1;
+      const asphalt = onMain || (leaking && onStrip);
+      if (asphalt) { rgb[i] = GREY[0]; rgb[i + 1] = GREY[1]; rgb[i + 2] = GREY[2]; }
+      else { rgb[i] = GREEN[0]; rgb[i + 1] = GREEN[1]; rgb[i + 2] = GREEN[2]; }
+    }
+  }
+  return { track, mosaic: { width, height, originPx, rgb, missing: [false] }, trace, leakStart };
+}
+
+/**
  * A hairpin: a straight leg of length `legM` at y=+r, a semicircular turn of
  * radius `r` around (legM, 0), continuing into a second straight leg at
  * y=-r heading back the way it came. Pavement is a normal `wM`-half-width
@@ -423,13 +472,61 @@ describe('extractCorridor', () => {
     expect(c.leftM[i]).toBeGreaterThan(2);
     expect(c.leftM[i]).toBeLessThan(5);
     // the capped search into the paved strip is bounded well short of the
-    // ~18-19 m an uncapped search finds (asserted directly in the mutation
-    // check below) — and, critically, is no longer rejected outright
-    expect(c.known[i]).toBe(true);
+    // ~18-19 m an uncapped search finds — this is the cap's own effect, and
+    // it is what this test pins
+    expect(c.rightM[i]).toBeGreaterThan(5);
     expect(c.rightM[i]).toBeLessThan(12);
+    // ...but the reading is still in the WRONG direction (as this fixture's
+    // own doc comment says), and 3.5 + 9.5 = 13 m on a circuit whose own
+    // typical width is 5 m is a 2.6x outlier, so the width-distribution gate
+    // now — correctly — refuses to call this vertex resolved. It used to
+    // assert `true` here, back when the curvature cap was the last gate;
+    // honest unknown is the better answer for a reading nobody claims is
+    // right.
+    expect(c.known[i]).toBe(false);
 
     // well away from the turn, on the ordinary straight, nothing changed
     expect(c.known[5]).toBe(true);
     expect(c.leftM[5] + c.rightM[5]).toBeCloseTo(5, 0);
+  });
+
+
+  it('rejects a parallel pit lane as an outlier against the circuit own width', () => {
+    // 13 m main band; over 70 of 120 vertices a parallel 2.5 m asphalt strip
+    // sits 1.5 m of grass away on the right. The search bridges the grass
+    // (1.5 m < gapTolerance's 2 m) and reports the strip's far edge, giving
+    // a ~17 m width on dead-straight track — under the 18 m ceiling, longer
+    // than the median window, zero curvature. Only a self-calibrating gate
+    // against this circuit's own typical width can see it.
+    const leakCount = 70;
+    const { track, mosaic, trace, leakStart } = pitLaneTrack(leakCount);
+    const c = extractCorridor(track, mosaic, trace);
+
+    const mid = leakStart + Math.floor(leakCount / 2);
+    const leakWidth = c.leftM[mid] + c.rightM[mid];
+
+    // The scenario must be a real one, not a strawman: assert the leak
+    // actually happens (the search reached past the grass to the strip) and
+    // that the existing absolute ceiling does NOT catch it.
+    expect(leakWidth).toBeGreaterThan(15);
+    expect(leakWidth).toBeLessThanOrEqual(18);
+    // ...and that the leak is the MAJORITY, so the median is contaminated —
+    // which is why the gate cannot be anchored on the median.
+    const allWidths = Array.from(c.leftM, (l, i) => l + c.rightM[i]).sort((a, b) => a - b);
+    expect(allWidths[allWidths.length >> 1]).toBeGreaterThan(15);
+
+    // Every vertex in the interior of the leak run (clear of the median
+    // filter's +-7 blend at each end) must come back unknown.
+    for (let i = leakStart + 8; i <= leakStart + leakCount - 9; i++) {
+      expect(c.known[i]).toBe(false);
+    }
+
+    // Ordinary 13 m vertices well clear of the leak stay known — the gate
+    // must not be a blanket rejection.
+    for (const i of [10, 110]) {
+      expect(c.known[i]).toBe(true);
+      expect(c.leftM[i] + c.rightM[i]).toBeGreaterThan(12);
+      expect(c.leftM[i] + c.rightM[i]).toBeLessThan(14);
+    }
   });
 });

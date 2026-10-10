@@ -194,6 +194,37 @@ const CURVATURE_CAP_FACTOR = 0.9;
 const CURVATURE_FLAT = 1e-6;
 
 /**
+ * Percentile of this circuit's own measured widths taken as its typical
+ * width. A LOW quantile, not the median: by the time the widths are
+ * measured the leaks are already in the sample, so the median is
+ * contaminated by them. Measured over the Serres lap, the provisionally
+ * known widths run p1 12.5 / p10 13.0 / p25 13.5 / p50 14.5 / p90 16.5 /
+ * p100 18.0 m — the p10 of 13.0 m is the figure that matches the circuit's
+ * published ~12 m width (plus the extractor's ~1 m of kerb generosity),
+ * while the median of 14.5 m is already 2.5 m above it.
+ */
+const WIDTH_BASE_PCT = 10;
+/**
+ * How much wider than the circuit's own base width a section may read before
+ * it is treated as a leak into pit lane, run-off or paddock.
+ *
+ * Derived from the Serres distribution, not chosen: the pit-lane run at
+ * indices 1425-1473 reads 16.5-18.0 m, so the limit must fall below 16.5 m
+ * to reject all of it; the honest body of the lap runs up to 16.0 m, so the
+ * limit must stay at or above 16.0 m to keep it. Against a p10 base of
+ * 13.0 m that leaves a factor in (16.0/13.0, 16.5/13.0) = (1.231, 1.269),
+ * and 1.25 is the centre of that interval. Widths are quantised to the
+ * 0.5 m search step, so the usable window really is one step wide and this
+ * sits in the middle of it.
+ */
+const WIDTH_OUTLIER_FACTOR = 1.25;
+/**
+ * Fewer provisionally-known vertices than this and the width distribution is
+ * too thin to calibrate a threshold from; the absolute ceiling stands alone.
+ */
+const WIDTH_STAT_MIN = 20;
+
+/**
  * Left/right asphalt edge at every centerline vertex.
  *
  * At each vertex the centerline tangent is taken over a +-10 m stencil (GPS
@@ -304,6 +335,30 @@ export function extractCorridor(
   const known = new Array<boolean>(n);
   for (let i = 0; i < n; i++) {
     known[i] = !anyMissing && passes(leftM[i], rightM[i]) && passes(leftRaw[i], rightRaw[i]);
+  }
+
+  // Second gate: reject widths that are outliers against THIS CIRCUIT'S OWN
+  // typical width. The per-vertex checks above are all local — curvature,
+  // search saturation, raw-vs-filtered spikes, an absolute ceiling — and a
+  // parallel pit lane or service road alongside a straight defeats every one
+  // of them: it is real asphalt, in the right direction, on track that
+  // genuinely is straight, over a run far longer than the median window, at
+  // a width that lands just under the ceiling. What gives it away is only
+  // visible across the whole lap: it is much wider than this circuit is.
+  //
+  // Self-calibrating rather than another constant, so a genuinely wide
+  // circuit keeps its wide sections while a ~12 m one like Serres rejects an
+  // 18 m reading as the outlier it is. `maxWidthM` stays as the backstop —
+  // the limit here can only ever be tighter, never looser.
+  const widths: number[] = [];
+  for (let i = 0; i < n; i++) if (known[i]) widths.push(leftM[i] + rightM[i]);
+  if (widths.length >= WIDTH_STAT_MIN) {
+    widths.sort((a, b) => a - b);
+    const baseWidthM = percentile(widths, WIDTH_BASE_PCT);
+    const limitM = Math.min(o.maxWidthM, WIDTH_OUTLIER_FACTOR * baseWidthM);
+    for (let i = 0; i < n; i++) {
+      if (known[i] && leftM[i] + rightM[i] > limitM) known[i] = false;
+    }
   }
 
   return { stepM: stepAlongM, leftM, rightM, known };

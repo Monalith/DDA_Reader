@@ -38,6 +38,8 @@ export interface Envelope {
   latG: Float32Array;
   /** Lean angle, degrees (signed, positive = leaning left). */
   leanDeg: Float32Array;
+  /** Combined tyre demand as a fraction of the friction circle; 1.0 is the limit. */
+  gripUse: Float32Array;
   /** Elapsed time at each sample, seconds from the start line. */
   tS: Float64Array;
   lapTimeS: number;
@@ -81,6 +83,15 @@ export interface RiderParams {
   leanUsage: number;
   /** Line style: 0 = C line (even curvature), 1 = V line (squared off). */
   kappa: number;
+  /**
+   * How much of the remaining longitudinal share the rider actually spends on
+   * braking as lean increases, 0..1. At 1 the brakes are carried to the apex
+   * (trail braking); at 0 braking fades out as soon as the bike is leaned,
+   * which is straight-line braking.
+   */
+  trailBrakeDepth: number;
+  /** Shape of the brake-release taper into the corner, 0..1. */
+  trailBrakeProfile: number;
 }
 
 export interface SimParams {

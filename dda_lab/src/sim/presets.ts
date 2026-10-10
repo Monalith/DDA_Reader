@@ -71,6 +71,9 @@ const DEFAULT_RIDER: RiderParams = {
   tcThreshold: 0.5,
   leanUsage: 0.95,
   kappa: presetById('1000').kappa,
+  // a competent road-racer: carries the brakes a fair way in, releases progressively
+  trailBrakeDepth: 0.6,
+  trailBrakeProfile: 0.6,
 };
 
 export const DEFAULT_SIM_PARAMS: SimParams = {
@@ -114,6 +117,8 @@ export function clampParams(p: SimParams): SimParams {
       tcThreshold: clamp(p.rider.tcThreshold, 0, 1),
       leanUsage: clamp(p.rider.leanUsage, 0, 1),
       kappa: clamp(p.rider.kappa, 0, 1),
+      trailBrakeDepth: clamp(p.rider.trailBrakeDepth, 0, 1),
+      trailBrakeProfile: clamp(p.rider.trailBrakeProfile, 0, 1),
     },
   };
 }

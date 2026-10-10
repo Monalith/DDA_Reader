@@ -61,4 +61,13 @@ describe('clampParams', () => {
     expect(c.rider.leanUsage).toBe(0);
     expect(c.rider.tcThreshold).toBe(1);
   });
+
+  it('keeps trail-brake depth and profile inside 0..1', () => {
+    const c = clampParams({
+      ...DEFAULT_SIM_PARAMS,
+      rider: { ...DEFAULT_SIM_PARAMS.rider, trailBrakeDepth: 5, trailBrakeProfile: -2 },
+    });
+    expect(c.rider.trailBrakeDepth).toBe(1);
+    expect(c.rider.trailBrakeProfile).toBe(0);
+  });
 });

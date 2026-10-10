@@ -28,6 +28,34 @@ export interface RiderChannels {
  */
 const OVERLAP = 1.15;
 
+/**
+ * First-order low-pass on the raw demand, seconds, applied BEFORE the rate
+ * limiter.
+ *
+ * The rate limiter is faithful: it reproduces every wiggle the envelope hands
+ * it, including the small local speed minima a quasi-steady-state solve leaves
+ * behind wherever the curvature is slightly uneven. A 2 km/h dip is a sign
+ * change in `longG`, and without this the limiter answers it with a real brake
+ * application. A rider does not: the hands follow the trend, not the sample.
+ * 0.12 s is the same order as the neuromuscular delay already modelled by
+ * `throttleDelayS`, and short enough that a real braking point moves by a
+ * couple of metres rather than tens.
+ */
+const DEMAND_TAU_S = 0.12;
+
+/**
+ * Brake dead-band, as a percentage of the rider's own peak braking: the brake
+ * goes on only once the smoothed demand passes `_ON`, and comes off again only
+ * once it falls below `_OFF`.
+ *
+ * The gap is what stops the channel chattering around a threshold, and the
+ * absolute level is what stops a trivial lift being reported as braking: at
+ * the default `brakingG` = 1.1, 12 % is 0.13 g, which a closed throttle
+ * supplies on its own. Nobody touches the lever for that.
+ */
+const BRAKE_ON_PCT = 12;
+const BRAKE_OFF_PCT = 4;
+
 /** Rolling radius of a 190/55-17 rear, metres. */
 const WHEEL_RADIUS_M = 0.31;
 const RPM_LIMIT = 14000;
@@ -93,12 +121,25 @@ export function riderChannels(line: Line, env: Envelope, params: SimParams): Rid
   let lagged = thrDemand[0];
   let thr = thrDemand[0];
   let brk = brkDemand[0];
+  // the low-passed demands, and the brake's latched on/off state
+  let fThr = thrDemand[0];
+  let fBrk = brkDemand[0];
+  let braking = brkDemand[0] >= BRAKE_ON_PCT;
   for (let i = 0; i < n; i++) {
     const dt = i === 0 ? 0.01 : Math.max(1e-3, env.tS[i] - env.tS[i - 1]);
     const alpha = 1 - Math.exp(-dt / tau);
-    lagged = thrDemand[i] < lagged ? thrDemand[i] : lagged + alpha * (thrDemand[i] - lagged);
 
-    brk = rateLimit(brk, brkDemand[i], dt, BRAKE_ON_PCT_S, BRAKE_OFF_PCT_S);
+    // low-pass, then dead-band with hysteresis: see DEMAND_TAU_S / BRAKE_ON_PCT
+    const aD = 1 - Math.exp(-dt / DEMAND_TAU_S);
+    fThr += aD * (thrDemand[i] - fThr);
+    fBrk += aD * (brkDemand[i] - fBrk);
+    if (!braking && fBrk >= BRAKE_ON_PCT) braking = true;
+    else if (braking && fBrk < BRAKE_OFF_PCT) braking = false;
+    const brkTarget = braking ? fBrk : 0;
+
+    lagged = fThr < lagged ? fThr : lagged + alpha * (fThr - lagged);
+
+    brk = rateLimit(brk, brkTarget, dt, BRAKE_ON_PCT_S, BRAKE_OFF_PCT_S);
     thr = rateLimit(thr, lagged, dt, THROTTLE_ON_PCT_S, THROTTLE_OFF_PCT_S);
 
     // Mutual exclusion. A rider can hold a trickle of throttle against the

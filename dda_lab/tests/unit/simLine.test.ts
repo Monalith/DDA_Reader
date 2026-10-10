@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { buildLine, curvatureVariance, effectiveHalfWidths } from '../../src/sim/line';
+import { buildLine, curvatureVariance, effectiveHalfWidths, smoothClosed, strideSchedule } from '../../src/sim/line';
 import { DEFAULT_SIM_PARAMS } from '../../src/sim/presets';
 import type { Corridor } from '../../src/sim/types';
 import type { LngLat, TrackModel } from '../../src/core/types';
+import { CIRCUIT_SEGMENTS, circuitTrack, segmentIndices } from './circuitFixture';
 
 /** A circular track of `radiusM`, sampled every ~2 m, with a uniform corridor. */
 function circleTrack(radiusM: number, halfWidthM: number): { track: TrackModel; corridor: Corridor } {
@@ -137,13 +138,25 @@ describe('buildLine', () => {
       for (let i = 0; i < l.curvature.length; i++) maxK = Math.max(maxK, Math.abs(l.curvature[i]));
       return 1 / maxK;
     };
+    // NON-INCREASING, not strictly decreasing. Now that the solve converges,
+    // this fixture's box saturates: at kappa = 0 and 0.25 the line is already
+    // hard against the outer edge (offset -8.10 m on an 8.1 m box) and at
+    // 0.75/1 hard against the inner one, so consecutive kappas can be
+    // bit-identical. The strict ordering is asserted end to end below, where
+    // it is a 100 m difference in line length rather than a rounding one.
     for (let i = 1; i < lines.length; i++) {
-      expect(lines[i].lengthM).toBeLessThan(lines[i - 1].lengthM);
-      expect(minRadius(lines[i])).toBeLessThan(minRadius(lines[i - 1]));
+      expect(lines[i].lengthM).toBeLessThanOrEqual(lines[i - 1].lengthM);
+      expect(minRadius(lines[i])).toBeLessThanOrEqual(minRadius(lines[i - 1]));
     }
     // and the span is a real one, not a rounding difference
     expect(lines[0].lengthM - lines[4].lengthM).toBeGreaterThan(5);
     expect(minRadius(lines[0]) - minRadius(lines[4])).toBeGreaterThan(1);
+    // the ends are on OPPOSITE sides of the centreline: minimum curvature runs
+    // outside a constant-radius bend (the biggest radius available), minimum
+    // distance runs inside it (the shortest path). A solver that ignored kappa
+    // would put both on the same side.
+    expect(minRadius(lines[0])).toBeGreaterThan(60);
+    expect(minRadius(lines[4])).toBeLessThan(60);
   });
 
   it('keeps the offsets inside the corridor with no rider deviation at all', () => {
@@ -320,5 +333,110 @@ describe('buildLine', () => {
     });
     const mid = Math.floor(line.curvature.length / 2);
     expect(Math.abs(line.curvature[mid])).toBeCloseTo(1 / 100, 3);
+  });
+
+  it('sets up for a corner from the middle of a long straight, not just at its ends', () => {
+    // The horizon test. The earlier single-grid solve stopped after 60
+    // Gauss-Seidel sweeps, which propagates information about 8 vertices (~16
+    // m), so the offsets were a boundary layer around each curvature feature
+    // and the line sat on the centreline everywhere else: measured 0.00 m in
+    // the middle of a 1060 m straight. A converged, lap-wide solve puts the
+    // line against the OUTSIDE edge there, because that is where a lap that is
+    // about to turn left has to be. Nothing else in the generator can produce
+    // a metres-scale offset 500 m from the nearest corner.
+    const { track, corridor, segIdx } = circuitTrack();
+    const line = buildLine(track, corridor, {
+      ...DEFAULT_SIM_PARAMS,
+      rider: { ...DEFAULT_SIM_PARAMS.rider, lineDeviationM: 0 },
+    });
+    for (const seg of [CIRCUIT_SEGMENTS.longStraight, CIRCUIT_SEGMENTS.backStraight]) {
+      const idx = segmentIndices(segIdx, seg);
+      const mid = idx[Math.floor(idx.length / 2)];
+      expect(Math.abs(line.offsetM[mid])).toBeGreaterThan(3);
+    }
+  });
+
+  it('widens a tight corner past the centreline radius instead of hugging its inside edge', () => {
+    // The `k0^2 * d` term in `relax`. Without it a converged solve believes a
+    // constant offset is free, so it pins the line to the inside edge of every
+    // corner: the 25 m hairpin then reads 18.9 m, which is exactly
+    // 25 - halfWidth, and the simulated lap is slower than the real one in
+    // every slow corner. With it, the minimum-curvature end of kappa trades
+    // the straights' width for radius and the hairpin reads over 30 m.
+    const { track, corridor, segIdx } = circuitTrack();
+    const line = buildLine(track, corridor, {
+      ...DEFAULT_SIM_PARAMS,
+      rider: { ...DEFAULT_SIM_PARAMS.rider, kappa: 0, lineDeviationM: 0 },
+    });
+    const idx = segmentIndices(segIdx, CIRCUIT_SEGMENTS.hairpin);
+    const radii = idx.map((i) => 1 / Math.abs(line.curvature[i])).sort((a, b) => a - b);
+    const median = radii[Math.floor(radii.length / 2)];
+    expect(median).toBeGreaterThan(28);
+    // and the tightest point of the hairpin is still not inside the edge
+    expect(radii[0]).toBeGreaterThan(26);
+  });
+});
+
+describe('smoothClosed', () => {
+  it('preserves the sum (so a lap still closes) and cuts white noise', () => {
+    const n = 400;
+    const clean = new Float32Array(n);
+    const noisy = new Float32Array(n);
+    let s = 7;
+    const rnd = (): number => {
+      s = (s * 1103515245 + 12345) & 0x7fffffff;
+      return s / 0x7fffffff - 0.5;
+    };
+    for (let i = 0; i < n; i++) {
+      clean[i] = i >= 100 && i < 200 ? 0.02 : 0;
+      noisy[i] = clean[i] + 0.01 * rnd();
+    }
+    const sum = (a: Float32Array): number => {
+      let t = 0;
+      for (let i = 0; i < a.length; i++) t += a[i];
+      return t;
+    };
+    const out = smoothClosed(noisy, 10);
+    expect(sum(out)).toBeCloseTo(sum(noisy), 4);
+    // residual noise where the signal is flat must fall, by roughly sqrt(21)
+    const rms = (a: Float32Array, from: number, to: number): number => {
+      let t = 0;
+      for (let i = from; i < to; i++) t += (a[i] - clean[i]) ** 2;
+      return Math.sqrt(t / (to - from));
+    };
+    expect(rms(out, 250, 390)).toBeLessThan(rms(noisy, 250, 390) / 3);
+  });
+
+  it('wraps around the start line rather than tapering to it', () => {
+    const n = 64;
+    const a = new Float32Array(n).fill(1);
+    const out = smoothClosed(a, 5);
+    for (let i = 0; i < n; i++) expect(out[i]).toBeCloseTo(1, 5);
+  });
+
+  it('returns the input untouched when the window is degenerate', () => {
+    const a = new Float32Array([1, 2, 3, 4]);
+    expect(smoothClosed(a, 0)).toBe(a);
+    expect(smoothClosed(new Float32Array([1, 2]), 5)).toHaveLength(2);
+  });
+});
+
+describe('strideSchedule', () => {
+  it('coarsens to about two dozen vertices and comes back to the full grid', () => {
+    const s = strideSchedule(1521);
+    expect(s[s.length - 1]).toBe(1);
+    expect(s[0]).toBeGreaterThan(1);
+    // strictly coarse-to-fine, halving
+    for (let i = 1; i < s.length; i++) expect(s[i]).toBe(s[i - 1] / 2);
+    // the coarsest level is small enough to be solved outright, and still has
+    // enough vertices to carry the lap's shape
+    const coarsest = Math.ceil(1521 / s[0]);
+    expect(coarsest).toBeGreaterThanOrEqual(24);
+    expect(coarsest).toBeLessThan(48);
+  });
+
+  it('does not coarsen a grid that is already small', () => {
+    expect(strideSchedule(20)).toEqual([1]);
+    expect(strideSchedule(3)).toEqual([1]);
   });
 });

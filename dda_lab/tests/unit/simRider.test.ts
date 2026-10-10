@@ -3,6 +3,8 @@ import { riderChannels } from '../../src/sim/rider';
 import { solve } from '../../src/sim/solver';
 import { clampParams, DEFAULT_SIM_PARAMS } from '../../src/sim/presets';
 import { cornerLine } from './simSolver.test';
+import { circuitTrack } from './circuitFixture';
+import { buildLine } from '../../src/sim/line';
 import type { Envelope, Line } from '../../src/sim/types';
 import type { LngLat } from '../../src/core/types';
 
@@ -41,6 +43,30 @@ function brakeToThrottleEnvelope(n = 200, dtS = 0.01): { line: Line; env: Envelo
     lapTimeS: n * dtS,
   };
   return { line, env };
+}
+
+/**
+ * A flat fixture whose only content is a `longG` trace given as a function of
+ * time, for exercising the demand filter and the dead-band in isolation.
+ */
+function constantDemand(n: number, dtS: number, gAt: (t: number) => number): { line: Line; env: Envelope } {
+  const points: LngLat[] = Array.from({ length: n }, () => [23.518, 41.073] as LngLat);
+  const longG = new Float32Array(n);
+  const tS = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    tS[i] = i * dtS;
+    longG[i] = gAt(tS[i]);
+  }
+  return {
+    line: {
+      points, curvature: new Float32Array(n), cumDistM: new Float64Array(n),
+      lengthM: n, offsetM: new Float32Array(n),
+    },
+    env: {
+      v: new Float32Array(n).fill(40), longG, latG: new Float32Array(n),
+      leanDeg: new Float32Array(n), gripUse: new Float32Array(n), tS, lapTimeS: n * dtS,
+    },
+  };
 }
 
 describe('riderChannels', () => {
@@ -184,5 +210,109 @@ describe('riderChannels', () => {
     // somewhere in the second half of the entry there is still brake pressure
     const entry = ch.brake.slice(Math.floor(apex * 0.75), apex);
     expect(Math.max(...Array.from(entry))).toBeGreaterThan(5);
+  });
+
+  it('brakes about once per corner over a lap, not once per curvature wiggle', () => {
+    // The chattering the user saw. A quasi-steady-state envelope on a
+    // centerline with any scatter in it has dozens of shallow local speed
+    // minima, every one of which is a sign change in longG; the rate limiter
+    // on its own answers each with a real brake application. On this fixture
+    // (four corners) the count was 72 before the low-pass and the dead-band
+    // and is 9 after.
+    const { track, corridor } = circuitTrack(6, 2, 0.25);
+    const line = buildLine(track, corridor, P);
+    const env = solve(line, P);
+    const ch = riderChannels(line, env, P);
+    const n = ch.brake.length;
+    let apps = 0;
+    for (let i = 0; i < n; i++) {
+      if (ch.brake[(i - 1 + n) % n] <= 0 && ch.brake[i] > 0) apps++;
+    }
+    // four corners, so a handful of applications; a one-per-wiggle channel
+    // runs to dozens, and zero would mean the channel is simply dead
+    expect(apps).toBeGreaterThanOrEqual(3);
+    expect(apps).toBeLessThanOrEqual(12);
+    // the applications that do happen are real ones, not 2 % flickers
+    let peak = 0;
+    for (let i = 0; i < n; i++) peak = Math.max(peak, ch.brake[i]);
+    expect(peak).toBeGreaterThan(50);
+  });
+
+  it('ignores a trivial lift but answers a real deceleration', () => {
+    // The dead-band, in isolation. 0.1 g of deceleration against a 1.1 g
+    // rider is 9 % of peak braking — a closed throttle supplies that, and a
+    // rider does not touch the lever for it. 1.0 g is a braking zone.
+    const mk = (g: number): { line: Line; env: Envelope } => {
+      const n = 400;
+      const dtS = 0.01;
+      const points: LngLat[] = Array.from({ length: n }, () => [23.518, 41.073] as LngLat);
+      const longG = new Float32Array(n);
+      const tS = new Float64Array(n);
+      for (let i = 0; i < n; i++) {
+        longG[i] = i < 100 ? 0 : g;
+        tS[i] = i * dtS;
+      }
+      return {
+        line: {
+          points, curvature: new Float32Array(n), cumDistM: new Float64Array(n),
+          lengthM: n, offsetM: new Float32Array(n),
+        },
+        env: {
+          v: new Float32Array(n).fill(40), longG, latG: new Float32Array(n),
+          leanDeg: new Float32Array(n), gripUse: new Float32Array(n), tS, lapTimeS: n * dtS,
+        },
+      };
+    };
+    const lift = mk(-0.1);
+    const liftCh = riderChannels(lift.line, lift.env, P);
+    expect(Math.max(...Array.from(liftCh.brake))).toBe(0);
+
+    const real = mk(-1.0);
+    const realCh = riderChannels(real.line, real.env, P);
+    expect(Math.max(...Array.from(realCh.brake))).toBeGreaterThan(60);
+  });
+
+  it('latches the brake through a slow demand oscillation across the ON level', () => {
+    // HYSTERESIS specifically, which the low-pass cannot stand in for: this
+    // demand swings slowly enough (0.5 Hz against the 0.12 s filter) that the
+    // filter passes ~90 % of it. It crosses the 12 % ON level once per cycle
+    // but never falls near the 4 % OFF level, so the brake must go on once and
+    // stay on. With a single threshold it would release and re-apply on every
+    // one of the ten cycles.
+    const n = 1000;
+    const dtS = 0.01;
+    const { line, env } = constantDemand(n, dtS, (t) => -(0.12 + 0.04 * Math.sin(Math.PI * t)));
+    const ch = riderChannels(line, env, P);
+    let apps = 0;
+    for (let i = 1; i < n; i++) if (ch.brake[i - 1] <= 0 && ch.brake[i] > 0) apps++;
+    expect(apps).toBeLessThanOrEqual(1);
+    // and it really is braking, so the count is not trivially low
+    expect(Math.max(...Array.from(ch.brake))).toBeGreaterThan(8);
+  });
+
+  it('low-passes a sample-to-sample demand instead of answering every sample', () => {
+    // THE LOW-PASS specifically, which hysteresis cannot stand in for: the
+    // demand alternates between nothing and 0.35 g on consecutive samples, so
+    // it goes below the 4 % OFF level every other sample and the dead-band
+    // releases however wide its gap is.
+    //
+    // What distinguishes the two is the RIPPLE, not the level: unfiltered, the
+    // rate limiter chases a target that reverses every sample and the channel
+    // saws by its full per-sample allowance (6.5 % at the default
+    // trailBrakeProfile); filtered, the target itself only ripples by about
+    // 1.3 % and the channel follows it smoothly.
+    const n = 600;
+    const dtS = 0.01;
+    const { line, env } = constantDemand(n, dtS, (t) => (Math.round(t / dtS) % 2 === 0 ? 0 : -0.35));
+    const ch = riderChannels(line, env, P);
+    let worstStep = 0;
+    let lowest = Infinity;
+    for (let i = Math.floor(n / 2); i < n; i++) {
+      worstStep = Math.max(worstStep, Math.abs(ch.brake[i] - ch.brake[i - 1]));
+      lowest = Math.min(lowest, ch.brake[i]);
+    }
+    expect(worstStep).toBeLessThan(2);
+    // and it is really braking, so a dead channel cannot pass
+    expect(lowest).toBeGreaterThan(8);
   });
 });

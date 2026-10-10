@@ -10,24 +10,33 @@
 // either side of it — what a powerful bike wants, because it can recover the
 // lost apex speed on the exit.
 //
-// kappa = 0.5 is the midpoint of the blend, which is pure smoothing: the two
-// objectives' targets are equal and opposite there and cancel exactly.
+// kappa weights the two objectives in ONE quadratic (see `relax`), which is
+// minimised by projected Gauss-Seidel on a coarse-to-fine grid hierarchy (see
+// `solveOffsets`). The corridor clamp bounds the line because the corridor is a
+// real constraint, not because the iteration would otherwise blow up: the
+// functional is positive definite at every kappa.
 //
-// Both ends are averaging (diffusive) operators, so the Gauss-Seidel sweep is
-// unconditionally stable at every kappa — the corridor clamp bounds the line
-// because the corridor is a real constraint, not because the iteration would
-// otherwise blow up. An earlier revision used an "anti-diffusion sharpening"
-// term for the V end, which diverged for kappa > ~0.70 and made the shipped
-// default (0.85) produce a saw-tooth rather than a line; see task-6-report.md.
+// Two earlier revisions are worth knowing about, both in task-6-report.md: one
+// used an "anti-diffusion sharpening" term for the V end which diverged above
+// kappa ~ 0.70, and one linearised the offset line's curvature as `k0 + d''`,
+// which makes a constant offset free and so has an unconstrained zero mode —
+// that is what forced the solve to be stopped after 60 sweeps, and stopping it
+// there is what limited the line's horizon to about 16 m.
 import { fromLocalM, toLocalM } from '../core/geo';
 import type { LngLat, TrackModel } from '../core/types';
 import { stencilK, stencilLeftNormal } from './corridor';
 import type { Corridor, Line, SimParams } from './types';
 
-/** Gauss-Seidel sweeps. 60 converges on a 2 m grid and stays well under 1 ms. */
+/** Gauss-Seidel smoothing sweeps per multigrid level. */
 const SWEEPS = 60;
 /** Relaxation factor; over-relaxation above 1 converges faster but oscillates. */
 const OMEGA = 0.6;
+/**
+ * Coarsen until the grid is no bigger than this. 24 vertices is small enough
+ * that a direct-ish relaxation (m^2 sweeps, ~600, over 24 points) is free, and
+ * that level is where the lap-wide shape of the line is actually decided.
+ */
+const COARSEST_N = 24;
 
 /** Deterministic smooth pseudo-noise in [-1,1]: the same params give the same line. */
 function wander(i: number, n: number, seed: number): number {
@@ -39,22 +48,116 @@ function wander(i: number, n: number, seed: number): number {
 }
 
 /**
+ * Projected Gauss-Seidel on the normal equations of
+ *
+ *   J(d) = (1 - kappa) * sum_i k_eff[i]^2  -  kappa * DIST_GAIN * sum_i k0[i]*d[i]
+ *   k_eff[i] = k0[i] + d''[i] + k0[i]^2 * d[i]
+ *
+ * clamped into `[lo, hi]` after every update, so the corridor is a hard
+ * constraint rather than a post-hoc trim.
+ *
+ * THE `k0^2 * d` TERM IS THE WHOLE POINT. The linearisation an earlier
+ * revision used stopped at `k_eff = k0 + d''`, under which a CONSTANT offset
+ * costs nothing — that is the unconstrained zero mode the previous report
+ * identified, and it is why the iteration had to be stopped after 60 sweeps.
+ * Pinning the mean offset (a gauge) removes the zero mode but leaves the
+ * operator saying that running 6 m inside a 25 m hairpin is free, so a
+ * converged solve then pins the line to the inside wall through every corner
+ * (measured: hairpin radius 25 m -> 18.9 m, i.e. exactly `r - halfWidth`).
+ * The `k0^2 * d` term is the missing physics: it says a given offset changes
+ * the radius in proportion to how tight the bend already is, which is what
+ * makes hugging the inside of a slow corner expensive and leaves the corridor
+ * free to be spent on the fast one. With it in, the functional has no null
+ * space and needs no gauge.
+ *
+ * The second difference term makes this a fourth-order (biharmonic-like)
+ * problem, so pointwise Gauss-Seidel alone would need O(m^4) sweeps. The
+ * coarse-to-fine schedule in `solveOffsets` is what makes it affordable.
+ *
+ * `distPull` is the minimum-distance gradient, already multiplied by kappa.
+ */
+function relax(
+  d: Float32Array,
+  m: number,
+  spacingM: number,
+  k0: Float32Array,
+  distPull: Float32Array,
+  wCurv: number,
+  lo: Float32Array,
+  hi: Float32Array,
+  sweeps: number,
+): void {
+  const h2 = spacingM * spacingM;
+  const invh2 = 1 / h2;
+  const K = new Float32Array(m);
+  const A = new Float32Array(m);
+  for (let i = 0; i < m; i++) A[i] = k0[i] * k0[i] - 2 * invh2;
+  const recompute = (): void => {
+    for (let i = 0; i < m; i++) {
+      K[i] = k0[i] + (d[(i - 1 + m) % m] - 2 * d[i] + d[(i + 1) % m]) * invh2 + k0[i] * k0[i] * d[i];
+    }
+  };
+  recompute();
+  for (let s = 0; s < sweeps; s++) {
+    for (let i = 0; i < m; i++) {
+      const im = (i - 1 + m) % m;
+      const ip = (i + 1) % m;
+      // half the gradient of J with respect to d[i]
+      const grad = wCurv * ((K[im] + K[ip]) * invh2 + K[i] * A[i]) - distPull[i];
+      // the diagonal of the normal matrix: d(grad)/d(d[i])
+      const diag = wCurv * (2 * invh2 * invh2 + A[i] * A[i]) + 1e-9;
+      const want = d[i] - OMEGA * (grad / diag);
+      const next = Math.min(hi[i], Math.max(lo[i], want));
+      const delta = next - d[i];
+      if (delta !== 0) {
+        d[i] = next;
+        K[im] += delta * invh2;
+        K[ip] += delta * invh2;
+        K[i] += delta * A[i];
+      }
+    }
+  }
+}
+
+/**
+ * Decimation strides, coarsest first, ending at 1 (the full grid). Each level
+ * halves the vertex count until the grid is at most `COARSEST_N` across.
+ */
+export function strideSchedule(n: number): number[] {
+  const out = [1];
+  let s = 1;
+  while (Math.ceil(n / (s * 2)) >= COARSEST_N) {
+    s *= 2;
+    out.push(s);
+  }
+  return out.reverse();
+}
+
+/**
+ * How hard the minimum-distance objective pulls at kappa = 1, relative to the
+ * curvature objective. Minimum distance is `sum(-k0*d)` whose gradient is a
+ * constant pull toward the inside of each bend; the gain converts it into the
+ * same units as the curvature gradient (1/m^3). Tuned so that at kappa = 1 the
+ * line reaches the inside edge through a corner — which is what minimum
+ * distance means — without the intermediate kappas being bang-bang.
+ */
+const DIST_GAIN = 2e-4;
+
+/**
  * Lateral offsets that blend the minimum-curvature and minimum-distance
  * objectives by `kappa`, subject to the corridor as a hard box constraint.
  *
- * KNOWN LIMITATION: at `SWEEPS` = 60 this is deliberately a SHORT-RANGE
- * operator. Gauss-Seidel at OMEGA = 0.6 diffuses roughly sqrt(SWEEPS) ~ 8
- * vertices (~16 m at a 2 m spacing), so the offsets form a boundary layer
- * around each curvature feature rather than a lap-wide optimum: a corner gets
- * its wide or tight line, but the line returns to the centre along a long
- * straight instead of setting up for the next corner from a hundred metres
- * out. That is intentional for now. Minimising curvature around a CLOSED loop
- * has no bounded solution (you cannot straighten a circle), so the uniform
- * offset is an unconstrained zero mode of this operator: raising SWEEPS to
- * 1000 does not converge on a better line, it drives the whole lap onto one
- * wall of the corridor (measured: max|offset| saturates at the 6.1 m box on a
- * 977 m oval). Fixing that properly needs the mean offset pinned — a gauge
- * condition on the zero mode — not more iterations.
+ * `relax` explains the functional. What makes this a LAP-WIDE solve rather
+ * than the ~16 m boundary layer an earlier revision produced is the
+ * coarse-to-fine (cascadic multigrid) schedule: a fourth-order problem solved
+ * by pointwise Gauss-Seidel propagates information about one vertex per sweep,
+ * so a lap-wide answer on a 1500-vertex grid is unreachable at any sweep count
+ * that keeps the UI live. Instead the problem is restricted onto a
+ * ~24-vertex grid and solved there — where "lap-wide" is 24 points away — and
+ * the solution is interpolated down level by level with `SWEEPS` smoothing
+ * sweeps at each. The cost is about twice one full-grid sweep block, and it is
+ * what lets the line set up for a corner from hundreds of metres out instead
+ * of arriving at it on the centreline.
  */
 function solveOffsets(
   n: number,
@@ -64,44 +167,117 @@ function solveOffsets(
   hiM: Float32Array,
   kappa: number,
 ): Float32Array {
-  const d = new Float32Array(n);
-  // Curvature of the offset line, to first order:  k_eff = k0 - d'' (with d
-  // measured positive to the left of travel). Minimising sum(k_eff^2) gives
-  // the stationarity condition  d'' = k0, i.e. in discrete form
-  //
-  //   d[i] = (d[i-1] + d[i+1])/2 + k0[i]*h^2/2        (minimum curvature)
-  //
-  // which is a smoothing of d, so it always spreads a bend over the widest
-  // arc the corridor will allow — the C line.
-  //
-  // Minimum distance is the SAME operator with the curvature target's sign
-  // flipped: where minimum curvature pushes the line away from the inside of
-  // the bend to straighten it out, the shortest path pulls it towards the
-  // inside, which is what concentrates the direction change — the V line.
-  //
-  // One blend parameter covers both, and kappa = 0.5 (pure smoothing) sits
-  // exactly halfway. The checkerboard (highest-frequency) gain of the sweep
-  // is |1 - 2*OMEGA| = 0.2 at every kappa, so this cannot diverge.
-  const h2 = stepM * stepM;
-  // SIGN: d is positive to the LEFT of travel, so for a left-hand bend
-  // (k0 > 0) a positive offset moves the line to the INSIDE. Minimum distance
-  // is the inside line, so the forcing must be positive at kappa = 1 and
-  // negative at kappa = 0 — measured on a counterclockwise 60 m circle with a
-  // 6 m corridor, this sign gives r_min 60.53 m / 387.4 m of line at kappa = 0
-  // against 57.07 m / 365.7 m at kappa = 1, and the opposite sign reverses
-  // both orderings exactly.
-  const curvSign = 2 * kappa - 1;
-  for (let sweep = 0; sweep < SWEEPS; sweep++) {
-    for (let i = 0; i < n; i++) {
-      const p = d[(i - 1 + n) % n];
-      const q = d[(i + 1) % n];
-      const target = (p + q) / 2 + (curvSign * (baseCurv[i] * h2)) / 2;
-      const next = d[i] + OMEGA * (target - d[i]);
-      d[i] = Math.min(hiM[i], Math.max(loM[i], next));
+  const wCurv = Math.max(1e-3, 1 - kappa);
+  const pull = new Float32Array(n);
+  // d is positive to the LEFT of travel, so for a left-hand bend (k0 > 0) a
+  // positive offset is the INSIDE: the shortest path's gradient is +k0.
+  for (let i = 0; i < n; i++) pull[i] = kappa * DIST_GAIN * baseCurv[i];
+
+  let d = new Float32Array(0);
+  let prevStride = 0;
+  for (const stride of strideSchedule(n)) {
+    const m = Math.ceil(n / stride);
+    // spacing of THIS level, so the h^2 in the stencil scales with the grid
+    const spacingM = (stepM * n) / m;
+    const k0c = new Float32Array(m);
+    const pullc = new Float32Array(m);
+    const lo = new Float32Array(m);
+    const hi = new Float32Array(m);
+    for (let j = 0; j < m; j++) {
+      const from = j * stride;
+      const to = Math.min(n, from + stride);
+      let kAcc = 0;
+      let pAcc = 0;
+      let l = loM[from];
+      let h = hiM[from];
+      for (let t = from; t < to; t++) {
+        kAcc += baseCurv[t];
+        pAcc += pull[t];
+        // the tightest box in the group, so a coarse level can never commit to
+        // an offset that a pinch point inside it does not allow
+        l = Math.max(l, loM[t]);
+        h = Math.min(h, hiM[t]);
+      }
+      const cnt = Math.max(1, to - from);
+      k0c[j] = kAcc / cnt;
+      pullc[j] = pAcc / cnt;
+      lo[j] = Math.min(0, l);
+      hi[j] = Math.max(0, h);
     }
+    const dc = new Float32Array(m);
+    if (prevStride > 0) {
+      // prolongation: linear interpolation of the coarser solution, wrapping
+      const pm = d.length;
+      for (let j = 0; j < m; j++) {
+        const t = (j * stride) / prevStride;
+        const a = Math.floor(t) % pm;
+        const w = t - Math.floor(t);
+        dc[j] = d[a] * (1 - w) + d[(a + 1) % pm] * w;
+      }
+    }
+    // The coarsest level has no better initial guess than zero, so it is the
+    // one level that has to be solved rather than smoothed: m^2 sweeps is what
+    // periodic Gauss-Seidel needs for the longest mode, and over ~24 points
+    // that is a few hundred updates.
+    relax(dc, m, spacingM, k0c, pullc, wCurv, lo, hi, prevStride === 0 ? m * m : SWEEPS);
+    d = dc;
+    prevStride = stride;
   }
   return d;
 }
+
+/**
+ * Centred moving average of a closed array over `halfWin` samples either side,
+ * in O(n) via a prefix sum.
+ *
+ * Applied to curvature this is conservative in the one way that matters: a
+ * moving average preserves the SUM, so a corner keeps its total direction
+ * change and the lap still closes. It costs the sharpness of a corner's entry
+ * and exit over the window length, and nothing else.
+ */
+export function smoothClosed(a: Float32Array, halfWin: number): Float32Array {
+  const n = a.length;
+  const w = Math.min(Math.floor((n - 1) / 2), Math.max(0, Math.round(halfWin)));
+  if (w < 1 || n < 3) return a;
+  const pre = new Float64Array(n + 1);
+  for (let i = 0; i < n; i++) pre[i + 1] = pre[i] + a[i];
+  const total = pre[n];
+  const out = new Float32Array(n);
+  const span = 2 * w + 1;
+  for (let i = 0; i < n; i++) {
+    const lo = i - w;
+    const hi = i + w + 1; // exclusive
+    let sum: number;
+    if (lo < 0) sum = pre[hi] + (total - pre[n + lo]);
+    else if (hi > n) sum = total - pre[lo] + pre[hi - n];
+    else sum = pre[hi] - pre[lo];
+    out[i] = sum / span;
+  }
+  return out;
+}
+
+/**
+ * How far either side of a vertex the raw three-point curvature is averaged,
+ * metres.
+ *
+ * The three-point circumradius over a +/-10 m stencil turns a lateral position
+ * error of e into a curvature error of roughly 2e/stencil^2: at the 0.25 m
+ * scatter a real extracted centerline carries, that is ~5e-3 1/m, i.e. an
+ * apparent 200 m radius IN THE MIDDLE OF A STRAIGHT. The lateral limit
+ * `v <= sqrt(a_lat*r)` then caps a 300 km/h straight at ~190 and the backward
+ * and forward passes cannot recover, which is both the "straight is 50 km/h
+ * slow" symptom and the origin of the throttle/brake chattering: a noisy `v`
+ * is a `longG` that changes sign every few metres.
+ *
+ * 10 m either side (a ~20 m window, 0.36 s at 200 km/h) cuts white curvature
+ * noise by about sqrt(10) while costing a corner only the sharpness of its
+ * first and last 10 m. Measured on the synthetic circuit with 0.25 m of
+ * centerline scatter: straight-line top speed 195 -> 290 km/h, the 25 m
+ * hairpin still reads 25-31 m, and the 250 m sweeper's median radius is
+ * unchanged. Smoothing further starts to inflate the hairpin's radius, which
+ * would be reporting a lap the bike cannot ride.
+ */
+const CURV_SMOOTH_M = 10;
 
 /** Signed curvature of a closed polyline in local metres, 1/m, + = left. */
 function polylineCurvature(points: LngLat[], stencilM: number): Float32Array {
@@ -139,7 +315,7 @@ function polylineCurvature(points: LngLat[], stencilM: number): Float32Array {
     const denom = la * lb * lc;
     out[i] = denom > 1e-9 ? (2 * cross) / denom : 0;
   }
-  return out;
+  return smoothClosed(out, CURV_SMOOTH_M / Math.max(0.1, ds));
 }
 
 /**

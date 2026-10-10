@@ -81,6 +81,30 @@ const BRAKE_OFF_PCT = 4;
 const MERGE_GAP_S = 0.8;
 
 /**
+ * Two braking runs are also the same application — whatever the gap between
+ * them — when the bike never left the corner in between: the rider did not get
+ * back on the throttle (`_THR_PCT`) and the tyre never came off its lateral
+ * limit (`_LAT_USE`). That is one squeeze riding over a shallow local speed
+ * minimum, not a second grab of the lever.
+ *
+ * `MERGE_GAP_S` cannot cover this case, because it is a TIME gap and the gap
+ * inside a long corner can be longer than the gap between two corners.
+ * Measured on the synthetic circuit (`circuitFixture.ts`, `jitterM = 0.25`),
+ * which holds its 250 m sweeper at the lateral limit for 390 m:
+ *
+ *   gap INSIDE one corner:   1.3-1.8 s, peak throttle 8-10 %, lateral 1.19-1.33 g
+ *   gap BETWEEN two corners: 1.2-14.8 s, peak throttle 50-100 %, lateral down to 0.00-0.49 g
+ *
+ * The time gaps overlap completely; the throttle and the lateral load separate
+ * cleanly, with about a factor of two of margin either side of both thresholds.
+ * Requiring BOTH conditions is what keeps the 50 %-throttle / 0.49 g case —
+ * the sweeper exit into the next corner, genuinely a second application —
+ * from being swallowed.
+ */
+const SAME_CORNER_THR_PCT = 25;
+const SAME_CORNER_LAT_USE = 0.7;
+
+/**
  * A run shorter than this is a momentary dip answered by the rate limiter
  * and the dead-band already, not a deliberate application a rider would
  * notice. Chosen as roughly the time a rider's hand takes to engage the
@@ -195,11 +219,26 @@ export function riderChannels(line: Line, env: Envelope, params: SimParams): Rid
     }
   }
 
-  // 2. merge runs separated by less than MERGE_GAP_S of time
+  // 2. merge runs separated by less than MERGE_GAP_S of time, or by a gap the
+  //    bike spent still in the same corner (see SAME_CORNER_*)
+  const aLatMaxG = Math.max(
+    0.1,
+    Math.min(p.tyre.mu * p.tyre.gripScale, Math.tan((p.tyre.maxLeanDeg * p.rider.leanUsage * Math.PI) / 180)),
+  );
+  /** True when nothing between `a` and `b` (exclusive) looks like leaving the corner. */
+  const sameCorner = (a: number, b: number): boolean => {
+    let any = false;
+    for (let i = a + 1; i < b; i++) {
+      any = true;
+      if (fThr[i] >= SAME_CORNER_THR_PCT) return false;
+      if (Math.abs(env.latG[i]) / aLatMaxG <= SAME_CORNER_LAT_USE) return false;
+    }
+    return any;
+  };
   const mergedRuns: Array<[number, number]> = [];
   for (const run of rawRuns) {
     const last = mergedRuns[mergedRuns.length - 1];
-    if (last && env.tS[run[0]] - env.tS[last[1]] < MERGE_GAP_S) last[1] = run[1];
+    if (last && (env.tS[run[0]] - env.tS[last[1]] < MERGE_GAP_S || sameCorner(last[1], run[0]))) last[1] = run[1];
     else mergedRuns.push([run[0], run[1]]);
   }
 

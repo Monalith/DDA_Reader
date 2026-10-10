@@ -35,6 +35,48 @@ function circleTrack(radiusM: number, halfWidthM: number): { track: TrackModel; 
 }
 
 /**
+ * A circle of `radiusM` with a sinusoidal radial wobble of `ampM` amplitude and
+ * roughly `waveM` wavelength — a stand-in for the long-wavelength positional
+ * error a centerline traced onto a map carries. The cycle count is rounded so
+ * the wobble closes with the loop; an unclosed wobble would put a curvature
+ * step at the start line instead of the smooth error this is modelling.
+ */
+function wobbledCircle(
+  radiusM: number,
+  ampM: number,
+  waveM: number,
+  halfWidthM: number,
+): { track: TrackModel; corridor: Corridor } {
+  const lat0 = 41.073;
+  const lng0 = 23.518;
+  const mPerDegLat = 111320;
+  const mPerDegLng = 111320 * Math.cos((lat0 * Math.PI) / 180);
+  const n = Math.max(64, Math.round((2 * Math.PI * radiusM) / 2));
+  const step = (2 * Math.PI * radiusM) / n;
+  const cycles = Math.max(1, Math.round((2 * Math.PI * radiusM) / waveM));
+  const centerline: LngLat[] = [];
+  for (let i = 0; i < n; i++) {
+    const a = (2 * Math.PI * i) / n;
+    const r = radiusM + ampM * Math.sin(cycles * a);
+    centerline.push([lng0 + (r * Math.cos(a)) / mPerDegLng, lat0 + (r * Math.sin(a)) / mPerDegLat]);
+  }
+  const cum = new Float64Array(n);
+  for (let i = 1; i < n; i++) cum[i] = cum[i - 1] + step;
+  const track: TrackModel = {
+    id: 'w', name: 'wobbled circle', center: [lng0, lat0], centerline, cumDistM: cum, lengthM: step * n,
+    startFinish: { id: 'sf', name: 'SF', type: 'sf', at: centerline[0], bearingDeg: 0, halfWidthM: 15 },
+    sectors: [], turns: [],
+  };
+  const corridor: Corridor = {
+    stepM: step,
+    leftM: new Float32Array(n).fill(halfWidthM),
+    rightM: new Float32Array(n).fill(halfWidthM),
+    known: new Array(n).fill(true),
+  };
+  return { track, corridor };
+}
+
+/**
  * An oval (`straightM` straights, `radiusM` semicircular ends) whose first few
  * vertices are packed `packedDsM` apart and the rest `dsM` apart — a stand-in
  * for the way a real centerline's sampling density varies around a lap.
@@ -323,6 +365,45 @@ describe('buildLine', () => {
     for (let i = 0; i < 10; i++) concentrated[i] = 0.1;
     expect(curvatureVariance(mk(concentrated))).toBeGreaterThan(0);
     expect(curvatureVariance(mk(new Float32Array(0)))).toBe(0);
+  });
+
+  it('reads a fast corner through a long-wavelength centerline wobble, and still reads a hairpin', () => {
+    // CURV_SCALE_M, pinned from both sides.
+    //
+    // A hand-placed or map-derived centerline wanders. Its error is NOT
+    // per-vertex scatter — the real Serres centerline's local (2 m baseline)
+    // noise measures 0.07 m while its residual against a 40 m mean is 2.6 m
+    // rms — so it is long-wavelength, and a short curvature stencil reports
+    // the wobble as a corner. A 1 m / 50 m wobble has curvature
+    // 1*(2*pi/50)^2 = 0.016 1/m, FOUR TIMES the 0.004 of the 250 m bend it is
+    // riding on, which is why the virtual rider was 6.5 % slow against the
+    // real lap and slowest of all through the fast corners: see
+    // docs/superpowers/notes/2026-10-10-virtual-vs-real.md.
+    //
+    // Measured on this fixture: the 250 m bend reads a minimum radius of
+    // 110 m at a 10 m scale, 178 m at 20 m, 213 m at 30 m. The threshold
+    // below is between the 10 m and 20 m readings, so a return to a 10 m
+    // scale fails it.
+    const P = { ...DEFAULT_SIM_PARAMS, rider: { ...DEFAULT_SIM_PARAMS.rider, lineDeviationM: 0 } };
+    const { track, corridor } = wobbledCircle(250, 1, 50, 0.01);
+    const line = buildLine(track, corridor, P);
+    let minR = Infinity;
+    for (let i = 0; i < line.curvature.length; i++) {
+      const k = Math.abs(line.curvature[i]);
+      if (k > 1e-6) minR = Math.min(minR, 1 / k);
+    }
+    expect(minR).toBeGreaterThan(150);
+
+    // The other side: smoothing cannot be raised freely, because past the
+    // angular extent of a tight corner the window reaches onto the straights
+    // either side and the corner's radius inflates — which would report a lap
+    // the bike cannot ride. The 25 m hairpin reads 25.0 m at a 20 m scale,
+    // 30.2 m at 45 m and 38.0 m at 60 m, so the bound below fails at 45 m.
+    const { track: ct, corridor: cc, segIdx } = circuitTrack(6, 2, 0.25);
+    const cl = buildLine(ct, cc, P);
+    const hair = segmentIndices(segIdx, CIRCUIT_SEGMENTS.hairpin).map((i) => 1 / Math.abs(cl.curvature[i]));
+    expect(Math.min(...hair)).toBeLessThan(28);
+    expect(Math.min(...hair)).toBeGreaterThan(20);
   });
 
   it('gives a constant-radius circle a curvature close to 1/r', () => {

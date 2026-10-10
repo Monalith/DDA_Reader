@@ -257,27 +257,47 @@ export function smoothClosed(a: Float32Array, halfWin: number): Float32Array {
 }
 
 /**
- * How far either side of a vertex the raw three-point curvature is averaged,
- * metres.
+ * The length scale curvature is measured over, metres: both the half-width of
+ * the three-point stencil and the half-window of the moving average applied
+ * to its output.
  *
- * The three-point circumradius over a +/-10 m stencil turns a lateral position
- * error of e into a curvature error of roughly 2e/stencil^2: at the 0.25 m
- * scatter a real extracted centerline carries, that is ~5e-3 1/m, i.e. an
- * apparent 200 m radius IN THE MIDDLE OF A STRAIGHT. The lateral limit
- * `v <= sqrt(a_lat*r)` then caps a 300 km/h straight at ~190 and the backward
- * and forward passes cannot recover, which is both the "straight is 50 km/h
- * slow" symptom and the origin of the throttle/brake chattering: a noisy `v`
- * is a `longG` that changes sign every few metres.
+ * The three-point circumradius over a +/-L stencil turns a lateral position
+ * error of e into a curvature error of roughly 2e/L^2, so a centerline that
+ * wanders by e reports a spurious radius of L^2/(2e) everywhere — an apparent
+ * 200 m radius IN THE MIDDLE OF A STRAIGHT at L = 10 m and e = 0.25 m. The
+ * lateral limit `v <= sqrt(a_lat*r)` then caps the straight, and the backward
+ * and forward passes cannot recover: that is both the "straight is 50 km/h
+ * slow" symptom and the origin of the throttle/brake chattering, since a noisy
+ * `v` is a `longG` that changes sign every few metres.
  *
- * 10 m either side (a ~20 m window, 0.36 s at 200 km/h) cuts white curvature
- * noise by about sqrt(10) while costing a corner only the sharpness of its
- * first and last 10 m. Measured on the synthetic circuit with 0.25 m of
- * centerline scatter: straight-line top speed 195 -> 290 km/h, the 25 m
- * hairpin still reads 25-31 m, and the 250 m sweeper's median radius is
- * unchanged. Smoothing further starts to inflate the hairpin's radius, which
- * would be reporting a lap the bike cannot ride.
+ * 20 m is MEASURED against the real BMW Serres lap rather than estimated — see
+ * docs/superpowers/notes/2026-10-10-virtual-vs-real.md. The two bounds:
+ *
+ *   - LOWER. The real lap's speed is measured; its geometry is not. Taking the
+ *     measured speed against the curvature this function reports gives the
+ *     lateral acceleration the geometry CLAIMS the rider produced. At L = 10 m
+ *     that is 2.85 g at the 99th percentile and 5.7 g at the peak, over 464 m
+ *     of the lap above 1.6 g — impossible on any tyre, so at 10 m this
+ *     function is reporting noise, not corners. The figure falls to 2.00 g
+ *     (p99) at 20 m and 1.74 g at 40 m.
+ *   - UPPER. Past ~25 m the tight corners inflate: the reported radius through
+ *     the two hairpins rises above what their measured apex speeds can produce
+ *     even at the tyre's limit (29 m implied against 36 m reported at 25 m of
+ *     smoothing), and the simulated lap starts beating the real one through
+ *     every slow corner — a lap the bike cannot ride.
+ *
+ * Costs nothing on a clean centerline: on the synthetic circuit with 0.25 m of
+ * scatter the 25 m hairpin reads 25.1 m at L = 20 against 24.1 m at L = 10
+ * (true value 25), and the 250 m sweeper 246 m against 253 m.
+ *
+ * This is a property of the DATA, not of the bike, and the real circuit's
+ * centerline here is a hand-placed map polyline with +-15-20 m of stated
+ * positional accuracy whose error is LONG-WAVELENGTH: its local (2 m baseline)
+ * scatter measures 0.07 m, a third of the synthetic fixture's, while its
+ * residual against a 40 m mean is 2.6 m rms. Nothing local can size this
+ * window, which is why it is a constant and not an estimate off the trace.
  */
-const CURV_SMOOTH_M = 10;
+const CURV_SCALE_M = 20;
 
 /** Signed curvature of a closed polyline in local metres, 1/m, + = left. */
 function polylineCurvature(points: LngLat[], stencilM: number): Float32Array {
@@ -315,7 +335,7 @@ function polylineCurvature(points: LngLat[], stencilM: number): Float32Array {
     const denom = la * lb * lc;
     out[i] = denom > 1e-9 ? (2 * cross) / denom : 0;
   }
-  return smoothClosed(out, CURV_SMOOTH_M / Math.max(0.1, ds));
+  return smoothClosed(out, CURV_SCALE_M / Math.max(0.1, ds));
 }
 
 /**
@@ -415,7 +435,7 @@ export function buildLine(
     loM[i] = -(Math.max(0, effRight[i] - 0.4) + margin);
   }
 
-  const baseCurv = polylineCurvature(cl, 10);
+  const baseCurv = polylineCurvature(cl, CURV_SCALE_M);
   const d = solveOffsets(n, stepM, baseCurv, loM, hiM, params.rider.kappa);
 
   // rider wander: a deterministic smooth deviation, clamped back into the box
@@ -445,7 +465,7 @@ export function buildLine(
   const closing = toLocalM(points[n - 1], points[0]);
   const lengthM = cumDistM[n - 1] + Math.hypot(closing[0], closing[1]);
 
-  return { points, curvature: polylineCurvature(points, 10), cumDistM, lengthM, offsetM: d };
+  return { points, curvature: polylineCurvature(points, CURV_SCALE_M), cumDistM, lengthM, offsetM: d };
 }
 
 /** Variance of |curvature| — low means the turn is spread out, high means squared off. */

@@ -1,41 +1,229 @@
+import { useCallback, useEffect, useRef } from 'react';
 import { useLab } from '../../state/store';
+import { MACHINE_PRESETS } from '../../sim/presets';
+import type { SimParams } from '../../sim/types';
+import { fmtLapTime } from '../../state/selectors';
+
+type SimPatch = { machine?: Partial<SimParams['machine']>; tyre?: Partial<SimParams['tyre']>; rider?: Partial<SimParams['rider']> };
+
+interface SliderProps {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  unit?: string;
+  decimals?: number;
+  testId: string;
+  onChange: (v: number) => void;
+}
+
+function Slider({ label, value, min, max, step, unit, decimals = 2, testId, onChange }: SliderProps) {
+  return (
+    <label className="sim-slider">
+      <span className="sim-slider-label">{label}</span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        data-testid={testId}
+        onChange={(e) => onChange(Number(e.target.value))}
+      />
+      <span className="sim-slider-value num">
+        {value.toFixed(decimals)}
+        {unit ? ` ${unit}` : ''}
+      </span>
+    </label>
+  );
+}
+
+/** Debounce window for slider-driven re-simulation (ms). simulate() itself costs ~3.3 ms;
+ * the debounce exists so a fast drag — which can fire an 'input' event every couple of
+ * milliseconds — coalesces into at most one re-solve per DEBOUNCE_MS, rather than one per tick. */
+const DEBOUNCE_MS = 30;
 
 export default function SimPanel() {
   const corridor = useLab((s) => s.corridor);
   const busy = useLab((s) => s.corridorBusy);
   const extract = useLab((s) => s.extractCorridorNow);
-  const setWorkspace = useLab((s) => s.setWorkspace);
+  const corridorToken = useLab((s) => s.corridorToken);
+  const setCorridorToken = useLab((s) => s.setCorridorToken);
+  const params = useLab((s) => s.simParams);
+  const enabled = useLab((s) => s.simEnabled);
+  const lapTimeS = useLab((s) => s.simLapTimeS);
+  const setSimEnabled = useLab((s) => s.setSimEnabled);
+  const setSimParams = useLab((s) => s.setSimParams);
+  const applyPreset = useLab((s) => s.applyMachinePreset);
   const workspace = useLab((s) => s.workspace);
+  const setWorkspace = useLab((s) => s.setWorkspace);
+
+  // Debounced wrapper around setSimParams: slider drags call this on every tick, but the
+  // (relatively) expensive re-solve + refreshAll() only runs DEBOUNCE_MS after the last tick.
+  const pendingRef = useRef<SimPatch | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const debouncedSetSimParams = useCallback(
+    (patch: SimPatch) => {
+      pendingRef.current = {
+        machine: { ...pendingRef.current?.machine, ...patch.machine },
+        tyre: { ...pendingRef.current?.tyre, ...patch.tyre },
+        rider: { ...pendingRef.current?.rider, ...patch.rider },
+      };
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => {
+        timerRef.current = null;
+        const p = pendingRef.current;
+        pendingRef.current = null;
+        if (p) setSimParams(p);
+      }, DEBOUNCE_MS);
+    },
+    [setSimParams],
+  );
+  useEffect(() => () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+  }, []);
 
   const resolved = corridor
     ? Math.round((100 * corridor.known.filter(Boolean).length) / corridor.known.length)
     : 0;
   const widths = corridor
-    ? Array.from(corridor.leftM, (l, i) => l + corridor.rightM[i]).filter((_w, i) => corridor.known[i])
+    ? Array.from(corridor.leftM, (l, i) => l + corridor.rightM[i])
+        .filter((_, i) => corridor.known[i])
         .sort((a, b) => a - b)
     : [];
   const medianWidth = widths.length ? widths[widths.length >> 1] : NaN;
 
+  // Warn when the parameter combination asks the tyre for more than it has.
+  // The solver's own passes hold grip use at or under 1, so the warning fires
+  // on the combinations that get there — a rider carrying the brakes to a lean
+  // angle the tyre cannot also support is the classic front-end tuck, and the
+  // lap time it produces is not one anybody rides twice.
+  const risk = useLab((s) => {
+    const sim = s.sessions.find((x) => x.isSim);
+    const g = sim?.channels.get('grip_use')?.data;
+    if (!g) return null;
+    let peak = 0;
+    let overCount = 0;
+    for (let i = 0; i < g.length; i++) {
+      if (!Number.isFinite(g[i])) continue;
+      peak = Math.max(peak, g[i]);
+      if (g[i] > 0.98) overCount++;
+    }
+    if (peak <= 0.98) return null;
+    const pct = Math.round((100 * overCount) / g.length);
+    return `Tyre demand peaks at ${(peak * 100).toFixed(0)} % of the friction circle, over ${pct} % of the lap. At these settings the front would let go on the brakes — lower the trail brake depth, the braking g, or the lean usage.`;
+  });
+
+  const layer = (key: 'corridor' | 'idealLine', label: string) => (
+    <label>
+      <input
+        type="checkbox"
+        checked={workspace.mapLayers[key] !== false}
+        onChange={(e) => setWorkspace({ mapLayers: { ...workspace.mapLayers, [key]: e.target.checked } })}
+      />
+      {label}
+    </label>
+  );
+
   return (
-    <div className="panel" data-testid="sim-panel">
-      <div className="panel-row">
-        <button data-testid="sim-extract" disabled={busy} onClick={() => void extract()}>
-          {busy ? 'Extracting…' : 'Extract corridor'}
-        </button>
+    <div className="panel sim-panel" data-testid="sim-panel">
+      <div className="panel-row sim-head">
         <label>
           <input
             type="checkbox"
-            checked={workspace.mapLayers.corridor !== false}
-            onChange={(e) => setWorkspace({ mapLayers: { ...workspace.mapLayers, corridor: e.target.checked } })}
+            checked={enabled}
+            data-testid="sim-enable"
+            onChange={(e) => setSimEnabled(e.target.checked)}
           />
-          Show on map
+          Virtual rider
         </label>
+        <span className="sim-laptime num" data-testid="sim-laptime">
+          {enabled && lapTimeS != null ? fmtLapTime(lapTimeS) : '—'}
+        </span>
+        <span className="bp-spacer" />
+        <button data-testid="sim-extract" disabled={busy} onClick={() => void extract()}>
+          {busy ? 'Extracting…' : 'Extract corridor'}
+        </button>
+        {corridor && (
+          <span className="panel-note num" data-testid="sim-corridor-stats">
+            {resolved} % · {medianWidth.toFixed(1)} m wide
+          </span>
+        )}
+        <input
+          type="password"
+          className="sim-token"
+          placeholder="Publish token"
+          title="Set to store a newly extracted corridor on the server for everyone. Reading never needs it."
+          value={corridorToken}
+          data-testid="sim-token"
+          onChange={(e) => setCorridorToken(e.target.value)}
+        />
+        {layer('corridor', 'Corridor')}
+        {layer('idealLine', 'Line')}
       </div>
-      {corridor && (
-        <p className="panel-note num" data-testid="sim-corridor-stats">
-          {resolved} % resolved · median width {medianWidth.toFixed(1)} m
+
+      {risk && (
+        <p className="sim-risk" data-testid="sim-risk" role="status">
+          ⚠ {risk}
         </p>
       )}
+
+      <div className="sim-groups">
+        <fieldset>
+          <legend>Machine</legend>
+          <label className="sim-slider">
+            <span className="sim-slider-label">Preset</span>
+            <select
+              value={params.machine.presetId}
+              data-testid="sim-preset"
+              onChange={(e) => applyPreset(e.target.value)}
+            >
+              {MACHINE_PRESETS.map((p) => (
+                <option key={p.id} value={p.id}>{p.label}</option>
+              ))}
+            </select>
+          </label>
+          <Slider label="Power" value={params.machine.powerKw} min={10} max={250} step={1} unit="kW" decimals={0}
+            testId="sim-power" onChange={(v) => debouncedSetSimParams({ machine: { powerKw: v, presetId: 'custom' } })} />
+          <Slider label="Mass" value={params.machine.massKg} min={120} max={400} step={1} unit="kg" decimals={0}
+            testId="sim-mass" onChange={(v) => debouncedSetSimParams({ machine: { massKg: v, presetId: 'custom' } })} />
+          <Slider label="Drag area" value={params.machine.cdA} min={0.2} max={0.6} step={0.01} unit="m²"
+            testId="sim-cda" onChange={(v) => debouncedSetSimParams({ machine: { cdA: v, presetId: 'custom' } })} />
+        </fieldset>
+
+        <fieldset>
+          <legend>Tyre / track</legend>
+          <Slider label="Friction μ" value={params.tyre.mu} min={0.6} max={1.7} step={0.01}
+            testId="sim-mu" onChange={(v) => debouncedSetSimParams({ tyre: { mu: v } })} />
+          <Slider label="Max lean" value={params.tyre.maxLeanDeg} min={30} max={68} step={0.5} unit="°" decimals={1}
+            testId="sim-lean" onChange={(v) => debouncedSetSimParams({ tyre: { maxLeanDeg: v } })} />
+          <Slider label="Kerb margin" value={params.tyre.kerbMarginM} min={0} max={2} step={0.1} unit="m" decimals={1}
+            testId="sim-kerb" onChange={(v) => debouncedSetSimParams({ tyre: { kerbMarginM: v } })} />
+          <Slider label="Grip scale" value={params.tyre.gripScale} min={0.4} max={1.1} step={0.01}
+            testId="sim-grip" onChange={(v) => debouncedSetSimParams({ tyre: { gripScale: v } })} />
+        </fieldset>
+
+        <fieldset>
+          <legend>Rider</legend>
+          <Slider label="Line deviation" value={params.rider.lineDeviationM} min={0} max={3} step={0.05} unit="m" decimals={2}
+            testId="sim-deviation" onChange={(v) => debouncedSetSimParams({ rider: { lineDeviationM: v } })} />
+          <Slider label="Braking" value={params.rider.brakingG} min={0.4} max={1.6} step={0.01} unit="g"
+            testId="sim-braking" onChange={(v) => debouncedSetSimParams({ rider: { brakingG: v } })} />
+          <Slider label="Throttle delay" value={params.rider.throttleDelayS} min={0} max={1.5} step={0.01} unit="s"
+            testId="sim-throttle" onChange={(v) => debouncedSetSimParams({ rider: { throttleDelayS: v } })} />
+          <Slider label="Traction control" value={params.rider.tcThreshold} min={0} max={1} step={0.01}
+            testId="sim-tc" onChange={(v) => debouncedSetSimParams({ rider: { tcThreshold: v } })} />
+          <Slider label="Lean usage" value={params.rider.leanUsage} min={0.5} max={1} step={0.01}
+            testId="sim-leanusage" onChange={(v) => debouncedSetSimParams({ rider: { leanUsage: v } })} />
+          <Slider label="Line style (C↔V)" value={params.rider.kappa} min={0} max={1} step={0.01}
+            testId="sim-kappa" onChange={(v) => debouncedSetSimParams({ rider: { kappa: v } })} />
+          <Slider label="Trail brake depth" value={params.rider.trailBrakeDepth} min={0} max={1} step={0.01}
+            testId="sim-tb-depth" onChange={(v) => debouncedSetSimParams({ rider: { trailBrakeDepth: v } })} />
+          <Slider label="Brake release" value={params.rider.trailBrakeProfile} min={0} max={1} step={0.01}
+            testId="sim-tb-profile" onChange={(v) => debouncedSetSimParams({ rider: { trailBrakeProfile: v } })} />
+        </fieldset>
+      </div>
     </div>
   );
 }

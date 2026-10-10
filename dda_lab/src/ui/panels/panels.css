@@ -341,3 +341,23 @@ kbd { background: var(--panel-2); border: 1px solid var(--border); border-radius
 .preset-card .pc-name { width: 110px; font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
 .preset-card .pc-unit { width: 52px; font-size: 11px; }
 .preset-card .pc-label { flex: 1; font-weight: 700; }
+
+.sim-panel .sim-head { gap: 10px; align-items: center; flex-wrap: wrap; }
+.sim-panel .sim-laptime { font-size: 18px; font-variant-numeric: tabular-nums; color: #c77dff; }
+.sim-groups { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-start; }
+.sim-groups fieldset { border: 1px solid #2a323d; border-radius: 6px; padding: 8px 10px; min-width: 260px; }
+.sim-groups legend { color: #9aa7b8; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+.sim-slider { display: grid; grid-template-columns: 110px 1fr 76px; gap: 8px; align-items: center; margin: 4px 0; }
+.sim-slider-label { color: #9aa7b8; font-size: 12px; }
+.sim-slider-value { font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
+.sim-slider input[type='range'] { width: 100%; }
+.sim-token { width: 120px; font-size: 11px; }
+.sim-risk {
+  margin: 6px 0 0;
+  padding: 6px 10px;
+  border-left: 3px solid #ff4d6d;
+  background: rgba(255, 77, 109, 0.12);
+  color: #ffb3c0;
+  font-size: 12px;
+  line-height: 1.4;
+}

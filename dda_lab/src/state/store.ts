@@ -12,7 +12,9 @@ import { browserTileLoader } from '../sim/browserTiles';
 import { CorridorError, extractCorridor } from '../sim/corridor';
 import { fetchCorridor, putCorridor } from '../sim/corridorService';
 import { buildMosaic, SAT_ZOOM, tileRangeFor } from '../sim/tiles';
-import type { Corridor } from '../sim/types';
+import { simulate } from '../sim';
+import { DEFAULT_SIM_PARAMS, presetById } from '../sim/presets';
+import type { Corridor, Line, SimParams } from '../sim/types';
 
 /** Workspace (panels, math, label colours…) is remembered in this browser between visits. */
 export const WORKSPACE_KEY = 'dda-lab-workspace';
@@ -114,6 +116,19 @@ export interface LabState {
   /** Write token for the corridor store; empty means this user cannot publish one. */
   corridorToken: string;
   setCorridorToken(t: string): void;
+
+  /** Virtual rider parameters. */
+  simParams: SimParams;
+  /** True while a simulated lap is in the workspace. */
+  simEnabled: boolean;
+  /** The generated line, for the map layer. */
+  simLine?: Line;
+  simLapTimeS?: number;
+  setSimEnabled(on: boolean): void;
+  /** Patch any subset of the three parameter groups and re-simulate. */
+  setSimParams(patch: { machine?: Partial<SimParams['machine']>; tyre?: Partial<SimParams['tyre']>; rider?: Partial<SimParams['rider']> }): void;
+  /** Load a machine preset: machine, tyre and the kappa default together. */
+  applyMachinePreset(id: string): void;
 
   addSession(s: Session): void;
   removeSession(id: string): void;
@@ -290,6 +305,9 @@ function refreshAll(st: Pick<LabState, 'sessions' | 'refLap' | 'tracks' | 'activ
   return st.sessions.map((s) => refreshSession(s, track, st.workspace.mathChannels, ref, st.sessions));
 }
 
+export const SIM_SESSION_ID = 'sim';
+const SIM_COLOR = '#c77dff';
+
 export function defaultLapMeta(st: Pick<LabState, 'sessions'>, sessionId: string, lap: number): LapMeta {
   const s = st.sessions.find((x) => x.id === sessionId);
   return { name: s ? `${s.name} L${lap}` : `L${lap}`, color: s?.color ?? '#ffffff' };
@@ -319,6 +337,10 @@ export const useLab = create<LabState>((set, get) => ({
   corridor: undefined,
   corridorBusy: false,
   corridorToken: loadCorridorToken(),
+  simParams: DEFAULT_SIM_PARAMS,
+  simEnabled: false,
+  simLine: undefined,
+  simLapTimeS: undefined,
 
   addSession(s) {
     const { workspace, sessions } = get();
@@ -722,7 +744,8 @@ export const useLab = create<LabState>((set, get) => ({
     // the server already has one for this exact centerline: use it, fetch nothing
     const stored = await fetchCorridor(track);
     if (stored) {
-      set({ corridor: stored, statusMessage: 'Corridor loaded from the server.' });
+      // a track change while the request was in flight must not install the wrong corridor
+      if (activeTrack(get())?.id === track.id) set({ corridor: stored, statusMessage: 'Corridor loaded from the server.' });
       return;
     }
     const trace: LngLat[] = [];
@@ -745,11 +768,15 @@ export const useLab = create<LabState>((set, get) => ({
       }
       const corridor = extractCorridor(track, mosaic, trace);
       const pct = Math.round((100 * corridor.known.filter(Boolean).length) / corridor.known.length);
+      // the ~15 s tile fetch above gives the user ample time to switch tracks; the
+      // corridor just extracted is for `track`, not necessarily the active one any more
+      if (activeTrack(get())?.id !== track.id) return;
       set({ corridor, statusMessage: `Corridor extracted — ${pct} % of the track resolved.` });
       // publish it so nobody has to extract this track again
       const token = get().corridorToken;
       if (token) {
         const saved = await putCorridor(track, corridor, token);
+        if (activeTrack(get())?.id !== track.id) return;
         set({
           statusMessage: saved
             ? `Corridor extracted (${pct} % resolved) and saved to the server.`
@@ -763,7 +790,75 @@ export const useLab = create<LabState>((set, get) => ({
       set({ corridorBusy: false });
     }
   },
+  setSimEnabled(on) {
+    if (!on) {
+      set((st) => ({
+        simEnabled: false,
+        simLine: undefined,
+        simLapTimeS: undefined,
+        sessions: st.sessions.filter((s) => s.id !== SIM_SESSION_ID),
+        selectedLaps: st.selectedLaps.filter((l) => l.sessionId !== SIM_SESSION_ID),
+        refLap: st.refLap?.sessionId === SIM_SESSION_ID ? undefined : st.refLap,
+        cursor: st.cursor?.sessionId === SIM_SESSION_ID ? null : st.cursor,
+      }));
+      return;
+    }
+    set({ simEnabled: true });
+    runSim(set, get);
+  },
+  setSimParams(patch) {
+    set((st) => ({
+      simParams: {
+        machine: { ...st.simParams.machine, ...patch.machine },
+        tyre: { ...st.simParams.tyre, ...patch.tyre },
+        rider: { ...st.simParams.rider, ...patch.rider },
+      },
+    }));
+    if (get().simEnabled) runSim(set, get);
+  },
+  applyMachinePreset(id) {
+    const preset = presetById(id);
+    set((st) => ({
+      simParams: {
+        machine: { presetId: preset.id, ...preset.machine },
+        tyre: { ...preset.tyre },
+        rider: { ...st.simParams.rider, kappa: preset.kappa },
+      },
+    }));
+    if (get().simEnabled) runSim(set, get);
+  },
 }));
+
+/**
+ * Run the simulator and put its session in the workspace, replacing any previous
+ * one. The sim session is an ordinary Session, so it goes through refreshAll()
+ * and picks up derived channels, math channels and delta_t like a loaded file.
+ */
+function runSim(
+  set: (partial: Partial<LabState>) => void,
+  get: () => LabState,
+): void {
+  const st = get();
+  const track = activeTrack(st);
+  if (!track) {
+    set({ statusMessage: 'The simulator needs a track — open a session first.' });
+    return;
+  }
+  const { session, line, lapTimeS } = simulate(
+    track,
+    st.corridor,
+    st.simParams,
+    SIM_SESSION_ID,
+    'Virtual rider',
+    SIM_COLOR,
+  );
+  const others = st.sessions.filter((s) => s.id !== SIM_SESSION_ID);
+  const next = { ...st, sessions: [...others, session] };
+  const selectedLaps = st.selectedLaps.some((l) => l.sessionId === SIM_SESSION_ID)
+    ? st.selectedLaps
+    : [...st.selectedLaps, { sessionId: SIM_SESSION_ID, lap: 1 }];
+  set({ sessions: refreshAll(next), selectedLaps, simLine: line, simLapTimeS: lapTimeS });
+}
 
 // autosave the workspace (debounced) so panel layouts, math channels and label styles survive a reload
 let wsTimer: ReturnType<typeof setTimeout> | null = null;

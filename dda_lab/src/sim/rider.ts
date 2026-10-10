@@ -149,10 +149,21 @@ export function riderChannels(line: Line, env: Envelope, params: SimParams): Rid
   // because applying and releasing are not the same action:
   //
   //   - the brake comes ON fast but not instantly (initial bite, then squeeze)
-  //   - the brake comes OFF at a rate the `trailBrakeProfile` slider sets:
-  //     abrupt at 0, a long progressive bleed at 1. That release is the whole
+  //   - the brake comes OFF at a rate the two trail-brake sliders set: abrupt
+  //     when the rider is done braking at turn-in, a long progressive bleed
+  //     when they carry the brakes deep and hard. That release is the whole
   //     craft of trail braking — it is what keeps load on the front while the
   //     bike is turning.
+  //
+  //     This is a CEILING on how fast the hand can move, not the shape of the
+  //     release: the shape now comes out of the envelope, because both sliders
+  //     live in `brakeEllipse` in the solver. `trailBrakeDepth` leads the
+  //     blend, because depth is what decides how long the lever is still
+  //     loaded — a bled-off-over-an-arc release is a slow one — and
+  //     `trailBrakeProfile` follows, because a braver rider is still holding
+  //     more pressure when the release starts. Neither is the only thing
+  //     either parameter does any more, which was the defect: a release-rate
+  //     constant cannot move the lap time, so the slider was inert.
   //   - the throttle comes ON slowly (and is additionally delayed by
   //     `throttleDelayS`), because cracking it open at lean is the other way to
   //     crash
@@ -161,7 +172,8 @@ export function riderChannels(line: Line, env: Envelope, params: SimParams): Rid
   // These are estimates of how fast a rider actually moves, not measurements.
   // A later task cross-checks against a real lap and will retune them.
   const BRAKE_ON_PCT_S = 700; // ~0.14 s to full pressure
-  const BRAKE_OFF_PCT_S = 1400 - 1250 * p.rider.trailBrakeProfile; // 1400 -> 150
+  const trailBrake = 0.6 * p.rider.trailBrakeDepth + 0.4 * p.rider.trailBrakeProfile;
+  const BRAKE_OFF_PCT_S = 1400 - 1250 * trailBrake; // 1400 -> 150
   const THROTTLE_ON_PCT_S = 350; // ~0.3 s to full
   const THROTTLE_OFF_PCT_S = 1200;
 
@@ -265,9 +277,9 @@ export function riderChannels(line: Line, env: Envelope, params: SimParams): Rid
       level[i - s] = pv + frac * (nv - pv);
     }
     // monotone shape: non-decreasing up to the peak, non-increasing after —
-    // no second peak inside one event. The release RATE is still governed
-    // by trailBrakeProfile, in the rate limiter below; this only removes a
-    // re-rise in the TARGET it is tracking.
+    // no second peak inside one event. The release RATE CEILING is still
+    // governed by the two trail-brake sliders, in the rate limiter below;
+    // this only removes a re-rise in the TARGET it is tracking.
     let peakOff = 0;
     for (let k = 1; k < len; k++) if (level[k] > level[peakOff]) peakOff = k;
     let running = 0;

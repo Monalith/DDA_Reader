@@ -211,6 +211,27 @@ describe('riderChannels', () => {
     expect(fallRate(smooth.brake)).toBeLessThan(fallRate(abrupt.brake));
   });
 
+  it('bleeds the brake off more slowly at a higher trailBrakeDepth too', () => {
+    // The release-rate CEILING is now set by both trail-brake sliders, with
+    // depth leading (see BRAKE_OFF_PCT_S). The envelope is held fixed so this
+    // is purely the rider layer: the trace has to keep looking right while
+    // neither parameter is confined to the trace any more.
+    const line = cornerLine();
+    const env = solve(line, P);
+    const shallow = riderChannels(line, env, clampParams({ ...P, rider: { ...P.rider, trailBrakeDepth: 0 } }));
+    const deep = riderChannels(line, env, clampParams({ ...P, rider: { ...P.rider, trailBrakeDepth: 1 } }));
+    const fallRate = (b: Float32Array): number => {
+      let worst = 0;
+      for (let i = 1; i < b.length; i++) {
+        const dt = Math.max(1e-3, env.tS[i] - env.tS[i - 1]);
+        worst = Math.max(worst, (b[i - 1] - b[i]) / dt);
+      }
+      return worst;
+    };
+    // 0.6 * 1250 = 750 %/s of authority, so this is not a rounding difference
+    expect(fallRate(deep.brake)).toBeLessThan(fallRate(shallow.brake) - 300);
+  });
+
   it('clamps the throttle against a still-falling brake, and the clamp really binds', () => {
     // The OVERLAP clamp, exercised. See `brakeToThrottleEnvelope` for why the
     // previous fixture could not reach it. Two assertions: the invariant holds
@@ -221,7 +242,10 @@ describe('riderChannels', () => {
     const { line, env } = brakeToThrottleEnvelope();
     const pp = clampParams({
       ...P,
-      rider: { ...P.rider, trailBrakeProfile: 1, throttleDelayS: 0, brakingG: 0.4 },
+      // the slowest brake release the model allows (both trail-brake sliders
+      // at 1 => BRAKE_OFF_PCT_S = 150), which is what keeps the brake falling
+      // long enough for the overlap clamp to be the binding constraint
+      rider: { ...P.rider, trailBrakeDepth: 1, trailBrakeProfile: 1, throttleDelayS: 0, brakingG: 0.4 },
     });
     const ch = riderChannels(line, env, pp);
     let binding = 0;

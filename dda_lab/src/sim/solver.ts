@@ -20,6 +20,82 @@ const ROLLING = 0.15;
 /** Nothing below this is a real speed; keeps every division finite. */
 const V_MIN = 2;
 
+/**
+ * Lateral-grip-use fraction by which braking has fully ceased at
+ * `trailBrakeDepth` = 0. See `brakeShare`.
+ */
+const TB_MIN_REACH = 0.2;
+/**
+ * The two ends of the courage family in `brakeShare`. At `trailBrakeProfile`
+ * = 0 the share is `(1 - x)**TB_TIMID_EXP`, which falls away as soon as the
+ * bike leans; at 1 it is `1 - x**TB_BRAVE_POW`, which stays within 0.4 % of
+ * the whole remaining share out to half the depth limit and only then lets go.
+ * Both ends have a BOUNDED slope — at most `max(TB_TIMID_EXP, TB_BRAVE_POW)`
+ * per unit of `x` — which is the reason the brave end is written this way
+ * round rather than as a fractional exponent of the reach. `reach**0.15` is
+ * the obvious way to say "nearly all of it", and it is wrong here: its
+ * derivative is infinite at the depth limit, so it drops 0.49 of the share
+ * inside 0.002 of lateral use. That is a step in all but name, and a step in
+ * the available deceleration is exactly what the backward pass trips on.
+ */
+const TB_TIMID_EXP = 3;
+const TB_BRAVE_POW = 8;
+
+/**
+ * Longitudinal share available for BRAKING, which is not the same as the raw
+ * ellipse: a rider chooses how much of it to spend at lean, and that choice
+ * has TWO independent axes. Both live here, in the solver, because only the
+ * velocity envelope can make them mean anything — a parameter that shapes the
+ * brake TRACE and nothing else cannot change the lap time, and the previous
+ * `trailBrakeProfile` (a release-rate constant in `rider.ts`) was exactly
+ * that: inert by construction. See `docs/.../virtual-vs-real.md` §2/H5.
+ *
+ *   EXTENT — `trailBrakeDepth`: how far into the corner braking continues at
+ *   ALL, expressed as the lateral-grip-use fraction `uLim` at which brake
+ *   pressure has fallen to zero. At 1 the rider can carry the brakes to
+ *   maximum lean; at 0 the brakes are off by `TB_MIN_REACH` of the tyre's
+ *   lateral capacity — about 15 deg of lean, i.e. straight-line braking:
+ *   brake upright, turn, then drive. `TB_MIN_REACH` is not zero because a
+ *   zero would put a step at `used = 0` into the backward pass; 0.2 is small
+ *   enough to read as "upright" and large enough that the taper is a ramp.
+ *
+ *   MAGNITUDE — `trailBrakeProfile`: how much of the still-available
+ *   longitudinal grip the rider dares to use on the way to that limit. It
+ *   picks a taper out of a one-parameter family in `x = used / uLim`, every
+ *   member of which is 1 at `x = 0` and 0 at `x = 1`:
+ *
+ *     profile 0.0   (1 - x)**3     timid: 0.13 of the share left at x = 0.5
+ *     profile 0.5   1 - x          even
+ *     profile 1.0   1 - x**8       brave: 0.996 of it still there at x = 0.5
+ *
+ *   The two halves meet at `1 - x` at profile 0.5, so the family is
+ *   continuous and monotone across the whole slider.
+ *
+ * Properties the two must have, all satisfied by construction:
+ *  - at `used = 0`, `reach = 1` and `reach**e = 1` for every exponent, so
+ *    straight-line braking always gets the full `sqrt(1 - u^2)` = 1 and
+ *    BOTH parameters are irrelevant, as they must be;
+ *  - `reach**e <= 1` always, so braking never exceeds the friction ellipse;
+ *  - both reach zero at the tyre's limit: `reach` hits 0 at `uLim <= 1` and
+ *    `full` hits 0 at `used = 1`;
+ *  - monotone and continuous in `used`, in `depth` and in `profile` — no
+ *    discontinuity for the backward pass to trip on (`reach**e` is
+ *    continuous at `reach = 0` for every `e > 0`).
+ */
+export function brakeShare(latUse: number, depth: number, profile: number): number {
+  const used = Math.min(1, Math.max(0, latUse));
+  const full = Math.sqrt(Math.max(0, 1 - used * used));
+  const uLim = TB_MIN_REACH + (1 - TB_MIN_REACH) * Math.min(1, Math.max(0, depth));
+  // how far through the braking zone's lateral range this sample is, 0..1
+  const x = Math.min(1, used / uLim);
+  const q = Math.min(1, Math.max(0, profile));
+  const taper =
+    q <= 0.5
+      ? Math.pow(1 - x, TB_TIMID_EXP + (1 - TB_TIMID_EXP) * (q / 0.5))
+      : 1 - Math.pow(x, 1 + (TB_BRAVE_POW - 1) * ((q - 0.5) / 0.5));
+  return full * taper;
+}
+
 /** Drag-limited top speed: where engine power equals drag plus rolling losses. */
 export function topSpeedMs(params: SimParams): number {
   const p = clampParams(params);
@@ -85,21 +161,9 @@ export function solve(line: Line, params: SimParams): Envelope {
     return Math.sqrt(Math.max(0, 1 - used * used));
   };
 
-  /**
-   * Longitudinal share available for BRAKING, which is not the same as the raw
-   * ellipse: a rider chooses how much of it to spend at lean.
-   *
-   * `trailBrakeDepth` = 1 spends the whole remaining share, carrying brake
-   * pressure to the apex. `trailBrakeDepth` = 0 fades braking out as soon as
-   * the bike is leaned at all, which is straight-line braking — the bike is
-   * upright, stopped, then turned. Both reach zero at full lean, as they must.
-   */
-  const brakeEllipse = (vv: number, k: number): number => {
-    const used = latUse(vv, k);
-    const full = Math.sqrt(Math.max(0, 1 - used * used));
-    const depth = p.rider.trailBrakeDepth;
-    return full * (depth + (1 - depth) * (1 - used));
-  };
+  /** Longitudinal share available for BRAKING at this speed and curvature. */
+  const brakeEllipse = (vv: number, k: number): number =>
+    brakeShare(latUse(vv, k), p.rider.trailBrakeDepth, p.rider.trailBrakeProfile);
 
   // ---- pass 2: backward (braking) --------------------------------------
   // two laps of the loop so braking carries across the start line
@@ -124,8 +188,35 @@ export function solve(line: Line, params: SimParams): Envelope {
       const aPower = power / (p.machine.massKg * vv);
       const aGrip = mu * G * ellipse(vv, line.curvature[j]);
       const aDrag = (0.5 * RHO * p.machine.cdA * vv * vv) / p.machine.massKg + ROLLING;
-      // traction control shaves drive torque as the grip demand approaches the limit
-      const tcFactor = 0.6 + 0.4 * p.rider.tcThreshold;
+      // Traction control shaves drive torque when the SLIP DEMAND is high — not
+      // always.
+      //
+      // This used to be `tcFactor = 0.6 + 0.4 * tcThreshold`, a constant
+      // multiplier on the grip term with no reference to what the tyre is doing.
+      // At the shipped `tcThreshold` = 0.5 that threw away 20 % of the
+      // longitudinal grip EVERYWHERE, including bolt upright on a straight
+      // where there is no lateral load to make the rear slip and no traction
+      // control on earth intervenes: the drive out of every corner up to about
+      // 150 km/h was capped at 10.4 m/s^2 instead of the 12.6 m/s^2 the front
+      // wheel allows.
+      //
+      // Measured. On the real Serres geometry it is worth 0.28 s (79.60 ->
+      // 79.32), because that lap is short of straight. The important cost is
+      // the other one: it made the forward pass GRIP-limited where it should
+      // have been POWER-limited, so adding power bought nothing. On the
+      // synthetic circuit (`circuitFixture.ts`), which has the straights for
+      // power to work on, going 147 -> 250 kW was worth 1.04 s with the
+      // constant and is worth 2.11 s without it, and 400 kW was wholly
+      // saturated (60.55 -> 60.54) where it now still gains.
+      //
+      // Slip is provoked by asking for drive while the tyre is already spending
+      // its grip sideways, so the intervention scales with the lateral use: no
+      // cut at all upright, and at full lean the drive is held to
+      // `0.55 + 0.45 * tcThreshold` of what is left on the ellipse — the same
+      // allowance the `dtc` channel in `rider.ts` reports, so the two agree.
+      const slip = latUse(vv, line.curvature[j]);
+      const tcFloor = 0.55 + 0.45 * p.rider.tcThreshold;
+      const tcFactor = 1 - (1 - tcFloor) * slip;
       const a = Math.min(aPower, aGrip * tcFactor, aWheelie) - aDrag;
       const vMax = Math.sqrt(Math.max(V_MIN * V_MIN, vv * vv + 2 * a * ds));
       if (v[i] > vMax) v[i] = Math.max(V_MIN, vMax);

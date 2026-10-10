@@ -75,9 +75,24 @@ const DEFAULT_RIDER: RiderParams = {
   tcThreshold: 0.5,
   leanUsage: 0.95,
   kappa: presetById('1000').kappa,
-  // a competent road-racer: carries the brakes a fair way in, releases progressively
-  trailBrakeDepth: 0.6,
-  trailBrakeProfile: 0.6,
+  // A quick road-racer: carries the brakes most of the way to the apex and
+  // uses most of the grip the tyre has left while doing it.
+  //
+  // These two were 0.6 / 0.6 while `trailBrakeDepth` scaled the remaining
+  // longitudinal share at every lean (and `trailBrakeProfile` did nothing at
+  // all). Both now mean what the names say — see `brakeShare` in `solver.ts`:
+  // depth is the lateral-grip-use fraction at which braking has CEASED, and
+  // profile is how much of the remaining grip is used on the way there.
+  //
+  // 0.85 / 0.80 is where the default has to sit to keep reproducing the
+  // reference BMW Serres lap (1:19.81): 79.34 s on the offline harness against
+  // the 79.29 s the old default gave on the same harness, so the calibration of
+  // docs/superpowers/notes/2026-10-10-virtual-vs-real.md survives to 0.05 s.
+  // 0.6 / 0.6 in the new units — a rider off the brakes by 68 % of the tyre's
+  // lateral capacity, and only evenly hard before that — is 81.71 s, i.e. 2.4 s
+  // a lap slower, which is a plausible club rider rather than a fast one.
+  trailBrakeDepth: 0.85,
+  trailBrakeProfile: 0.8,
 };
 
 export const DEFAULT_SIM_PARAMS: SimParams = {

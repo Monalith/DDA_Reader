@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { G, solve, topSpeedMs } from '../../src/sim/solver';
+import { G, brakeShare, solve, topSpeedMs } from '../../src/sim/solver';
 import { clampParams, DEFAULT_SIM_PARAMS, presetById } from '../../src/sim/presets';
 import type { Line, SimParams } from '../../src/sim/types';
 import type { LngLat } from '../../src/core/types';
@@ -94,6 +94,44 @@ export function cornerLine(radiusM = 40, entryM = 400, exitM = 150, nPerM = 1): 
   }
 
   return { points, curvature, cumDistM, lengthM: s, offsetM: new Float32Array(n) };
+}
+
+/**
+ * Entry straight -> LINEAR CURVATURE RAMP -> constant arc -> exit straight.
+ *
+ * `cornerLine` cannot be used to test trail braking and never could: its
+ * curvature steps from 0 straight to 1/r, so every sample is either dead
+ * upright (lateral use 0, where the friction ellipse leaves braking the whole
+ * longitudinal share and the trail-brake parameters are irrelevant BY
+ * DEFINITION) or already pinned at the lateral limit (lateral use 1, where the
+ * ellipse leaves nothing). There is no sample in between, so no trail-brake
+ * model of any shape can change the lap time on it. The old
+ * "carrying the brakes deeper gives a faster lap" test ran on `cornerLine` and
+ * passed on a difference of 4e-8 s — a float32 rounding artefact at
+ * `latUse = 1`, not an effect. It could not fail for the right reason.
+ *
+ * A real corner entry has a ramp, and that ramp is exactly where trail braking
+ * lives: lean is building while the brakes are still on. 80 m of ramp at 1 m
+ * sampling gives the backward pass ~80 samples spread across the whole
+ * lateral-use range from 0 to 1.
+ */
+export function rampedCornerLine(radiusM = 40, entryM = 500, rampM = 80, arcM = 60, exitM = 150): Line {
+  const n = entryM + rampM + arcM + exitM;
+  const curvature = new Float32Array(n);
+  const cumDistM = new Float64Array(n);
+  const points: LngLat[] = [];
+  const lat0 = 41.073;
+  const lng0 = 23.518;
+  const mPerDegLng = 111320 * Math.cos((lat0 * Math.PI) / 180);
+  for (let i = 0; i < n; i++) {
+    cumDistM[i] = i;
+    points.push([lng0 + i / mPerDegLng, lat0]);
+    if (i < entryM) curvature[i] = 0;
+    else if (i < entryM + rampM) curvature[i] = ((i - entryM + 1) / rampM) / radiusM;
+    else if (i < entryM + rampM + arcM) curvature[i] = 1 / radiusM;
+    else curvature[i] = 0;
+  }
+  return { points, curvature, cumDistM, lengthM: n, offsetM: new Float32Array(n) };
 }
 
 /**
@@ -236,12 +274,185 @@ describe('solve', () => {
   });
 
   it('carrying the brakes deeper gives a faster lap than braking upright', () => {
-    // A corner needs a braking zone for trail braking to mean anything, so use
-    // the straight-then-corner line rather than a constant-radius circle.
-    const line = cornerLine();
+    // Trail braking needs a corner ENTRY, not just a corner: see
+    // `rampedCornerLine` for why `cornerLine` cannot show this at all.
+    const line = rampedCornerLine();
     const upright = solve(line, clampParams({ ...P, rider: { ...P.rider, trailBrakeDepth: 0 } }));
     const deep = solve(line, clampParams({ ...P, rider: { ...P.rider, trailBrakeDepth: 1 } }));
-    expect(deep.lapTimeS).toBeLessThan(upright.lapTimeS);
+    // not just "less": 0.47 s on an 18 s fixture, measured. A 1e-9 difference
+    // is a rounding artefact, which is exactly what the old version of this
+    // test was asserting.
+    expect(upright.lapTimeS - deep.lapTimeS).toBeGreaterThan(0.25);
+  });
+
+  describe('brakeShare: the two trail-brake axes', () => {
+    const grid = [0, 0.25, 0.5, 0.75, 1];
+
+    it('gives the full longitudinal share at zero lean, whatever either slider says', () => {
+      // The one property that makes the pair meaningful: straight-line braking
+      // is not a rider choice. Both parameters must be inert at zero lateral
+      // use, and the share must be the ellipse's own 1.0.
+      for (const d of grid) for (const q of grid) expect(brakeShare(0, d, q)).toBe(1);
+    });
+
+    it('reaches zero at the tyre limit and never exceeds the friction ellipse', () => {
+      for (const d of grid) {
+        for (const q of grid) {
+          expect(brakeShare(1, d, q)).toBe(0);
+          for (let u = 0; u <= 1.0001; u += 0.01) {
+            const share = brakeShare(u, d, q);
+            expect(share).toBeLessThanOrEqual(Math.sqrt(Math.max(0, 1 - u * u)) + 1e-12);
+            expect(share).toBeGreaterThanOrEqual(0);
+          }
+        }
+      }
+    });
+
+    it('stops braking at the depth limit and nowhere short of it', () => {
+      // depth IS the extent: the lateral use at which the share hits zero.
+      // 0 -> TB_MIN_REACH (0.2); 1 -> the whole lateral range.
+      for (const q of grid) {
+        expect(brakeShare(0.19, 0, q)).toBeGreaterThan(0);
+        expect(brakeShare(0.21, 0, q)).toBe(0);
+        expect(brakeShare(0.59, 0.5, q)).toBeGreaterThan(0);
+        expect(brakeShare(0.61, 0.5, q)).toBe(0);
+        expect(brakeShare(0.99, 1, q)).toBeGreaterThan(0);
+      }
+    });
+
+    it('is monotone in lean, in depth and in profile, with no step anywhere', () => {
+      for (const d of grid) {
+        for (const q of grid) {
+          let prev = Infinity;
+          for (let u = 0; u <= 1.0001; u += 0.0005) {
+            const share = brakeShare(u, d, q);
+            expect(share).toBeLessThanOrEqual(prev + 1e-12);
+            // Continuity, and quantitatively: over a 0.0005 step in lateral
+            // use the share may not fall by more than 0.03. The bound is what
+            // rules out the fractional-exponent shape this started as, which
+            // dropped 0.49 over 0.002 at the depth limit. The worst real case
+            // is depth 0 (the narrowest taper, uLim = 0.2) at profile 1 (the
+            // steepest landing, slope 8 in x): 8 * 0.0005/0.2 = 0.02.
+            if (Number.isFinite(prev)) expect(prev - share).toBeLessThan(0.03);
+            prev = share;
+          }
+        }
+      }
+      // monotone in each parameter at a lean where both are live
+      for (const u of [0.1, 0.3, 0.5, 0.8]) {
+        for (const q of grid) {
+          for (let i = 1; i < grid.length; i++) {
+            expect(brakeShare(u, grid[i], q)).toBeGreaterThanOrEqual(brakeShare(u, grid[i - 1], q));
+          }
+        }
+        for (const d of grid) {
+          for (let i = 1; i < grid.length; i++) {
+            expect(brakeShare(u, d, grid[i])).toBeGreaterThanOrEqual(brakeShare(u, d, grid[i - 1]));
+          }
+        }
+      }
+    });
+
+    it('moves the lap time along BOTH axes independently — no flat row, no flat column', () => {
+      // This is the defect being fixed. `trailBrakeProfile` used to be a
+      // brake-release RATE in rider.ts, downstream of the envelope, so it
+      // could not move the lap time by a single microsecond and the user
+      // reported it as doing nothing. A 3x3 grid, and every row AND every
+      // column has to carry a real spread.
+      const line = rampedCornerLine();
+      const axis = [0, 0.5, 1];
+      const lap = (d: number, q: number): number =>
+        solve(line, clampParams({ ...P, rider: { ...P.rider, trailBrakeDepth: d, trailBrakeProfile: q } })).lapTimeS;
+      const cell = axis.map((d) => axis.map((q) => lap(d, q)));
+      // measured spreads: rows (profile, depth fixed) 0.29-0.94 s, columns
+      // (depth, profile fixed) 0.47-1.12 s, on an 18 s fixture
+      for (let i = 0; i < 3; i++) {
+        expect(cell[i][0] - cell[i][2]).toBeGreaterThan(0.15); // braver = faster
+        expect(cell[i][0] - cell[i][1]).toBeGreaterThan(0.03);
+        expect(cell[i][1] - cell[i][2]).toBeGreaterThan(0.03);
+        expect(cell[0][i] - cell[2][i]).toBeGreaterThan(0.25); // deeper = faster
+        expect(cell[0][i] - cell[1][i]).toBeGreaterThan(0.1);
+        expect(cell[1][i] - cell[2][i]).toBeGreaterThan(0.1);
+      }
+    });
+
+    it('brakes at the full rate on the entry straight for every setting of either slider', () => {
+      // The envelope's own statement of the zero-lean property: on the
+      // dead-straight part of the entry the peak deceleration is the rider's
+      // own `brakingG`, identically, for all nine combinations.
+      const line = rampedCornerLine();
+      const peaks: number[] = [];
+      for (const d of [0, 0.5, 1]) {
+        for (const q of [0, 0.5, 1]) {
+          const env = solve(line, clampParams({ ...P, rider: { ...P.rider, trailBrakeDepth: d, trailBrakeProfile: q } }));
+          let peak = 0;
+          for (let i = 0; i < 500; i++) peak = Math.min(peak, env.longG[i]);
+          peaks.push(peak);
+        }
+      }
+      // the rider's own brakingG, and the same to 1e-6 across all nine
+      // combinations — the residual is the braking point landing on a
+      // different sample, not a different deceleration
+      expect(peaks[0]).toBeCloseTo(-Math.min(P.rider.brakingG, P.tyre.mu * P.tyre.gripScale), 4);
+      for (const peak of peaks) expect(Math.abs(peak - peaks[0])).toBeLessThan(1e-5);
+    });
+
+    it('carries the brakes to a higher lean the deeper and braver the rider is', () => {
+      // The envelope-level reading of "extent": how far round the corner
+      // entry there is still measurable deceleration.
+      const line = rampedCornerLine();
+      const mu = P.tyre.mu * P.tyre.gripScale;
+      const aLatMaxG = Math.min(mu, Math.tan((P.tyre.maxLeanDeg * P.rider.leanUsage * Math.PI) / 180));
+      const deepestLatUse = (d: number, q: number): number => {
+        const env = solve(line, clampParams({ ...P, rider: { ...P.rider, trailBrakeDepth: d, trailBrakeProfile: q } }));
+        let worst = 0;
+        for (let i = 0; i < env.longG.length; i++) {
+          if (env.longG[i] < -0.05) worst = Math.max(worst, Math.abs(env.latG[i]) / aLatMaxG);
+        }
+        return worst;
+      };
+      const shallow = deepestLatUse(0, 1);
+      const deep = deepestLatUse(1, 1);
+      expect(deep - shallow).toBeGreaterThan(0.3);
+      // and the depth limit really is a limit: at depth 0 braking is over
+      // well before the bike is properly leaned
+      expect(shallow).toBeLessThan(0.45);
+      const timid = deepestLatUse(1, 0);
+      expect(deep - timid).toBeGreaterThan(0.05);
+    });
+  });
+
+  describe('traction control responds to slip demand, not to nothing', () => {
+    it('does not touch the drive while the bike is upright, at any threshold', () => {
+      // The defect: `tcFactor = 0.6 + 0.4 * tcThreshold` was a CONSTANT
+      // multiplier on the longitudinal grip term, so at the shipped 0.5 it
+      // discarded 20 % of the available grip bolt upright, where there is no
+      // lateral load to make the rear slip. Nothing a traction control does is
+      // visible on a straight line.
+      // `cornerLine` is the right fixture: its only drive phase is the exit
+      // straight, at zero curvature, because the arc is pinned at the lateral
+      // limit and the entry straight is already at top speed. (A bare
+      // `straightLine` would NOT do — pass 1 puts the whole line at top speed,
+      // so the forward pass never binds there and any assertion about it is
+      // vacuous.)
+      const line = cornerLine();
+      const open = solve(line, clampParams({ ...P, rider: { ...P.rider, tcThreshold: 1 } })).lapTimeS;
+      const strict = solve(line, clampParams({ ...P, rider: { ...P.rider, tcThreshold: 0 } })).lapTimeS;
+      // Measured: 0.004 s apart, the residual being the single arc sample that
+      // still carries lateral load while driving. With the old constant
+      // multiplier they are 0.86 s apart — a 200x margin either side of this
+      // threshold, so it cannot pass by accident in either direction.
+      expect(Math.abs(strict - open)).toBeLessThan(0.02);
+    });
+
+    it('still cuts the drive when the bike is leaned, by a margin worth having', () => {
+      const { track, corridor } = circuitTrack(6, 2, 0.25);
+      const line = buildLine(track, corridor, P);
+      const open = solve(line, clampParams({ ...P, rider: { ...P.rider, tcThreshold: 1 } })).lapTimeS;
+      const strict = solve(line, clampParams({ ...P, rider: { ...P.rider, tcThreshold: 0 } })).lapTimeS;
+      // measured 0.93 s on a 61 s lap
+      expect(strict - open).toBeGreaterThan(0.3);
+    });
   });
 
   it('never lets the tyre demand exceed the friction circle on its own output', () => {

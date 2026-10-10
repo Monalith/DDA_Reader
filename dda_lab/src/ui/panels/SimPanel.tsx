@@ -16,12 +16,14 @@ interface SliderProps {
   unit?: string;
   decimals?: number;
   testId: string;
+  /** One sentence saying what the slider means, shown as a tooltip. */
+  help?: string;
   onChange: (v: number) => void;
 }
 
-function Slider({ label, value, min, max, step, unit, decimals = 2, testId, onChange }: SliderProps) {
+function Slider({ label, value, min, max, step, unit, decimals = 2, testId, help, onChange }: SliderProps) {
   return (
-    <label className="sim-slider">
+    <label className="sim-slider" title={help}>
       <span className="sim-slider-label">{label}</span>
       <input
         type="range"
@@ -204,8 +206,10 @@ export default function SimPanel() {
           <Slider label="Line style (C↔V)" value={params.rider.kappa} min={0} max={1} step={0.01}
             testId="sim-kappa" onChange={(v) => debouncedSetSimParams({ rider: { kappa: v } })} />
           <Slider label="Trail brake depth" value={params.rider.trailBrakeDepth} min={0} max={1} step={0.01}
+            help="How deep into the corner the rider carries the brakes. 0 = done braking the moment the bike leans (brake upright, turn, then drive); 1 = brakes still on at maximum lean."
             testId="sim-tb-depth" onChange={(v) => debouncedSetSimParams({ rider: { trailBrakeDepth: v } })} />
-          <Slider label="Brake release" value={params.rider.trailBrakeProfile} min={0} max={1} step={0.01}
+          <Slider label="Trail brake at lean" value={params.rider.trailBrakeProfile} min={0} max={1} step={0.01}
+            help="How hard the rider dares to brake once leaned over. 0 = timid, pressure falls away as soon as the bike leans; 1 = brave, nearly all the grip the tyre has left, right up to the depth limit."
             testId="sim-tb-profile" onChange={(v) => debouncedSetSimParams({ rider: { trailBrakeProfile: v } })} />
         </fieldset>
       </div>

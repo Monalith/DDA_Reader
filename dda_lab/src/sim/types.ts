@@ -92,13 +92,21 @@ export interface RiderParams {
   /** Line style: 0 = C line (even curvature), 1 = V line (squared off). */
   kappa: number;
   /**
-   * How much of the remaining longitudinal share the rider actually spends on
-   * braking as lean increases, 0..1. At 1 the brakes are carried to the apex
-   * (trail braking); at 0 braking fades out as soon as the bike is leaned,
-   * which is straight-line braking.
+   * EXTENT of trail braking, 0..1: how deep into the corner the rider carries
+   * the brakes at all, as the lateral-grip-use fraction at which brake
+   * pressure has reached zero. At 1 the brakes can be carried to maximum lean;
+   * at 0 they are off by the time the bike is properly leaned, which is
+   * straight-line braking. See `brakeShare` in `solver.ts`.
    */
   trailBrakeDepth: number;
-  /** Shape of the brake-release taper into the corner, 0..1. */
+  /**
+   * MAGNITUDE of trail braking, 0..1: how much of the still-available
+   * longitudinal grip the rider dares to use at a given lean angle on the way
+   * to the depth limit. 0 is timid (pressure falls away as soon as the bike
+   * leans), 1 is brave (nearly the whole remaining share of the friction
+   * ellipse). Orthogonal to `trailBrakeDepth`: that one sets WHERE braking
+   * stops, this one HOW HARD it is until then.
+   */
   trailBrakeProfile: number;
 }
 

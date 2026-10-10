@@ -1,14 +1,24 @@
-// The racing line, parameterised by kappa.
+// The racing line, parameterised by kappa: the standard minimum-curvature /
+// minimum-distance blend.
 //
-// kappa = 0 is the corner-speed ("C") line: minimise squared curvature, which
-// spreads the direction change over the longest possible arc.
-// kappa = 1 is the point-and-shoot ("V") line: concentrate curvature in a short
-// zone and straighten the exit, which is what a powerful bike wants.
+// kappa = 0 is the corner-speed ("C") line: MINIMUM CURVATURE, which spreads
+// the direction change over the widest possible arc and so allows the highest
+// cornering speed.
+// kappa = 1 is the point-and-shoot ("V") line: MINIMUM DISTANCE, the shortest
+// path through the corridor. It cuts to the inside of the bend, which
+// concentrates the direction change into a short zone and straightens what is
+// either side of it — what a powerful bike wants, because it can recover the
+// lost apex speed on the exit.
 //
-// Both are the same optimisation with a different penalty: the C objective
-// penalises curvature itself, the V objective penalises curvature CHANGE very
-// little and curvature a lot only where it is already low, which pushes the
-// solution towards "straight, then a sharp bit, then straight".
+// kappa = 0.5 is the midpoint of the blend, which is pure smoothing: the two
+// objectives' targets are equal and opposite there and cancel exactly.
+//
+// Both ends are averaging (diffusive) operators, so the Gauss-Seidel sweep is
+// unconditionally stable at every kappa — the corridor clamp bounds the line
+// because the corridor is a real constraint, not because the iteration would
+// otherwise blow up. An earlier revision used an "anti-diffusion sharpening"
+// term for the V end, which diverged for kappa > ~0.70 and made the shipped
+// default (0.85) produce a saw-tooth rather than a line; see task-6-report.md.
 import { fromLocalM, toLocalM } from '../core/geo';
 import type { LngLat, TrackModel } from '../core/types';
 import { stencilK, stencilLeftNormal } from './corridor';
@@ -18,18 +28,6 @@ import type { Corridor, Line, SimParams } from './types';
 const SWEEPS = 60;
 /** Relaxation factor; over-relaxation above 1 converges faster but oscillates. */
 const OMEGA = 0.6;
-/**
- * Anti-diffusion strength of the V (shortness) objective: how strongly it
- * amplifies the gap between d[i] and its neighbours' average each sweep.
- * Tuned empirically (see task-6-report.md): low enough that the box clamp
- * keeps it bounded over 60 sweeps, high enough to produce a measurably more
- * concentrated curvature profile than the C objective even on a perfectly
- * uniform corridor (a full-radius circle), where there is no corridor-width
- * contrast for the line to exploit — the only source of concentration left
- * is this amplification of the (otherwise negligible, ~1e-6 relative)
- * curvature noise intrinsic to any discretised closed loop.
- */
-const SHARPEN_GAIN = 0.5;
 
 /** Deterministic smooth pseudo-noise in [-1,1]: the same params give the same line. */
 function wander(i: number, n: number, seed: number): number {
@@ -41,8 +39,22 @@ function wander(i: number, n: number, seed: number): number {
 }
 
 /**
- * Lateral offsets that minimise the kappa-weighted curvature objective, subject
- * to the corridor as a hard box constraint.
+ * Lateral offsets that blend the minimum-curvature and minimum-distance
+ * objectives by `kappa`, subject to the corridor as a hard box constraint.
+ *
+ * KNOWN LIMITATION: at `SWEEPS` = 60 this is deliberately a SHORT-RANGE
+ * operator. Gauss-Seidel at OMEGA = 0.6 diffuses roughly sqrt(SWEEPS) ~ 8
+ * vertices (~16 m at a 2 m spacing), so the offsets form a boundary layer
+ * around each curvature feature rather than a lap-wide optimum: a corner gets
+ * its wide or tight line, but the line returns to the centre along a long
+ * straight instead of setting up for the next corner from a hundred metres
+ * out. That is intentional for now. Minimising curvature around a CLOSED loop
+ * has no bounded solution (you cannot straighten a circle), so the uniform
+ * offset is an unconstrained zero mode of this operator: raising SWEEPS to
+ * 1000 does not converge on a better line, it drives the whole lap onto one
+ * wall of the corridor (measured: max|offset| saturates at the 6.1 m box on a
+ * 977 m oval). Fixing that properly needs the mean offset pinned — a gauge
+ * condition on the zero mode — not more iterations.
  */
 function solveOffsets(
   n: number,
@@ -53,34 +65,37 @@ function solveOffsets(
   kappa: number,
 ): Float32Array {
   const d = new Float32Array(n);
-  // Curvature of the offset line, to first order:  k_eff = k0 - d'' .
-  // Minimising sum(k_eff^2) is a smoothing of d towards k0 * stepM^2 — this
-  // is the C objective: it always pulls d[i] towards its neighbours' average,
-  // so it cannot help but spread any bend over the widest arc it can reach.
+  // Curvature of the offset line, to first order:  k_eff = k0 - d'' (with d
+  // measured positive to the left of travel). Minimising sum(k_eff^2) gives
+  // the stationarity condition  d'' = k0, i.e. in discrete form
   //
-  // The V objective cannot be "the same target, weighted differently": a
-  // fixed per-vertex target (e.g. pulling every vertex straight to its own
-  // box edge) moves the WHOLE loop by the same amount and leaves the
-  // curvature exactly as spread out as before — squaring a corner off is
-  // not a translation, it is a *concentration*, and concentration needs a
-  // term that amplifies whatever deviation from the local average already
-  // exists (an anti-diffusion / sharpening step) rather than one more
-  // position to average towards. SHARPEN_GAIN controls how strongly this
-  // amplifies; the box clamp below is what keeps it from diverging.
-  const wCurv = 1 - 0.95 * kappa;
-  const wShort = 0.95 * kappa;
+  //   d[i] = (d[i-1] + d[i+1])/2 + k0[i]*h^2/2        (minimum curvature)
+  //
+  // which is a smoothing of d, so it always spreads a bend over the widest
+  // arc the corridor will allow — the C line.
+  //
+  // Minimum distance is the SAME operator with the curvature target's sign
+  // flipped: where minimum curvature pushes the line away from the inside of
+  // the bend to straighten it out, the shortest path pulls it towards the
+  // inside, which is what concentrates the direction change — the V line.
+  //
+  // One blend parameter covers both, and kappa = 0.5 (pure smoothing) sits
+  // exactly halfway. The checkerboard (highest-frequency) gain of the sweep
+  // is |1 - 2*OMEGA| = 0.2 at every kappa, so this cannot diverge.
   const h2 = stepM * stepM;
+  // SIGN: d is positive to the LEFT of travel, so for a left-hand bend
+  // (k0 > 0) a positive offset moves the line to the INSIDE. Minimum distance
+  // is the inside line, so the forcing must be positive at kappa = 1 and
+  // negative at kappa = 0 — measured on a counterclockwise 60 m circle with a
+  // 6 m corridor, this sign gives r_min 60.53 m / 387.4 m of line at kappa = 0
+  // against 57.07 m / 365.7 m at kappa = 1, and the opposite sign reverses
+  // both orderings exactly.
+  const curvSign = 2 * kappa - 1;
   for (let sweep = 0; sweep < SWEEPS; sweep++) {
     for (let i = 0; i < n; i++) {
       const p = d[(i - 1 + n) % n];
       const q = d[(i + 1) % n];
-      // curvature term wants  d[i] = (p + q)/2 + k0*h^2/2
-      const curvTarget = (p + q) / 2 + (baseCurv[i] * h2) / 2;
-      // shortness term grows the existing gap between d[i] and its
-      // neighbours' average, concentrating whatever bend the curvature
-      // term has already seeded instead of adding a new, separate pull.
-      const sharpTarget = d[i] + SHARPEN_GAIN * (d[i] - (p + q) / 2);
-      const target = (wCurv * curvTarget + wShort * sharpTarget) / (wCurv + wShort);
+      const target = (p + q) / 2 + (curvSign * (baseCurv[i] * h2)) / 2;
       const next = d[i] + OMEGA * (target - d[i]);
       d[i] = Math.min(hiM[i], Math.max(loM[i], next));
     }
@@ -93,13 +108,18 @@ function polylineCurvature(points: LngLat[], stencilM: number): Float32Array {
   const n = points.length;
   const out = new Float32Array(n);
   if (n < 3) return out;
-  // estimate spacing from the first few segments
+  // Spacing averaged over the WHOLE closed loop, not the first few segments:
+  // centerline sampling density varies around a lap (GPS rate against speed),
+  // so a stencil sized from the start straight is the wrong physical length
+  // everywhere else. This is the same lap-wide average `stencilK` in
+  // corridor.ts takes, expressed over the polyline's own vertices because
+  // `points` here may be the offset line rather than the centerline.
   let span = 0;
-  for (let i = 1; i < Math.min(n, 11); i++) {
-    const m = toLocalM(points[i - 1], points[i]);
+  for (let i = 0; i < n; i++) {
+    const m = toLocalM(points[i], points[(i + 1) % n]);
     span += Math.hypot(m[0], m[1]);
   }
-  const ds = span / Math.min(n - 1, 10);
+  const ds = span / n;
   const k = Math.max(1, Math.round(stencilM / Math.max(0.1, ds)));
   for (let i = 0; i < n; i++) {
     const p0 = toLocalM(points[i], points[(i - k + n) % n]);
@@ -122,6 +142,79 @@ function polylineCurvature(points: LngLat[], stencilM: number): Float32Array {
   return out;
 }
 
+/**
+ * Usable half-widths at every vertex, with the corridor's unknown vertices
+ * filled in from their nearest known neighbours.
+ *
+ * A flat `fallbackHalfWidthM` at every unknown vertex is wrong whenever the
+ * fallback is wider than the circuit: on a 2-3 m corridor with 35 % of
+ * vertices unknown (the real circuit's figure) it lets the line run metres
+ * outside the asphalt that WAS measured either side of the gap. Interpolating
+ * between the nearest known vertex before and after keeps the gap's width
+ * continuous with its surroundings; the flat fallback is only reached when the
+ * corridor has no usable vertex at all.
+ *
+ * A non-finite stored width counts as unknown even where `known[i]` says
+ * otherwise, on EITHER side — `buildLine` is public and takes a plain
+ * `Corridor`, so a NaN must degrade to "unknown", not propagate into the box.
+ */
+export function effectiveHalfWidths(
+  n: number,
+  corridor: Corridor | undefined,
+  fallbackHalfWidthM: number,
+): { leftM: Float32Array; rightM: Float32Array } {
+  const leftM = new Float32Array(n);
+  const rightM = new Float32Array(n);
+  const usable = new Array<boolean>(n);
+  let anyUsable = false;
+  for (let i = 0; i < n; i++) {
+    usable[i] =
+      !!corridor &&
+      corridor.known[i] === true &&
+      Number.isFinite(corridor.leftM[i]) &&
+      Number.isFinite(corridor.rightM[i]);
+    if (usable[i]) anyUsable = true;
+  }
+  if (!corridor || !anyUsable) {
+    leftM.fill(fallbackHalfWidthM);
+    rightM.fill(fallbackHalfWidthM);
+    return { leftM, rightM };
+  }
+  // nearest usable vertex at or before / at or after i, wrapping (two rounds
+  // so a gap that straddles index 0 sees across it)
+  const prev = new Int32Array(n);
+  const next = new Int32Array(n);
+  let last = -1;
+  for (let round = 0; round < 2; round++) {
+    for (let i = 0; i < n; i++) {
+      if (usable[i]) last = i;
+      if (round === 1) prev[i] = last;
+    }
+  }
+  last = -1;
+  for (let round = 0; round < 2; round++) {
+    for (let i = n - 1; i >= 0; i--) {
+      if (usable[i]) last = i;
+      if (round === 1) next[i] = last;
+    }
+  }
+  for (let i = 0; i < n; i++) {
+    if (usable[i]) {
+      leftM[i] = corridor.leftM[i];
+      rightM[i] = corridor.rightM[i];
+      continue;
+    }
+    const a = prev[i];
+    const b = next[i];
+    const dA = (i - a + n) % n;
+    const dB = (b - i + n) % n;
+    const w = dA + dB > 0 ? dA / (dA + dB) : 0;
+    leftM[i] = corridor.leftM[a] * (1 - w) + corridor.leftM[b] * w;
+    rightM[i] = corridor.rightM[a] * (1 - w) + corridor.rightM[b] * w;
+  }
+  return { leftM, rightM };
+}
+
 export function buildLine(
   track: TrackModel,
   corridor: Corridor | undefined,
@@ -130,19 +223,20 @@ export function buildLine(
 ): Line {
   const cl = track.centerline;
   const n = cl.length;
-  const stepM = track.lengthM / Math.max(1, n);
+  // n - 1, matching `stencilK`'s and `extractCorridor`'s step for the same
+  // quantity — three copies of this had drifted to two different divisors.
+  const stepM = track.lengthM / Math.max(1, n - 1);
   const margin = params.tyre.kerbMarginM;
+
+  const { leftM: effLeft, rightM: effRight } = effectiveHalfWidths(n, corridor, fallbackHalfWidthM);
 
   // box constraints: hi = how far left, lo = how far right (negative)
   const hiM = new Float32Array(n);
   const loM = new Float32Array(n);
   for (let i = 0; i < n; i++) {
-    const useCorridor = corridor && corridor.known[i] && Number.isFinite(corridor.leftM[i]);
-    const l = useCorridor ? corridor.leftM[i] : fallbackHalfWidthM;
-    const r = useCorridor ? corridor.rightM[i] : fallbackHalfWidthM;
     // leave half a bike's width inside the edge, then allow the kerb margin
-    hiM[i] = Math.max(0, l - 0.4) + margin;
-    loM[i] = -(Math.max(0, r - 0.4) + margin);
+    hiM[i] = Math.max(0, effLeft[i] - 0.4) + margin;
+    loM[i] = -(Math.max(0, effRight[i] - 0.4) + margin);
   }
 
   const baseCurv = polylineCurvature(cl, 10);

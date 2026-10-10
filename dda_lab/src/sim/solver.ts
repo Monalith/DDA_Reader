@@ -135,16 +135,32 @@ export function solve(line: Line, params: SimParams): Envelope {
     const vNext = v[(i + 1) % n];
     const vAvg = Math.max(V_MIN, (v[i] + vNext) / 2);
     t += ds / vAvg;
+    // INDEX STAGGER: longG[i] is a SEGMENT value — the mean acceleration over
+    // i -> i+1 — while latG[i] and leanDeg[i] are POINT values at i. gripUse
+    // below combines the two, so at a point where the lateral and longitudinal
+    // demands are changing fast (a corner entry) it reads the lateral demand
+    // at i against the longitudinal demand just after i. That stagger, not
+    // "numerical slack", is what lets gripUse come out at 1.001-1.044 on the
+    // solver's own output even though each pass respects the circle exactly.
     longG[i] = (vNext * vNext - v[i] * v[i]) / (2 * ds * G);
     const aLat = (v[i] * v[i] * line.curvature[i]) / G;
     latG[i] = aLat;
     leanDeg[i] = (Math.atan(aLat) * 180) / Math.PI;
-    // Combined tyre demand as a fraction of the friction circle. Above 1 the
-    // tyre is being asked for more than it has — that is a fall, not a lap.
-    // The solver's own passes keep this at or under 1 by construction, so a
-    // value over 1 means a parameter combination the rider cannot actually
-    // ride, and the UI warns rather than quietly reporting a fast lap.
-    const lu = Math.min(1.5, Math.abs(aLat) / (aLatMax / G));
+    // Combined tyre demand as a fraction of the FRICTION CIRCLE: both axes are
+    // divided by the same mu, so 1.0 means the tyre is at its limit and above
+    // 1 means it is being asked for more than it has — a fall, not a lap. The
+    // solver's own passes keep this at or under 1 by construction, so a value
+    // over 1 means a parameter combination the rider cannot ride, and the UI
+    // warns rather than quietly reporting a fast lap.
+    //
+    // The LEAN limit is deliberately NOT folded in here. Dividing the lateral
+    // term by aLatMax/G = min(mu, tan(leanLimit)) would make this an ellipse
+    // rather than a circle, and on a lean-limited machine (the 250: tan(49.4
+    // deg) = 1.17 against mu = 1.25) a perfectly rideable corner would read
+    // 1.0 laterally with grip still in hand. Running out of lean angle is a
+    // separate constraint with its own channel (`leanDeg`); it is not a tyre
+    // overload and must not be reported as one.
+    const lu = Math.min(1.5, Math.abs(aLat) / mu);
     const lo = Math.min(1.5, Math.abs(longG[i]) / mu);
     gripUse[i] = Math.hypot(lu, lo);
   }

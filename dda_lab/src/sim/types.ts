@@ -42,3 +42,49 @@ export interface Envelope {
   tS: Float64Array;
   lapTimeS: number;
 }
+
+export interface MachineParams {
+  presetId: string;
+  powerKw: number;
+  /** Bike plus rider and fuel. */
+  massKg: number;
+  /** Drag area, m^2. */
+  cdA: number;
+  wheelbaseM: number;
+  cgHeightM: number;
+  finalDrive: number;
+  /** Gearbox ratios, first to top. Used only by the rpm/gear model. */
+  gearRatios: number[];
+}
+
+export interface TyreTrackParams {
+  /** Peak tyre-road friction coefficient. */
+  mu: number;
+  /** Maximum usable lean angle, degrees. */
+  maxLeanDeg: number;
+  /** How far past the extracted asphalt edge the line may run, metres. */
+  kerbMarginM: number;
+  /** One multiplier on mu standing in for surface and temperature. */
+  gripScale: number;
+}
+
+export interface RiderParams {
+  /** RMS lateral wander from the ideal line, metres. */
+  lineDeviationM: number;
+  /** Peak braking deceleration the rider will use, g. */
+  brakingG: number;
+  /** Delay between the apex and the throttle coming back, seconds. */
+  throttleDelayS: number;
+  /** Slip the traction control allows before cutting torque, 0..1. */
+  tcThreshold: number;
+  /** Fraction of the tyre's lean limit the rider actually uses, 0..1. */
+  leanUsage: number;
+  /** Line style: 0 = C line (even curvature), 1 = V line (squared off). */
+  kappa: number;
+}
+
+export interface SimParams {
+  machine: MachineParams;
+  tyre: TyreTrackParams;
+  rider: RiderParams;
+}

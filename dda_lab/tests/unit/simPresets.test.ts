@@ -20,7 +20,13 @@ describe('presets', () => {
   });
 
   it('raises the lean limit with the class, matching the tyre data', () => {
-    expect(presetById('250').tyre.maxLeanDeg).toBeLessThan(presetById('1000').tyre.maxLeanDeg);
+    const lean250 = presetById('250').tyre.maxLeanDeg;
+    const lean600 = presetById('600').tyre.maxLeanDeg;
+    const lean1000 = presetById('1000').tyre.maxLeanDeg;
+    const leanPanigale = presetById('panigale-v4').tyre.maxLeanDeg;
+    expect(lean250).toBeLessThan(lean600);
+    expect(lean600).toBeLessThan(lean1000);
+    expect(lean1000).toBeLessThanOrEqual(leanPanigale);
   });
 
   it('falls back to custom for an unknown id instead of throwing', () => {
@@ -32,12 +38,14 @@ describe('clampParams', () => {
   it('holds every divisor above its physical floor', () => {
     const c = clampParams({
       ...DEFAULT_SIM_PARAMS,
-      machine: { ...DEFAULT_SIM_PARAMS.machine, powerKw: 0, massKg: 0 },
+      machine: { ...DEFAULT_SIM_PARAMS.machine, powerKw: 0, massKg: 0, wheelbaseM: 0, cgHeightM: 0 },
       tyre: { ...DEFAULT_SIM_PARAMS.tyre, mu: 0, gripScale: 0, maxLeanDeg: 0 },
       rider: { ...DEFAULT_SIM_PARAMS.rider, brakingG: 0 },
     });
     expect(c.machine.powerKw).toBeGreaterThan(0);
     expect(c.machine.massKg).toBeGreaterThan(0);
+    expect(c.machine.wheelbaseM).toBeGreaterThan(0);
+    expect(c.machine.cgHeightM).toBeGreaterThan(0);
     expect(c.tyre.mu).toBeGreaterThan(0);
     expect(c.tyre.gripScale).toBeGreaterThan(0);
     expect(c.tyre.maxLeanDeg).toBeGreaterThan(0);

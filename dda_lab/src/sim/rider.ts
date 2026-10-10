@@ -44,17 +44,50 @@ const OVERLAP = 1.15;
 const DEMAND_TAU_S = 0.12;
 
 /**
- * Brake dead-band, as a percentage of the rider's own peak braking: the brake
- * goes on only once the smoothed demand passes `_ON`, and comes off again only
- * once it falls below `_OFF`.
+ * Brake dead-band, as a percentage of the rider's own peak braking: a sample
+ * only counts toward a braking RUN once the smoothed demand passes `_ON`, and
+ * the run ends again only once it falls below `_OFF`.
  *
- * The gap is what stops the channel chattering around a threshold, and the
- * absolute level is what stops a trivial lift being reported as braking: at
- * the default `brakingG` = 1.1, 12 % is 0.13 g, which a closed throttle
- * supplies on its own. Nobody touches the lever for that.
+ * The gap is what stops a single borderline sample from flickering the run
+ * boundary, and the absolute level is what stops a trivial lift being
+ * reported as braking at all: at the default `brakingG` = 1.1, 12 % is 0.13 g,
+ * which a closed throttle supplies on its own. Nobody touches the lever for
+ * that.
+ *
+ * This dead-band alone is NOT what keeps a rider's brake to one application
+ * per corner — see `MERGE_GAP_S` below for that. It only decides which raw
+ * samples are "braking" before the event layer looks at them.
  */
 const BRAKE_ON_PCT = 12;
 const BRAKE_OFF_PCT = 4;
+
+/**
+ * A rider brakes once per corner: squeeze on, hold, bleed off. Any run of
+ * raw braking samples that ends and restarts within `MERGE_GAP_S` is not a
+ * second application — it is the same squeeze riding over a shallow local
+ * speed minimum the quasi-steady-state envelope leaves behind (see
+ * `CURV_SMOOTH_M` in `line.ts`, which removes most but not all of these).
+ * The lever was never released in between, so the gap is filled rather than
+ * dropped to zero.
+ *
+ * Chosen by measurement on the 5-corner synthetic circuit
+ * (`circuitFixture.ts`, `jitterM = 0.25`): after the existing low-pass and
+ * dead-band, the leftover chatter inside one corner has release-to-reapply
+ * gaps of 0.22-0.40 s, while the gap between the end of one corner's braking
+ * and the start of the next corner's is never under 1.58 s. 0.8 s sits in the
+ * middle of that 4x margin, comfortably merging the former without ever
+ * merging two distinct corners.
+ */
+const MERGE_GAP_S = 0.8;
+
+/**
+ * A run shorter than this is a momentary dip answered by the rate limiter
+ * and the dead-band already, not a deliberate application a rider would
+ * notice. Chosen as roughly the time a rider's hand takes to engage the
+ * lever at all; shorter than the fastest `BRAKE_ON_PCT_S` ramp below would
+ * ever need to reach a meaningful level.
+ */
+const MIN_EVENT_S = 0.15;
 
 /** Rolling radius of a 190/55-17 rear, metres. */
 const WHEEL_RADIUS_M = 0.31;
@@ -114,32 +147,128 @@ export function riderChannels(line: Line, env: Envelope, params: SimParams): Rid
     return Math.abs(delta) <= maxStep ? target : prev + Math.sign(delta) * maxStep;
   };
 
+  // ---- demand low-pass and the raw (per-sample) dead-band ---------------
+  // Both are pre-passes: they need the full arrays before the event layer
+  // below can look ahead and behind a given sample.
+  const fThr = new Float32Array(n);
+  const fBrk = new Float32Array(n);
+  const rawBraking = new Uint8Array(n);
+  fThr[0] = thrDemand[0];
+  fBrk[0] = brkDemand[0];
+  rawBraking[0] = brkDemand[0] >= BRAKE_ON_PCT ? 1 : 0;
+  {
+    let braking = rawBraking[0] === 1;
+    for (let i = 1; i < n; i++) {
+      const dt = Math.max(1e-3, env.tS[i] - env.tS[i - 1]);
+      const aD = 1 - Math.exp(-dt / DEMAND_TAU_S);
+      fThr[i] = fThr[i - 1] + aD * (thrDemand[i] - fThr[i - 1]);
+      fBrk[i] = fBrk[i - 1] + aD * (brkDemand[i] - fBrk[i - 1]);
+      if (!braking && fBrk[i] >= BRAKE_ON_PCT) braking = true;
+      else if (braking && fBrk[i] < BRAKE_OFF_PCT) braking = false;
+      rawBraking[i] = braking ? 1 : 0;
+    }
+  }
+
+  // ---- braking EVENTS, not per-sample levels -----------------------------
+  //
+  // A rider brakes once per corner: on, hold, bleed off. The per-sample
+  // dead-band above answers chattering around a threshold; it does not stop
+  // a corner's shallow local speed minima from reading as separate
+  // applications, because each one legitimately crosses BOTH the ON and the
+  // OFF level on its own. So the raw dead-band runs are merged into events
+  // (`MERGE_GAP_S`), tiny leftover runs are dropped (`MIN_EVENT_S`), and each
+  // surviving event is reshaped to rise to one peak and bleed off — never a
+  // second peak inside the same event.
+  const inEvent = new Uint8Array(n);
+  const brkTarget = new Float32Array(n); // 0 outside every event
+
+  // 1. raw runs of rawBraking
+  const rawRuns: Array<[number, number]> = [];
+  {
+    let i = 0;
+    while (i < n) {
+      if (!rawBraking[i]) { i++; continue; }
+      let j = i;
+      while (j < n && rawBraking[j]) j++;
+      rawRuns.push([i, j - 1]);
+      i = j;
+    }
+  }
+
+  // 2. merge runs separated by less than MERGE_GAP_S of time
+  const mergedRuns: Array<[number, number]> = [];
+  for (const run of rawRuns) {
+    const last = mergedRuns[mergedRuns.length - 1];
+    if (last && env.tS[run[0]] - env.tS[last[1]] < MERGE_GAP_S) last[1] = run[1];
+    else mergedRuns.push([run[0], run[1]]);
+  }
+
+  // 3. drop runs shorter than MIN_EVENT_S, and shape the survivors
+  for (const [s, e] of mergedRuns) {
+    if (env.tS[e] - env.tS[s] < MIN_EVENT_S) continue;
+    const len = e - s + 1;
+    const level = new Float32Array(len);
+    // fill: a raw sample keeps its own smoothed demand; a gap sample (one
+    // that fell briefly below the dead-band inside a merged run) is linearly
+    // interpolated between its enclosing raw samples — the lever was never
+    // actually released, so the level never drops to zero in between.
+    for (let i = s; i <= e; i++) {
+      if (rawBraking[i]) { level[i - s] = fBrk[i]; continue; }
+      let pi = i - 1;
+      while (pi >= s && !rawBraking[pi]) pi--;
+      let ni = i + 1;
+      while (ni <= e && !rawBraking[ni]) ni++;
+      const pv = pi >= s ? fBrk[pi] : fBrk[s];
+      const nv = ni <= e ? fBrk[ni] : fBrk[e];
+      const pt = pi >= s ? env.tS[pi] : env.tS[s];
+      const nt = ni <= e ? env.tS[ni] : env.tS[e];
+      const frac = nt > pt ? (env.tS[i] - pt) / (nt - pt) : 0;
+      level[i - s] = pv + frac * (nv - pv);
+    }
+    // monotone shape: non-decreasing up to the peak, non-increasing after —
+    // no second peak inside one event. The release RATE is still governed
+    // by trailBrakeProfile, in the rate limiter below; this only removes a
+    // re-rise in the TARGET it is tracking.
+    let peakOff = 0;
+    for (let k = 1; k < len; k++) if (level[k] > level[peakOff]) peakOff = k;
+    let running = 0;
+    for (let k = 0; k <= peakOff; k++) {
+      running = Math.max(running, level[k]);
+      level[k] = running;
+    }
+    running = level[peakOff];
+    for (let k = peakOff + 1; k < len; k++) {
+      running = Math.min(running, level[k]);
+      level[k] = running;
+    }
+    for (let i = s; i <= e; i++) {
+      inEvent[i] = 1;
+      brkTarget[i] = level[i - s];
+    }
+  }
+
+  // No throttle inside a braking event, beyond the small trail-brake overlap
+  // the OVERLAP clamp still allows on the way out: zeroing the FILTERED
+  // throttle demand (rather than the raw per-sample one) means a positive
+  // longG blip inside a merged event's gap cannot restart the throttle lag
+  // early, which is the other half of the throttle/brake oscillation the
+  // per-sample dead-band could not stop on its own.
+  for (let i = 0; i < n; i++) if (inEvent[i]) fThr[i] = 0;
+
   // ---- throttle lag, then both channels through their rate limits -------
   // The lag is in seconds, so it is applied against the envelope's own time
   // vector: the same delay costs more samples where the bike is slow.
   const tau = Math.max(1e-3, p.rider.throttleDelayS);
-  let lagged = thrDemand[0];
+  let lagged = fThr[0];
   let thr = thrDemand[0];
   let brk = brkDemand[0];
-  // the low-passed demands, and the brake's latched on/off state
-  let fThr = thrDemand[0];
-  let fBrk = brkDemand[0];
-  let braking = brkDemand[0] >= BRAKE_ON_PCT;
   for (let i = 0; i < n; i++) {
     const dt = i === 0 ? 0.01 : Math.max(1e-3, env.tS[i] - env.tS[i - 1]);
     const alpha = 1 - Math.exp(-dt / tau);
 
-    // low-pass, then dead-band with hysteresis: see DEMAND_TAU_S / BRAKE_ON_PCT
-    const aD = 1 - Math.exp(-dt / DEMAND_TAU_S);
-    fThr += aD * (thrDemand[i] - fThr);
-    fBrk += aD * (brkDemand[i] - fBrk);
-    if (!braking && fBrk >= BRAKE_ON_PCT) braking = true;
-    else if (braking && fBrk < BRAKE_OFF_PCT) braking = false;
-    const brkTarget = braking ? fBrk : 0;
+    lagged = fThr[i] < lagged ? fThr[i] : lagged + alpha * (fThr[i] - lagged);
 
-    lagged = fThr < lagged ? fThr : lagged + alpha * (fThr - lagged);
-
-    brk = rateLimit(brk, brkTarget, dt, BRAKE_ON_PCT_S, BRAKE_OFF_PCT_S);
+    brk = rateLimit(brk, brkTarget[i], dt, BRAKE_ON_PCT_S, BRAKE_OFF_PCT_S);
     thr = rateLimit(thr, lagged, dt, THROTTLE_ON_PCT_S, THROTTLE_OFF_PCT_S);
 
     // Mutual exclusion. A rider can hold a trickle of throttle against the

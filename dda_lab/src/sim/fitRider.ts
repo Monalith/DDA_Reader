@@ -37,9 +37,28 @@
 //   driveG   *= ΔKE_ref/ΔKE_sim, apex → zone end (spec's exit-speed ratio);
 //   runG     *= (v_ref/v_sim)² when the next apex is reached on a drive curve
 //            off by > tol, else ΔKE ratio zone end → the reference's speed
-//            peak on the run.
+//            at the next brake point (see below).
 //
-// Stop: every apex within 1 km/h and the lap within 0.3 s.
+// Between the apexes the QSS rider would sit on a cap all the way (full drive
+// to the braking curve, full braking to the apex); the reference does not
+// (ducati-lateral note §8). From the reference's own speed trace on the line:
+//
+//   roll-on  per corner, `rollOnS`: apex → where the reference first uses 90 %
+//            of the preset's drive (or of its own run level); the drive the
+//            bike has rises 1 − exp(−t·ln10/rollOnS) over that reference time;
+//   coast    every station where the reference neither brakes nor drives
+//            beyond ±0.1 g (the run-in before an apex, and stretches ≥ 20 m
+//            mid-run; `coastFrac`/`coastInM`): no tyre braking, and a net
+//            acceleration no higher than the reference's there;
+//   entry    a reference speed minimum ≥ 8 m before the apex and ≥ 2 km/h
+//            below it gets its own lateral segment, corrected on the minimum;
+//   runG     targets the reference's speed at the next corner's brake point
+//            (its run peak where that corner has none), and is cut where the
+//            sim over-drives the run and brakes it off.
+//
+// Stop: every apex within 1 km/h and the lap within 0.3 s of the reference
+// SPEED ridden over this line (`alignedRefLapS`); corrections are damped
+// (square root) from round 10.
 //
 // Everything else (lat g, lean, longG, brake/tps, gear, rpm) is DERIVED from
 // the fitted envelope exactly as for the other modes (riderChannels without an
@@ -51,7 +70,7 @@ import { buildLine } from './line';
 import { clampParams } from './presets';
 import type { Reference } from './reference';
 import { riderChannels } from './rider';
-import { G, lossDecelMs2, solve } from './solver';
+import { driveCapMs2, G, lossDecelMs2, solve } from './solver';
 import { toSession } from './toSession';
 import type { Corridor, Envelope, EnvelopeCaps, Line, SimParams } from './types';
 
@@ -80,6 +99,22 @@ export interface CornerModel {
   driveG: number;
   /** Fitted drive cap from the zone end to the next apex (straight + next approach), g. */
   runG: number;
+  /**
+   * Fraction of the run from this apex to the next where the reference
+   * neither brakes nor drives beyond ±COAST_G (its own speed trace): the sim
+   * coasts there (drive capped to the losses, no tyre braking). The roll-on
+   * window after the apex is not counted (it is `rollOnS`).
+   */
+  coastFrac: number;
+  /** Of that, the coast run-in directly before the NEXT apex, metres (the reference has finished braking). */
+  coastInM: number;
+
+  /**
+   * Roll-on time, s: from this apex to where the reference's drive first
+   * reaches 90 % of its peak on the run. The drive cap ramps from 0 at the
+   * apex through 90 % at `rollOnS` (reference clock); 0 = no ramp.
+   */
+  rollOnS: number;
   /** Reference brake point warped onto the sim line, metres; null without one. */
   brakeStartM: number | null;
   /** Where the fitted sim starts braking for this corner, metres; null when it does not brake. */
@@ -130,9 +165,18 @@ export interface FitOptions {
 /**
  * Correction rounds. The spec asked ≤ 6; on the BMW 6 leave K9 −7.8 km/h
  * (the sim over-drives the K8 → K9 run and brakes it off, and that chain
- * takes ~10 rounds to unwind); 12 bring every apex within 1 km/h.
+ * takes ~10 rounds to unwind); 12 brought every apex within 1 km/h. With the
+ * coast and roll-on caps (ducati-lateral note §8) the K8 → K9 chain starts
+ * further out (K9 −17 km/h before the first round) and needs 16 on the BMW
+ * κ 0.85 race line.
  */
-const DEFAULT_MAX_ITER = 12;
+const DEFAULT_MAX_ITER = 20;
+/** Entry minimum (see the lateral model): searched this far before the apex, metres ... */
+const ENTRY_WINDOW_M = 60;
+/** ... at least this far before it, metres ... */
+const ENTRY_MIN_M = 8;
+/** ... and this much below the apex speed, km/h. */
+const ENTRY_DROP_KMH = 2;
 /** Braking cap where the reference has no brake point, g (a 1000 at R 0.5 brakes at ~1.1 g, calibration note §3). */
 const DEFAULT_BRAKE_G = 1.0;
 /** Mean-κ window half-width for `aLatMeanG`, metres. */
@@ -153,9 +197,33 @@ const LONG_MIN_G = 0.1;
  * ellipse allows shows up (K12 on the BMW). Sanity bound only.
  */
 const DRIVE_MAX_G = 2.0;
+/**
+ * A reference station where |d(v²/2)/ds| stays within this, g, neither brakes
+ * nor drives: a coast (closed throttle / maintenance throttle, no brake).
+ */
+const COAST_G = 0.1;
+/** Half-width of the reference's longitudinal-g difference on the sim line, metres (10 Hz GPS speed is noisy below this). */
+const REF_ACCEL_HALF_M = 10;
+/** A mid-run coast shorter than this is a zero crossing of the drive, not a coast, metres. */
+const COAST_MIN_M = 20;
+/** Roll-on: the reference drive's fraction of its run peak that ends it. */
+const ROLL_ON_FRAC = 0.9;
+/**
+ * The roll-on is a first-order rise, 1 − exp(−t·ln10/rollOnS): 90 % at
+ * `rollOnS`. A linear ramp to 90 % lagged the reference, whose drive builds
+ * most of its value in the first few tenths and then levels off (Ducati K16
+ * exit: 0.35-0.45 g within 10-20 m of the apex, its run p90 0.6 g at 2 s).
+ */
+const ROLL_ON_RATE = Math.log(1 / (1 - ROLL_ON_FRAC));
 
 const clamp = (x: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, x));
-const step = (r: number): number => clamp(Number.isFinite(r) ? r : 1, STEP_MIN, STEP_MAX);
+const step = (r: number, damp = 1): number => clamp(Number.isFinite(r) ? r ** damp : 1, STEP_MIN, STEP_MAX);
+/**
+ * From this round on every correction is taken as its square root: the
+ * coupled K8 → K9 pair on the BMW (entry minimum, then a run braked off)
+ * otherwise limit-cycles between −0.9 and −2.4 km/h at K8.
+ */
+const DAMP_FROM_ROUND = 10;
 
 /** Lateral ceiling of the current preset: min(μ_lat, tan(maxLean·leanUsage)), g. */
 export function lateralCeilingG(params: SimParams): number {
@@ -290,6 +358,8 @@ export function fitRider(line: Line, params: SimParams, ref: Reference, opts: Fi
   const kS = smoothedCurvature(line);
   const seg = new Int32Array(n);
   const segCrit: number[] = [];
+  /** Per corner: the reference's entry speed minimum that got its own segment, else −1. */
+  const entryMin = new Int32Array(K).fill(-1);
   {
     // start the walk at the smallest |κ| so no segment straddles the seam
     let i0 = 0;
@@ -305,6 +375,30 @@ export function fitRider(line: Line, params: SimParams, ref: Reference, opts: Fi
         if (signFlip || localMin) id++;
       }
       seg[i] = id;
+    }
+    // the ENTRY: where the reference's speed minimum lies ≥ ENTRY_MIN_M
+    // before the apex inside the apex's own segment (it brakes below the apex
+    // speed, then drives to the apex: Ducati K11 −21 m / −5 km/h, BMW K8
+    // −23 m / −10 km/h), the stretch of that segment up to the minimum is its
+    // own segment, corrected on the minimum. One cap cannot hold a minimum
+    // there and the apex speed at the tighter κ; without it the QSS rider
+    // brakes straight to the apex and is up to 15 km/h quicker through the
+    // entry (−0.4 s at Ducati K11).
+    for (let k = 0; k < K; k++) {
+      const ia = iA[k];
+      let iMin = ia;
+      let j = ia;
+      for (let d = 0; d < n && cyclicDist(s[j], s[ia], L) < ENTRY_WINDOW_M; d++) {
+        if (vRef[j] < vRef[iMin]) iMin = j;
+        j = (j - 1 + n) % n;
+      }
+      const back = cyclicDist(s[iMin], s[ia], L);
+      if (back < ENTRY_MIN_M || back > ENTRY_WINDOW_M - 5) continue; // at the apex, or still slowing at the window's start
+      if ((vRef[ia] - vRef[iMin]) * 3.6 < ENTRY_DROP_KMH || seg[iMin] !== seg[ia]) continue;
+      const qa = seg[ia];
+      id++;
+      entryMin[k] = iMin;
+      for (let jj = iMin, d = 0; d < n && seg[jj] === qa; jj = (jj - 1 + n) % n, d++) seg[jj] = id;
     }
     for (let q = 0; q <= id; q++) segCrit.push(-1);
     for (let i = 0; i < n; i++) {
@@ -323,6 +417,11 @@ export function fitRider(line: Line, params: SimParams, ref: Reference, opts: Fi
   for (let k = 0; k < K; k++) {
     segCrit[seg[iA[k]]] = iA[k];
     segHasApex[seg[iA[k]]] = 1;
+    // an entry segment is corrected on its minimum the same way
+    if (entryMin[k] >= 0) {
+      segCrit[seg[entryMin[k]]] = entryMin[k];
+      segHasApex[seg[entryMin[k]]] = 1;
+    }
   }
 
   // ---- initial values from the reference ---------------------------------
@@ -389,11 +488,15 @@ export function fitRider(line: Line, params: SimParams, ref: Reference, opts: Fi
   const axisArr = new Float32Array(n);
   const brakeArr = new Float32Array(n);
   const driveArr = new Float32Array(n);
+  const scaleArr = new Float32Array(n).fill(1);
+  const accelArr = new Float32Array(n).fill(Infinity);
   const caps: EnvelopeCaps = {
     aLatMs2: latArr,
     latAxisMs2: axisArr,
     brakeMs2: brakeArr,
     driveMs2: driveArr,
+    driveScale: scaleArr,
+    accelMaxMs2: accelArr,
     skipRollRate: true,
   };
   // the ellipse's lateral axis: the tyre's peak, or the fitted cap where that is higher
@@ -414,6 +517,15 @@ export function fitRider(line: Line, params: SimParams, ref: Reference, opts: Fi
       // the rider's drive cap holds inside the corner's zone (approach and
       // exit); between zones the machine sets the drive: μx, power, wheelie
       driveArr[i] = clamp(inExit[i] ? driveG[driveOwner[i]] : runG[driveOwner[i]], LONG_MIN_G, DRIVE_MAX_G) * G;
+      scaleArr[i] = rollOnRamp[i];
+      // a coast: no tyre braking (drag alone slows the bike; the solver floors
+      // the cap at 0.1 m/s²) and a net acceleration no higher than the
+      // reference's own (≤ COAST_G) there: hold speed, or follow its drift
+      accelArr[i] = Infinity;
+      if (coast[i]) {
+        brakeArr[i] = 0;
+        accelArr[i] = Math.max(0, aRef[i]) * G;
+      }
     }
   };
   /** The corner's lateral cap: its apex segment's (segments) or its zone's (zone). */
@@ -497,6 +609,136 @@ export function fitRider(line: Line, params: SimParams, ref: Reference, opts: Fi
     return len > 0 ? sum / len : Number.NaN;
   };
 
+  // ---- coast and roll-on from the reference's speed trace -------------------
+  //
+  // The QSS rider is always on a cap: full drive until the braking curve,
+  // full braking cap down to the apex. The reference is not (ducati-lateral
+  // note §3/§7): it finishes braking 40-60 m before an apex and runs in with
+  // neither brake nor throttle, holds speed on parts of a run, and rolls the
+  // throttle on over seconds after the apex. Per station, from the aligned
+  // reference speed: aRef = d(v²/2)/ds over ±REF_ACCEL_HALF_M.
+  //   roll-on  apex k → the first station where aRef reaches ROLL_ON_FRAC of
+  //            its peak on the run (before the run's speed peak): the drive
+  //            the bike has (after power and wheelie) rises first-order from
+  //            0 at the apex to 90 % at that reference time;
+  //   coast    after the roll-on, every station with |aRef| ≤ COAST_G: the
+  //            run-in directly before the next apex whatever its length,
+  //            elsewhere in stretches ≥ COAST_MIN_M.
+  const aRef = new Float32Array(n);
+  {
+    const fwdIdx = (i: number, m: number): number => {
+      let j = i;
+      for (let d = 0; d < n && cyclicDist(s[i], s[j], L) < m; d++) j = (j + 1) % n;
+      return j;
+    };
+    const backIdx = (i: number, m: number): number => {
+      let j = i;
+      for (let d = 0; d < n && cyclicDist(s[j], s[i], L) < m; d++) j = (j - 1 + n) % n;
+      return j;
+    };
+    for (let i = 0; i < n; i++) {
+      const a = backIdx(i, REF_ACCEL_HALF_M);
+      const b = fwdIdx(i, REF_ACCEL_HALF_M);
+      const ds = cyclicDist(s[a], s[b], L);
+      aRef[i] = ds > 1 ? (vRef[b] * vRef[b] - vRef[a] * vRef[a]) / (2 * ds * G) : 0;
+    }
+  }
+  const tRef = al.tRefS;
+  const refLap = ref.lapTimeS;
+  const dtRef = (a: number, b: number): number => {
+    const d = tRef[b] - tRef[a];
+    return d < 0 ? d + refLap : d;
+  };
+  const rollOnS = new Float64Array(K);
+  const rollOnRamp = new Float32Array(n).fill(1);
+  const coast = new Uint8Array(n);
+  const coastFrac = new Float64Array(K);
+
+  const coastInM = new Float64Array(K);
+  for (let k = 0; k < K; k++) {
+    const i0 = iA[k];
+    const i1 = iA[nextK[k]];
+    const runLen = cyclicDist(s[i0], s[i1], L) || L;
+    // roll-on: how much of the preset's drive (power, μx ellipse, TC,
+    // wheelie at the reference's speed; `driveCapMs2`) the reference uses,
+    // u = (aRef + losses)/capacity, from the apex to the run's speed peak.
+    // The roll-on ends where u first reaches ROLL_ON_FRAC of its run level
+    // (the cap, u = 1, or the run's 90th percentile of u where the reference
+    // never gets there; a percentile, as a 10 Hz GPS or a lap-seam step is a
+    // one-station spike). Against the capacity, not the reference's own peak:
+    // the BMW leaves K5 at 1.46 g, past the preset's wheelie limit, and its
+    // own peak would time the roll-on to that impossible figure.
+    const uRun: number[] = [];
+    const uAt = new Map<number, number>();
+    for (let j = i0, d = 0; d < n; j = (j + 1) % n, d++) {
+      const capG = driveCapMs2(line, p, j, Math.max(1, vRef[j])) / G;
+      const u = capG > 0.01 ? (aRef[j] + loss(vRef[j])) / capG : 0;
+      uRun.push(u);
+      uAt.set(j, u);
+      if (j === split[k]) break;
+    }
+    const uSorted = uRun.slice().sort((a, b) => a - b);
+    const uLevel = Math.min(1, uSorted.length ? uSorted[Math.floor(0.9 * (uSorted.length - 1))] : 0);
+    let iRoll = i0;
+    if (uLevel > 0.05 && Math.max(...uRun) > 0) {
+      for (let j = i0, d = 0; d < n; j = (j + 1) % n, d++) {
+        if ((uAt.get(j) ?? 0) >= ROLL_ON_FRAC * uLevel || j === split[k]) {
+          iRoll = j;
+          break;
+        }
+      }
+      rollOnS[k] = dtRef(i0, iRoll);
+      if (rollOnS[k] > 0) {
+        for (let j = i0, d = 0; d < n && j !== iRoll; j = (j + 1) % n, d++) {
+          rollOnRamp[j] = 1 - Math.exp((-dtRef(i0, j) * ROLL_ON_RATE) / rollOnS[k]);
+        }
+      }
+    }
+    // coast: the run-in before the next apex
+    let iIn = i1;
+    for (let j = (i1 - 1 + n) % n, d = 0; d < n && j !== iRoll; j = (j - 1 + n) % n, d++) {
+      if (Math.abs(aRef[j]) > COAST_G) break;
+      iIn = j;
+    }
+    for (let j = iIn; j !== i1; j = (j + 1) % n) coast[j] = 1;
+    coastInM[k] = cyclicDist(s[iIn], s[i1], L);
+    // ... and the mid-run coasts
+    let runStart = -1;
+    const close = (end: number): void => {
+      if (runStart < 0) return;
+      if (cyclicDist(s[runStart], s[end], L) >= COAST_MIN_M) for (let j = runStart; j !== end; j = (j + 1) % n) coast[j] = 1;
+      runStart = -1;
+    };
+    for (let j = iRoll; j !== iIn; j = (j + 1) % n) {
+      if (Math.abs(aRef[j]) <= COAST_G) {
+        if (runStart < 0) runStart = j;
+      } else close(j);
+    }
+    close(iIn);
+    let cm = 0;
+    for (let j = i0; j !== i1; j = (j + 1) % n) {
+      const nx = (j + 1) % n;
+      if (coast[j]) cm += cyclicDist(s[j], s[nx], L);
+    }
+    coastFrac[k] = cm / runLen;
+  }
+
+  const runTarget = Int32Array.from(runPeak);
+  for (let k = 0; k < K; k++) {
+    const b = brakeRefM[nextK[k]];
+    if (b === null) continue;
+    const ib = at(b);
+    // on this run, past the exit
+    if (!inExit[ib] && driveOwner[ib] === k) runTarget[k] = ib;
+  }
+
+  let alignedRefLapS = 0;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const ds = j === 0 ? L - s[n - 1] : s[j] - s[i];
+    alignedRefLapS += ds / Math.max(2, (vRef[i] + vRef[j]) / 2);
+  }
+
   let env: Envelope = solve(line, p, (fill(), caps));
   let iterations = 0;
   let converged = false;
@@ -508,8 +750,10 @@ export function fitRider(line: Line, params: SimParams, ref: Reference, opts: Fi
     if (e.v[i] >= LAT_BOUND_FRAC * vLatAt(i)) return 'lateral';
     return e.longG[i] > 0 ? 'drive' : 'brake';
   };
+  // the lap target is the reference SPEED ridden over this line: the line's
+  // length is not the reference's (±15-20 m positions, a different line)
   const done = (e: Envelope): boolean =>
-    iA.every((i) => Math.abs(e.v[i] - vRef[i]) <= apexTol) && Math.abs(e.lapTimeS - ref.lapTimeS) <= lapTol;
+    iA.every((i) => Math.abs(e.v[i] - vRef[i]) <= apexTol) && Math.abs(e.lapTimeS - alignedRefLapS) <= lapTol;
 
   for (let it = 0; it < maxIter; it++) {
     if (done(env)) {
@@ -517,11 +761,13 @@ export function fitRider(line: Line, params: SimParams, ref: Reference, opts: Fi
       break;
     }
     iterations++;
+    const damp = it >= DAMP_FROM_ROUND ? 0.5 : 1;
     const latStep = new Float64Array(K).fill(1);
     const brakeStep = new Float64Array(K).fill(1);
     const driveStep = new Float64Array(K).fill(1);
     const runStep = new Float64Array(K).fill(1);
     const runApex = new Uint8Array(K);
+
     for (let k = 0; k < K; k++) {
       // lateral ('zone' mode): corrected on the apex
       const i = iA[k];
@@ -536,13 +782,26 @@ export function fitRider(line: Line, params: SimParams, ref: Reference, opts: Fi
       const e = iEnd[k];
       const gRef = vRef[e] ** 2 - vRef[i] ** 2;
       const gSim = env.v[e] ** 2 - env.v[i] ** 2;
-      if (cyclicDist(s[i], s[e], L) < L / 2 && gRef > 4 && gSim > 1) driveStep[k] *= gRef / gSim;
+      if (cyclicDist(s[i], s[e], L) < L / 2 && gRef > 4) {
+        // a sim that does not gain speed on the exit at all (a roll-on ramp
+        // starting from 0) has no ratio: the largest step up
+        driveStep[k] *= gSim > 1 ? gRef / gSim : STEP_MAX;
+      }
       // run: the next apex reached on a DRIVE curve, too fast or too slow
       const kn0 = nextK[k];
       const ia0 = iA[kn0];
-      if (!inExit[(ia0 - 1 + n) % n] && binding(env, ia0) !== 'lateral' && env.longG[ia0] > 0 && Math.abs(env.v[ia0] - vRef[ia0]) > apexTol) {
-        runStep[k] *= (vRef[ia0] / env.v[ia0]) ** 2;
-        runApex[k] = 1;
+      // (an apex with an entry minimum is always DRIVEN to, from the minimum;
+      // at lean the drive left can be ~0 g, so longG alone does not say so)
+      if (binding(env, ia0) !== 'lateral' && (env.longG[ia0] > 0 || entryMin[kn0] >= 0) && Math.abs(env.v[ia0] - vRef[ia0]) > apexTol) {
+        if (!inExit[(ia0 - 1 + n) % n]) {
+          runStep[k] *= (vRef[ia0] / env.v[ia0]) ** 2;
+          runApex[k] = 1;
+        } else {
+          // still inside this corner's exit (a flick: K7 → K8, whose entry
+          // minimum is driven out of on K7's exit cap): the apex outranks
+          // the exit's speed gain
+          driveStep[k] = (vRef[ia0] / env.v[ia0]) ** 2;
+        }
       }
       // braking into the NEXT corner: its brake point when the reference has
       // one (braking distance to the minimum), else the time over the run
@@ -552,12 +811,15 @@ export function fitRider(line: Line, params: SimParams, ref: Reference, opts: Fi
       // the next apex reached on a BRAKING curve, too fast or too slow: the
       // braking into it is the lever (it outranks the brake point)
       const ia = iA[kn];
-      if (binding(env, ia) !== 'lateral' && env.longG[ia] <= 0 && Math.abs(env.v[ia] - vRef[ia]) > apexTol) {
+      if (entryMin[kn] < 0 && binding(env, ia) !== 'lateral' && env.longG[ia] <= 0 && Math.abs(env.v[ia] - vRef[ia]) > apexTol) {
         // too SLOW on a braking curve because the sim over-drove the approach
         // and had to brake it off (K8 → K9 on the BMW): the drive where the
         // sim peaked is the lever, not the brake
+        // (only when it over-drove by more than the apex is short: a sim that
+        // peaks 1 km/h high and arrives 4 km/h slow brakes too gently — K14
+        // on the Ducati, whose brake cap otherwise sits on its floor)
         const pk = iStart ?? -1;
-        if (env.v[ia] < vRef[ia] && pk >= 0 && env.v[pk] > vRef[pk] + apexTol) {
+        if (env.v[ia] < vRef[ia] && pk >= 0 && env.v[pk] > vRef[pk] + apexTol && env.v[pk] - vRef[pk] > vRef[ia] - env.v[ia]) {
           const r = (vRef[pk] / env.v[pk]) ** 2;
           if (inExit[pk]) driveStep[driveOwner[pk]] *= r;
           else {
@@ -565,7 +827,10 @@ export function fitRider(line: Line, params: SimParams, ref: Reference, opts: Fi
             runApex[driveOwner[pk]] = 1;
           }
         } else brakeStep[kn] *= (vRef[ia] / env.v[ia]) ** 2;
-      } else if (bRef !== null && iStart !== null) {
+      } else if (bRef !== null && iStart !== null && cyclicDist(bRef, s[ia], L) < cyclicDist(s[iA[k]], s[ia], L)) {
+        // (a reference brake point BEHIND the previous apex — it brakes
+        // straight through a flick, K15's from before K14 on the Ducati — is
+        // not a distance the sim's window can see: the speed over the run)
         const dSim = cyclicDist(s[iStart], s[iMin], L);
         const dRef = cyclicDist(bRef, s[iMin], L);
         if (dSim > 5 && dRef > 5 && dRef < L / 2) brakeStep[kn] *= dSim / dRef;
@@ -576,15 +841,34 @@ export function fitRider(line: Line, params: SimParams, ref: Reference, opts: Fi
       }
     }
     // the run, when no apex asked for it: speed gain from the zone end to the
-    // reference's peak on the run (K8 → K9 on the BMW is held, not driven)
+    // reference's speed at the NEXT corner's brake point (where the run hands
+    // over to braking), or its peak on the run where that corner has no brake
+    // point (K8 → K9 on the BMW is held, not driven)
     for (let k = 0; k < K; k++) {
-      const t = runPeak[k];
+      const t = runTarget[k];
       if (runApex[k] || t < 0) continue;
+      // the sim's own brake start into the next corner, past the exit (its
+      // speed peak, where its drive hands over to braking): over the
+      // reference there, it over-drove the
+      // run and braked it off (K15 → K16 on the Ducati: +26 km/h at 1.0 g
+      // against the reference's 0.4 g, with both apexes matched) — that
+      // outranks the target station
+      {
+        const pk = simBrakeStart(env, nextK[k]).iStart ?? -1;
+        // (driven INTO: a speed maximum the sim coasts or brakes away from —
+        // just past K7's apex on the BMW — is not the run's drive)
+        const drove = pk >= 0 && env.longG[(pk - 1 + n) % n] > 0.05;
+        if (drove && !inExit[pk] && driveOwner[pk] === k && pk !== t && env.v[pk] > vRef[pk] + apexTol && env.v[pk] - vRef[pk] > env.v[t] - vRef[t]) {
+          runStep[k] *= (vRef[pk] / env.v[pk]) ** 2;
+          continue;
+        }
+      }
       if (Math.abs(env.v[t] - vRef[t]) <= apexTol) continue;
       const e = iEnd[k];
       const gRef = vRef[t] ** 2 - vRef[e] ** 2;
       const gSim = env.v[t] ** 2 - env.v[e] ** 2;
       if (gRef > 4 && gSim > 1) runStep[k] *= gRef / gSim;
+      else if (gRef > 4 && env.v[t] < vRef[t]) runStep[k] *= STEP_MAX;
       else if (env.v[t] > vRef[t]) runStep[k] *= (vRef[t] / env.v[t]) ** 2;
     }
     // lateral ('segments' mode). A segment holding an apex is corrected on
@@ -612,14 +896,15 @@ export function fitRider(line: Line, params: SimParams, ref: Reference, opts: Fi
         } else if (segBound[q] && env.v[c] < vRef[c] - apexTol) {
           r = (vRef[c] / env.v[c]) ** 2;
         }
-        segCap[q] = clamp(segCap[q] * step(r), LAT_BOUNDS[0], LAT_BOUNDS[1]);
+        segCap[q] = clamp(segCap[q] * step(r, damp), LAT_BOUNDS[0], LAT_BOUNDS[1]);
       }
     }
     for (let k = 0; k < K; k++) {
-      aLat[k] = clamp(aLat[k] * step(latStep[k]), LAT_BOUNDS[0], LAT_BOUNDS[1]);
-      brakeG[k] = clamp(brakeG[k] * step(brakeStep[k]), LONG_MIN_G, muX);
-      driveG[k] = clamp(driveG[k] * step(driveStep[k]), LONG_MIN_G, DRIVE_MAX_G);
-      runG[k] = clamp(runG[k] * step(runStep[k]), LONG_MIN_G, DRIVE_MAX_G);
+      aLat[k] = clamp(aLat[k] * step(latStep[k], damp), LAT_BOUNDS[0], LAT_BOUNDS[1]);
+      brakeG[k] = clamp(brakeG[k] * step(brakeStep[k], damp), LONG_MIN_G, muX);
+      driveG[k] = clamp(driveG[k] * step(driveStep[k], damp), LONG_MIN_G, DRIVE_MAX_G);
+      runG[k] = clamp(runG[k] * step(runStep[k], damp), LONG_MIN_G, DRIVE_MAX_G);
+
     }
     fill();
     env = solve(line, p, caps);
@@ -627,12 +912,6 @@ export function fitRider(line: Line, params: SimParams, ref: Reference, opts: Fi
   if (!converged && done(env)) converged = true;
 
   // ---- report --------------------------------------------------------------
-  let alignedRefLapS = 0;
-  for (let i = 0; i < n; i++) {
-    const j = (i + 1) % n;
-    const ds = j === 0 ? L - s[n - 1] : s[j] - s[i];
-    alignedRefLapS += ds / Math.max(2, (vRef[i] + vRef[j]) / 2);
-  }
   const ztSim = zoneTimes(env.tS, env.lapTimeS);
   const tOnLine = new Float64Array(n);
   {
@@ -662,6 +941,10 @@ export function fitRider(line: Line, params: SimParams, ref: Reference, opts: Fi
       brakeG: brakeG[k],
       driveG: driveG[k],
       runG: runG[k],
+      coastFrac: coastFrac[k],
+      coastInM: coastInM[k],
+
+      rollOnS: rollOnS[k],
       brakeStartM: brakeRefM[k],
       simBrakeStartM: sb === null ? null : s[sb],
       zone: zone[k],

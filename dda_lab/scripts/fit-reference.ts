@@ -89,16 +89,16 @@ export function fitTable(fit: RiderFit): string {
   const ceil = fit.ceiling;
   const rows: string[] = [];
   rows.push(
-    '| corner | apex ref | apex sim | Δ km/h | zone t ref | zone t sim | Δ s | ref speed on line, s | aLat g (apex) | zone peak g | lean ° (apex) | ceiling ° | margin % (apex / peak) | brake g | drive g | run g | brake pt ref / sim, m | apex set by |',
+    '| corner | apex ref | apex sim | Δ km/h | zone t ref | zone t sim | Δ s | ref speed on line, s | aLat g (apex) | zone peak g | lean ° (apex) | ceiling ° | margin % (apex / peak) | brake g | drive g | run g | roll-on s | coast % / run-in m | brake pt ref / sim, m | apex set by |',
   );
-  rows.push('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|');
+  rows.push('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|');
   for (const c of fit.corners) {
     const dv = (c.vApexMs - c.vApexRefMs) * 3.6;
     const dt = c.zoneTimeSimS - c.zoneTimeRefS;
     const mA = (100 * (ceil.aLatG - c.aLatG)) / ceil.aLatG;
     const mP = (100 * (ceil.aLatG - c.aLatPeakG)) / ceil.aLatG;
     rows.push(
-      `| ${c.name} ${c.dir > 0 ? 'L' : 'R'} | ${f(c.vApexRefMs * 3.6)} | ${f(c.vApexMs * 3.6)} | ${sg(dv)} | ${f(c.zoneTimeRefS, 2)} | ${f(c.zoneTimeSimS, 2)} | ${sg(dt, 2)} | ${f(c.zoneTimeRefOnLineS, 2)} | ${f(c.aLatG, 2)} | ${f(c.aLatPeakG, 2)} | ${f(deg(c.aLatG))} | ${f(ceil.leanDeg)} | ${sg(mA, 0)} / ${sg(mP, 0)} | ${f(c.brakeG, 2)} | ${f(c.driveG, 2)} | ${f(c.runG, 2)} | ${f(c.brakeStartM, 0)} / ${f(c.simBrakeStartM, 0)} | ${c.binding} |`,
+      `| ${c.name} ${c.dir > 0 ? 'L' : 'R'} | ${f(c.vApexRefMs * 3.6)} | ${f(c.vApexMs * 3.6)} | ${sg(dv)} | ${f(c.zoneTimeRefS, 2)} | ${f(c.zoneTimeSimS, 2)} | ${sg(dt, 2)} | ${f(c.zoneTimeRefOnLineS, 2)} | ${f(c.aLatG, 2)} | ${f(c.aLatPeakG, 2)} | ${f(deg(c.aLatG))} | ${f(ceil.leanDeg)} | ${sg(mA, 0)} / ${sg(mP, 0)} | ${f(c.brakeG, 2)} | ${f(c.driveG, 2)} | ${f(c.runG, 2)} | ${f(c.rollOnS, 1)} | ${f(100 * c.coastFrac, 0)} / ${f(c.coastInM, 0)} | ${f(c.brakeStartM, 0)} / ${f(c.simBrakeStartM, 0)} | ${c.binding} |`,
     );
   }
   const r = fit.residuals;

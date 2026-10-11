@@ -291,10 +291,73 @@ export function smoothClosed(a: Float32Array, halfWin: number): Float32Array {
  * residual against a 40 m mean is 2.6 m rms. Nothing local can size this
  * window, which is why it is a constant and not an estimate off the trace.
  */
-const CURV_SCALE_M = 20;
+export const CURV_SCALE_M = 20;
 
-/** Signed curvature of a closed polyline in local metres, 1/m, + = left. */
-function polylineCurvature(points: LngLat[], stencilM: number): Float32Array {
+/**
+ * The shorter curvature scale for a CLEAN centreline, metres (stencil ±L, mean
+ * ±L), e.g. one averaged from logged 10 Hz GPS laps.
+ *
+ * Measured on the owner's Ducati best lap (Run036 lap 6), its own GPS line,
+ * per corner zone against the lean-corrected lateral g (ducati-lateral note
+ * §7): zone max − calibrated lean g, mean / rms, at 20 / 14 / 12 / 10 / 8 / 7 /
+ * 5 m: −0.079/0.120, −0.038/0.077, −0.024/0.065, **−0.010/0.056**,
+ * +0.014/0.060, +0.030/0.068, +0.076/0.099 g. 20 m reads 0.37 g low at the K7
+ * flick (0.49 against 0.86): the window is longer than the flick's half-length
+ * and averages its two halves together; 10 m reads 0.76.
+ */
+export const CURV_SCALE_SURVEYED_M = 10;
+
+/**
+ * Largest |κ| p95 on a centreline's straights at `CURV_SCALE_SURVEYED_M` for
+ * that scale to be used, 1/m (R 1000 m): what the shorter scale may add as
+ * noise where there is no corner. Measured p95 at 10 m: Ducati GPS-lap
+ * centreline 0.48e-3 (passes), BMW hand-placed map 1.50e-3, pist Serres
+ * centreline 2.47e-3 (both fail, and stay on 20 m).
+ */
+const STRAIGHT_KAPPA_P95_MAX = 1 / 1000;
+
+/**
+ * The curvature scale a centreline supports: `CURV_SCALE_SURVEYED_M` when its
+ * straights stay quiet at that scale (|κ| p95 below 1/1000 m⁻¹), else the
+ * map scale `CURV_SCALE_M`. Straights are the stations whose ±40 m-scale |κ|
+ * stays below 1/1500 m⁻¹ for ±40 m; with fewer than 50 such stations the
+ * centreline cannot be judged and keeps the map scale.
+ */
+export function chooseCurvatureScaleM(centerline: LngLat[]): number {
+  const n = centerline.length;
+  if (n < 10) return CURV_SCALE_M;
+  const coarse = polylineCurvature(centerline, 40);
+  let span = 0;
+  for (let i = 0; i < n; i++) {
+    const m = toLocalM(centerline[i], centerline[(i + 1) % n]);
+    span += Math.hypot(m[0], m[1]);
+  }
+  const w = Math.max(1, Math.round(40 / Math.max(0.1, span / n)));
+  const fine = polylineCurvature(centerline, CURV_SCALE_SURVEYED_M);
+  const st: number[] = [];
+  for (let i = 0; i < n; i++) {
+    let ok = true;
+    for (let d = -w; d <= w && ok; d++) if (Math.abs(coarse[(((i + d) % n) + n) % n]) > 1 / 1500) ok = false;
+    if (ok) st.push(Math.abs(fine[i]));
+  }
+  if (st.length < 50) return CURV_SCALE_M;
+  st.sort((a, b) => a - b);
+  return st[Math.floor(0.95 * (st.length - 1))] < STRAIGHT_KAPPA_P95_MAX ? CURV_SCALE_SURVEYED_M : CURV_SCALE_M;
+}
+
+/** The curvature scale a track's lines are measured over, metres (its own, else the map default). */
+export function curvatureScaleM(track: Pick<TrackModel, 'curvatureScaleM'>): number {
+  const s = track.curvatureScaleM;
+  return s !== undefined && Number.isFinite(s) && s > 0 ? s : CURV_SCALE_M;
+}
+
+/**
+ * Signed curvature of a closed polyline in local metres, 1/m, + = left: the
+ * three-point circumradius over a ±`scaleM` stencil, then a ±`scaleM` moving
+ * average (see CURV_SCALE_M).
+ */
+export function polylineCurvature(points: LngLat[], scaleM: number = CURV_SCALE_M): Float32Array {
+  const stencilM = scaleM;
   const n = points.length;
   const out = new Float32Array(n);
   if (n < 3) return out;
@@ -329,7 +392,7 @@ function polylineCurvature(points: LngLat[], stencilM: number): Float32Array {
     const denom = la * lb * lc;
     out[i] = denom > 1e-9 ? (2 * cross) / denom : 0;
   }
-  return smoothClosed(out, CURV_SCALE_M / Math.max(0.1, ds));
+  return smoothClosed(out, scaleM / Math.max(0.1, ds));
 }
 
 /**
@@ -421,6 +484,9 @@ export function buildLine(
   // bike's width inside the edge, then the kerb margin
   const { loM, hiM } = offsetBounds(track, corridor, params, fallbackHalfWidthM);
 
+  // The optimiser's input stays on the map scale whatever the track's
+  // measurement scale: the minimum-curvature target is not a lateral-g
+  // measurement, and its re-tuning is its own task (lineQp.ts).
   const baseCurv = polylineCurvature(cl, CURV_SCALE_M);
   const d = solveOffsets(n, stepM, baseCurv, loM, hiM, params.rider.kappa);
 
@@ -493,7 +559,7 @@ export function lineFromOffsets(track: TrackModel, offsetsM: Float32Array): Line
 
   return {
     points,
-    curvature: polylineCurvature(points, CURV_SCALE_M),
+    curvature: polylineCurvature(points, curvatureScaleM(track)),
     cumDistM,
     lengthM,
     offsetM: offsetsM,

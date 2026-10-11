@@ -54,6 +54,16 @@ describe('reference fit on a pist track model', () => {
     });
   }
 
+  // ducati-lateral note §8: with the coast, roll-on and entry-minimum caps the
+  // fit rides the reference speed over the κ 0.85 race line within 0.3 s
+  // (−0.53 s before), every apex within 2 km/h
+  it('fits the BMW on the κ 0.85 race line: lap within 0.3 s of the reference speed on it, apexes within 2 km/h', () => {
+    const line = fitLine('race', P, raw.telemetri_1m as never, model, 0.85);
+    const fit = fitRider(line, P, ref);
+    expect(Math.abs(fit.lapTimeS - fit.alignedRefLapS)).toBeLessThan(0.3);
+    for (const d of fit.residuals.apexKmh) expect(Math.abs(d)).toBeLessThan(2);
+  });
+
   it.skipIf(!existsSync(EXPORTED))('the lab parses the exported serres.pist.json (version 2, dual trace)', () => {
     const text = readFileSync(EXPORTED, 'utf8');
     const j = JSON.parse(text) as { version: number; provenance?: { tracedInner?: unknown[] } };

@@ -283,14 +283,18 @@ describe('fitRider on the real BMW Serres lap (1:19.81)', () => {
     );
   });
 
-  // RED by design (see the note): the lap is −0.6 s; −0.38 s of it is the
-  // reference speed ridden over this line (79.43 s), i.e. distance, not rider.
+  // RED by design (see the note): the lap is −0.51 s (79.30 s); −0.48 s of it
+  // is the reference speed ridden over this line (79.33 s), i.e. distance,
+  // not rider (2026-10-11, after the coast/roll-on caps: fit − ref-on-line
+  // −0.03 s).
   it('lap time within 0.3 s of 79.81', () => {
     expect(Math.abs(fit.lapTimeS - 79.81)).toBeLessThan(0.3);
   });
 
   // RED by design: up to ±0.76 s per zone against the reference CLOCK, the
-  // distance between the line's apexes vs the reference's (see the note).
+  // distance between the line's apexes vs the reference's (see the note);
+  // K1 −0.68 s after the coast/roll-on caps, where against the reference
+  // speed over this line it is −0.14 s.
   it('every zone time within 0.3 s', () => {
     fit.corners.forEach((c) => expect(Math.abs(c.zoneTimeSimS - c.zoneTimeRefS), c.name).toBeLessThan(0.3));
   });
@@ -299,12 +303,14 @@ describe('fitRider on the real BMW Serres lap (1:19.81)', () => {
   // 0.3 s on the Gauss-Seidel line (-0.23 s); the exact minimum-curvature
   // line (pist-line note §6) moves it to -0.54 s, spread over K1, K8, K13,
   // K15 (-0.1 to -0.2 s each) and the K14 apex above — a fit-model residual
-  // on a line it now matches less well, tracked in the note.
+  // on a line it now matches less well, tracked in the note. With the coast,
+  // roll-on and entry-minimum caps (ducati-lateral note §8): -0.03 s.
   it('lap within 0.6 s of the reference speed ridden over this line', () => {
     expect(Math.abs(fit.lapTimeS - fit.alignedRefLapS)).toBeLessThan(0.6);
   });
 
-  // 0.25 s before the exact line; K5 now reads 0.250 s
+  // 0.25 s before the exact line; K5 read 0.250 s, 0.28 s with the coast /
+  // roll-on caps (the BMW leaves K5 at 1.46 g, past the preset's wheelie limit)
   it('zone times within 0.3 s of the reference speed over this line (K14/K15 together)', () => {
     const d = fit.corners.map((c) => c.zoneTimeSimS - c.zoneTimeRefOnLineS);
     const k14 = fit.corners.findIndex((c) => c.name === 'K14');

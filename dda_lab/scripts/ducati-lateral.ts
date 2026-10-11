@@ -13,7 +13,7 @@
 //      lateral cap per corner against the measured one;
 //   3. the fitted envelope's latG / lean channels against the measured lean over the lap.
 import { writeFileSync } from 'node:fs';
-import { DEFAULT_RUN, DEFAULT_TRACK, analyseRun, f, fitAndCompare, fitOnPist, median, ownLine, rmse, sg, type MeasuredCorner } from './lib/ducatiLateral';
+import { CURV_SCALE_M, DEFAULT_RUN, DEFAULT_TRACK, analyseRun, curvatureScaleSweep, f, fitAndCompare, fitOnPist, median, ownLine, rmse, sg, type MeasuredCorner } from './lib/ducatiLateral';
 import { loadPistModel } from './lib/fitLines';
 
 {
@@ -72,10 +72,22 @@ import { loadPistModel } from './lib/fitLines';
     );
   });
 
+  console.log('\n## κ scale: the sim pipeline (±L stencil, ±L mean) on the best lap\'s GPS line, per-corner zone max v²κ/g\n');
+  const sweep = curvatureScaleSweep(bt, ref, bm, [20, 14, 12, 10, 8, 7, 5]);
+  console.log(`| corner | measured v²κ (20 m heading window) | calibrated lean g | ${sweep.map((r) => `${r.scaleM}/${r.scaleM} m`).join(' | ')} |`);
+  console.log(`|---|---|---|${sweep.map(() => '---').join('|')}|`);
+  bm.forEach((c, k) => console.log(`| ${c.name} ${c.dir > 0 ? 'L' : 'R'} | ${f(c.gGpsMax)} | ${f(c.gLeanCal)} | ${sweep.map((r) => f(r.zoneMaxG[k])).join(' | ')} |`));
+  console.log(`| **− calibrated lean g: mean / rms / max abs** | | | ${sweep.map((r) => `${sg(r.vsCal.bias, 3)} / ${f(r.vsCal.rmse, 3)} / ${f(r.vsCal.maxAbs)}`).join(' | ')} |`);
+  console.log(`| **− measured v²κ: mean / rms** | | | ${sweep.map((r) => `${sg(r.vsGps.bias, 3)} / ${f(r.vsGps.rmse, 3)}`).join(' | ')} |`);
+  console.log(`| **straights (v > 180 km/h, abs lean < 5°, n ${sweep[0].straightN}): abs κ p95 / p99, 1e-3/m** | | | ${sweep.map((r) => `${f(r.straightP95 * 1000, 3)} / ${f(r.straightP99 * 1000, 3)}`).join(' | ')} |`);
+  console.log(`| **lap p99 abs v²κ/g** | | | ${sweep.map((r) => f(r.p99G)).join(' | ')} |`);
+
   console.log("\n## 2-3. Reference fit on the owner's best lap (Panigale V4, μ 1.35, maxLean 59°)\n");
   const own = ownLine(bt);
+  const ownScale = ownLine(bt, CURV_SCALE_M);
   const runs = [
-    fitAndCompare('own GPS line (sim κ: 20 m stencil + 20 m mean)', own, ref, bt, cal),
+    fitAndCompare(`own GPS line (sim κ, chosen scale)`, own, ref, bt, cal),
+    fitAndCompare(`own GPS line (sim κ, map scale ${CURV_SCALE_M} m)`, ownScale, ref, bt, cal),
     fitAndCompare('own GPS line (κ over 20 m, as measured)', { ...own, curvature: Float32Array.from(bt.kappa) }, ref, bt, cal),
     ...[0, 0.85].map((k) => fitOnPist(ref, bt, model, k, 1.0, cal)),
   ];

@@ -305,3 +305,119 @@ The other nine corners are 1.09–1.36 g. The BMW's whole lap is ×1.20 faster.
     (−2.4 %), as a ridden line should be.
 - **Suite.** 678 / 680 pass. The 2 failures are the intentionally red BMW assertions in
   `simFitRider.test.ts`. Typecheck is clean.
+
+## 7. Fix (a): curvature scale per source
+
+The sim pipeline (`polylineCurvature`: ±L three-point stencil, then a ±L mean) on the best lap's own
+GPS line, per corner zone max v²κ/g. The report command prints it as "κ scale".
+
+| L (stencil / mean), m | 20/20 | 14/14 | 12/12 | **10/10** | 8/8 | 7/7 | 5/5 |
+|---|---|---|---|---|---|---|---|
+| zone max − calibrated lean g: mean / rms / max abs | −0.079 / 0.120 / 0.37 | −0.038 / 0.077 / 0.22 | −0.024 / 0.065 / 0.17 | **−0.010 / 0.056 / 0.11** | +0.014 / 0.060 / 0.15 | +0.030 / 0.068 / 0.18 | +0.076 / 0.099 / 0.20 |
+| − measured v²κ (20 m heading window): mean / rms | −0.088 / 0.110 | −0.047 / 0.058 | −0.033 / 0.040 | −0.019 / 0.021 | +0.005 / 0.011 | +0.021 / 0.026 | +0.067 / 0.072 |
+| straights (> 180 km/h, \|lean\| < 5°): \|κ\| p95, 10⁻³/m | 0.175 | 0.200 | 0.202 | 0.234 | 0.289 | 0.330 | 0.429 |
+| K7 zone max, g (0.79 v²κ / 0.86 lean) | 0.49 | 0.64 | 0.70 | 0.76 | 0.81 | 0.83 | 0.86 |
+
+**10 m is chosen.** It has the smallest bias and rmse against the independent measurement (the
+calibrated lean), and its straights stay at R 4.3 km.
+
+**The scale is per source, not global.** On the same "straights" test, the other sources fail at
+10 m:
+
+| centreline | \|κ\| p95 on straights (\|κ\|₄₀ < 1/1500 for ±40 m), 10⁻³/m, 20 m / 10 m |
+|---|---|
+| Ducati GPS laps (`buildTrackFromSession`) | 0.16 / **0.48** |
+| BMW hand-placed map | 0.50 / 1.50 |
+| pist Serres centreline | 0.84 / 2.47 |
+| pist race line κ 0 / κ 0.85 (follows the traced edges) | 2.0 / 5.0 and 3.3 / 13.6 |
+
+**How it is wired.**
+
+- `TrackModel.curvatureScaleM` sets the scale; unset means 20 m.
+- `chooseCurvatureScaleM(centerline)` picks 10 m when the straights' |κ| p95 at 10 m is below
+  1/1000 m⁻¹, else 20 m.
+- `buildTrackFromSession` sets it.
+- `lineFromOffsets` measures `line.curvature` at the track's scale. This is the κ behind the solver,
+  `toSession`/`latG` and `fitRider`.
+- The pist and map tracks stay at 20 m.
+- The min-curvature optimiser's input (`buildLine`'s `baseCurv`) stays at 20 m whatever the track.
+- The corridor hairpin cap (`corridor.ts`) and the roll-rate stencil are unchanged.
+
+## 8. Fix (c): coast, roll-on and entry minimum in the fitted rider
+
+**Where the time actually was.** Before the fix, on the own line, the fitted lap was 0.9 s quick.
+
+- **−0.81 s of it was in decelerating stations, not on the straights.** On the runs the sim was
+  2–5 km/h *slower* than the owner.
+- **It came back 10–15 km/h faster before the next apex.** The owner finishes braking 40–60 m before
+  an apex and runs in with neither brake nor throttle. At K11 he dips 5 km/h below the apex speed
+  21 m early. The QSS rider instead brakes at a reduced fitted cap all the way to the κ peak.
+
+**What `fitRider` now does,** all from the reference's own speed trace on the line
+(aRef = d(v²/2)/ds over ±10 m):
+
+- **Roll-on (`rollOnS`).**
+  - **What it measures.** The time from the apex to where the reference first uses 90 % of the
+    preset's drive (`driveCapMs2` at its speed), or 90 % of its own run level when it never gets near
+    the cap.
+  - **How it is applied.** The drive the bike has after power and wheelie (new
+    `EnvelopeCaps.driveScale`) rises 1 − e^(−t·ln10/rollOnS).
+  - **Why against the cap, not the reference's peak.** The BMW leaves K5 at 1.46 g, past the wheelie
+    limit, and its own peak would time the roll-on to that figure.
+- **Coast (`coastFrac`, `coastInM`).**
+  - **Where.** Stations with |aRef| ≤ 0.1 g: the run-in before an apex, and stretches ≥ 20 m
+    mid-run.
+  - **What the sim does there.** No tyre braking, and a net acceleration no higher than the
+    reference's (new `EnvelopeCaps.accelMaxMs2`, applied after drag). So a hold stays a hold at lean.
+- **Entry minimum.** A reference speed minimum ≥ 8 m before the apex and ≥ 2 km/h below it gets its
+  own lateral segment, corrected on the minimum. Used at Ducati K11 and BMW K8.
+- **`runG`.**
+  - **Target.** The reference's speed at the next corner's brake point.
+  - **Over-drive.** It is also cut where the sim drives into a peak above the reference and brakes it
+    off (Ducati K15 → K16: +26 km/h at 1.0 g against 0.4 g).
+- **Lap target.** The reference speed over this line (`alignedRefLapS`), not the reference clock.
+- **Damping.** 20 rounds, corrections damped from round 10. Without damping, the BMW K8 → K9 pair
+  limit-cycles.
+- **Two old rule bugs.**
+  - **Brake point behind the previous apex.** A brake point that lies behind the previous apex
+    (K15's, before K14) drove K15's brake cap to its floor and set K14 0.9–3.7 km/h slow.
+  - **Over-drove branch.** The "over-drove" branch took precedence even when the over-drive was
+    smaller than the apex deficit.
+
+**Fit against the reference speed ridden on the same line.**
+
+| line | before: fit / ref-on-line, s (Δ; max apex Δ) | after |
+|---|---|---|
+| **Ducati own GPS line, sim κ** (20 m before, 10 m after) | 94.47 / 95.61 (−1.14; 1.7 km/h) | **96.01 / 95.80 (+0.21; 0.9 km/h), converged in 6** |
+| Ducati own line at 20 m, new fit | — | 95.59 / 95.61 (−0.02; 0.4) |
+| Ducati own line, measured κ | 94.96 / 95.88 (−0.92; 3.8) | 95.75 / 95.88 (−0.13; 1.0) |
+| Ducati on pist race κ 0 | 97.38 / 99.76 (−2.38; 0.6) | 99.55 / 99.76 (−0.21; 0.4) |
+| Ducati on pist race κ 0.85 | 90.62 / 93.77 (−3.15; 0.0) | 92.73 / 93.77 (−1.04; 0.6), not converged |
+| **BMW on pist race κ 0.85** | 79.08 / 79.61 (−0.53; K9 4.5) | **79.37 / 79.61 (−0.24; 0.9), converged in 18** |
+| BMW map line | 78.80 / 79.33 (−0.53; K14 7.2) | 79.30 / 79.33 (−0.03; K14 6.6, which has no κ peak; others ≤ 1.1) |
+
+**Ducati per corner after both fixes,** fitted apex cap on the own line, g:
+
+| corner | K1 | K2 | K3 | K4 | K5 | K6 | K7 | K8 | K9 | K10 | K11 | K12 | K13 | K14 | K15 | K16 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| v²κ zone max (measured) | 0.99 | 1.06 | 1.07 | 0.92 | 1.06 | 1.02 | 0.79 | 1.13 | 1.01 | 1.10 | 1.02 | 1.08 | 1.05 | 0.88 | 1.03 | 0.87 |
+| calibrated lean g | 0.90 | 1.10 | 1.04 | 0.86 | 1.11 | 0.97 | 0.86 | 1.11 | 1.00 | 1.16 | 1.04 | 1.04 | 1.07 | 0.87 | 1.07 | 0.74 |
+| before (§2 (a)) | 0.91 | 1.00 | 0.96 | 0.80 | 0.89 | 0.95 | 0.49 | 0.98 | 0.91 | 1.04 | 1.07 | 1.01 | 0.98 | 0.79 | 0.90 | 0.77 |
+| **after** | 0.96 | 1.00 | 1.02 | 0.91 | 0.97 | 0.99 | 0.75 | 1.10 | 0.99 | 1.09 | 1.13 | 1.07 | 1.03 | 0.87 | 1.00 | 0.84 |
+
+**Summary, before → after.**
+
+| measure | before | after |
+|---|---|---|
+| cap − calibrated lean, mean / rms | −0.09 / 0.13 g | **−0.01 / 0.07 g** |
+| cap − v²κ, mean / rms | −0.10 / 0.12 g | −0.02 / 0.05 g |
+| along the lap, envelope − calibrated lean: rmse / p95 / bias | 0.116 / 0.222 / +0.016 g | 0.092 / 0.182 / +0.006 g |
+| along the lap, envelope − v²κ: rmse / p95 / bias | 0.104 / 0.210 / +0.016 g | 0.073 / 0.169 / +0.006 g |
+| lean rmse | 5.9° | 5.7° |
+
+**Not fixed.**
+
+- **The Ducati on the pist κ 0.85 line** is still 1.0 s quick. That is fix (b), the line itself.
+- **BMW zone times against the reference clock stay red** in `simFitRider.test.ts`: lap −0.51 s
+  (−0.48 s of it is line distance), K1 zone −0.68 s. Against the reference speed over the line, the
+  zones are within 0.3 s (K5 +0.28 s: the 1.46 g exit).

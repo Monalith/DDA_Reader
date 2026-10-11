@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildLine, effectiveHalfWidths, lineFromOffsets, smoothClosed } from '../../src/sim/line';
+import { buildLine, chooseCurvatureScaleM, CURV_SCALE_M, CURV_SCALE_SURVEYED_M, effectiveHalfWidths, lineFromOffsets, polylineCurvature, smoothClosed } from '../../src/sim/line';
 import { DEFAULT_SIM_PARAMS } from '../../src/sim/presets';
 import type { Corridor } from '../../src/sim/types';
 import type { LngLat, TrackModel } from '../../src/core/types';
@@ -577,5 +577,47 @@ describe('minimum-curvature line (exact bounded QP)', () => {
     const t0 = performance.now();
     buildLine(t.track, t.corridor, P, 6);
     expect(performance.now() - t0).toBeLessThan(200);
+  });
+});
+
+describe('curvature scale per source (ducati-lateral note §7)', () => {
+  /** The oval of `ovalTrack` with a lateral sine wobble (amplitude, wavelength, m) on both straights. */
+  function wobbledOval(ampM: number, waveM: number): TrackModel {
+    const { track } = ovalTrack(60, 400, 6);
+    const lat0 = 41.073;
+    const mPerDegLat = 111320;
+    // the straights run along y = ∓60 m; push their vertices sideways
+    const centerline = track.centerline.map(([lng, lat]): LngLat => {
+      const y = (lat - lat0) * mPerDegLat;
+      if (Math.abs(Math.abs(y) - 60) > 0.01) return [lng, lat];
+      const x = (lng - track.centerline[0][0]) * 111320 * Math.cos((lat0 * Math.PI) / 180);
+      return [lng, lat + (ampM * Math.sin((2 * Math.PI * x) / waveM)) / mPerDegLat];
+    });
+    return { ...track, centerline };
+  }
+
+  it('takes the 10 m scale for a clean centreline and keeps 20 m where 10 m reads straights as bends', () => {
+    // measured on the real sources: Ducati GPS-lap centreline 0.48e-3 1/m on its straights at 10 m
+    // (passes), BMW hand-placed map 1.50e-3 and pist Serres centreline 2.47e-3 (fail)
+    expect(chooseCurvatureScaleM(ovalTrack(60, 400, 6).track.centerline)).toBe(CURV_SCALE_SURVEYED_M);
+    expect(chooseCurvatureScaleM(wobbledOval(0.1, 30).centerline)).toBe(CURV_SCALE_SURVEYED_M);
+    expect(chooseCurvatureScaleM(wobbledOval(0.3, 40).centerline)).toBe(CURV_SCALE_M);
+    // no straight to judge it by: the map default
+    expect(chooseCurvatureScaleM(circleTrack(100, 6).track.centerline)).toBe(CURV_SCALE_M);
+  });
+
+  it('lineFromOffsets measures curvature at the track\'s own scale (default 20 m)', () => {
+    const { track } = ovalTrack(60, 400, 6);
+    const zero = new Float32Array(track.centerline.length);
+    expect(Array.from(lineFromOffsets(track, zero).curvature)).toEqual(Array.from(polylineCurvature(track.centerline, CURV_SCALE_M)));
+    const t10 = { ...track, curvatureScaleM: CURV_SCALE_SURVEYED_M };
+    expect(Array.from(lineFromOffsets(t10, zero).curvature)).toEqual(Array.from(polylineCurvature(track.centerline, CURV_SCALE_SURVEYED_M)));
+    // the shorter scale blurs the 60 m end's entry less: the first arc vertex
+    // past the straight reads closer to 1/60 at 10 m than at 20 m
+    const { arcFrom } = ovalTrack(60, 400, 6);
+    const i = arcFrom + 5;
+    const k10 = Math.abs(lineFromOffsets(t10, zero).curvature[i]);
+    const k20 = Math.abs(lineFromOffsets(track, zero).curvature[i]);
+    expect(Math.abs(k10 - 1 / 60)).toBeLessThan(Math.abs(k20 - 1 / 60));
   });
 });

@@ -1,5 +1,5 @@
 // Library for scripts/ducati-lateral.ts (docs/superpowers/notes/2026-10-11-ducati-lateral-g.md).
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { toLocalM } from '../../src/core/geo';
 import type { LngLat } from '../../src/core/types';
 import { fitRider, type RiderFit } from '../../src/sim/fitRider';
@@ -18,9 +18,9 @@ import type { Reference } from '../../src/sim/reference';
 import { deriveRider } from '../../src/sim/derive';
 import type { Line, SimParams } from '../../src/sim/types';
 import type { TrackModel } from '../../src/core/types';
-import { lineFromOffsets } from '../../src/sim/line';
+import { chooseCurvatureScaleM, CURV_SCALE_M, lineFromOffsets, polylineCurvature } from '../../src/sim/line';
 import { classifyLaps } from './ddaLap';
-import { fitLine, loadPistModel, type PistModel } from './fitLines';
+import { fitLine, type PistModel } from './fitLines';
 
 export const INBOX = '/Users/macbookmini/projects/DDA_Reader/_inbox';
 export const DEFAULT_RUN = `${INBOX}/Run036-219926-00.00.json`;
@@ -345,8 +345,12 @@ export interface FitCompare {
   lineLengthM: number;
 }
 
-/** The owner's own GPS path as a sim `Line` (the sim's own curvature pipeline, offset 0). */
-export function ownLine(trace: DdaLapTrace): Line {
+/**
+ * The owner's own GPS path as a sim `Line` (the sim's own curvature pipeline,
+ * offset 0). `scaleM`: the curvature scale; default the one the sim chooses for
+ * this centreline (`chooseCurvatureScaleM`: 10 m on this clean GPS line).
+ */
+export function ownLine(trace: DdaLapTrace, scaleM?: number): Line {
   const N = trace.lon.length;
   const centerline: LngLat[] = Array.from({ length: N }, (_, i) => [trace.lon[i], trace.lat[i]] as LngLat);
   const cumDistM = Array.from({ length: N }, (_, i) => i * (trace.lengthM / N));
@@ -360,6 +364,7 @@ export function ownLine(trace: DdaLapTrace): Line {
     startFinish: { id: 'sf', name: 'SF', type: 'sf', at: centerline[0], bearingDeg: 0, halfWidthM: 15 },
     sectors: [],
     turns: [],
+    curvatureScaleM: scaleM ?? chooseCurvatureScaleM(centerline),
   } as unknown as TrackModel;
   return lineFromOffsets(track, new Float32Array(N));
 }
@@ -458,3 +463,64 @@ export function analyseRun(runPath: string, model: PistModel): DucatiLateral {
   for (const lap of kept) measured.set(lap, measureCorners(traces.get(lap)!, refs.get(lap)!, model, cal));
   return { gs, kept, best, traces, refs, measured, channels, cal };
 }
+
+export interface ScaleRow {
+  scaleM: number;
+  /** Per corner: largest dir·v²κ/g in the zone on the GPS line, this scale. */
+  zoneMaxG: number[];
+  /** Zone max − calibrated lean g: mean / rms / max abs. */
+  vsCal: { bias: number; rmse: number; maxAbs: number };
+  /** Zone max − measured v²κ (κ over a 20 m heading window): mean / rms. */
+  vsGps: { bias: number; rmse: number };
+  /** |κ| p95 / p99 on fast straights (v > 180 km/h, |lean| < 5°), 1/m, and n. */
+  straightP95: number;
+  straightP99: number;
+  straightN: number;
+  /** Lap p99 |v²κ/g|. */
+  p99G: number;
+}
+
+/**
+ * The sim's curvature pipeline (line.ts `polylineCurvature`: ±L stencil, ±L
+ * mean) on the lap's own GPS line at each scale L, against the measured
+ * lateral g per corner zone.
+ */
+export function curvatureScaleSweep(trace: DdaLapTrace, ref: Reference, measured: MeasuredCorner[], scales: number[]): ScaleRow[] {
+  const N = trace.lon.length;
+  const pts: LngLat[] = Array.from({ length: N }, (_, i) => [trace.lon[i], trace.lat[i]] as LngLat);
+  const at = (s: number): number => ((Math.round(s) % N) + N) % N;
+  return scales.map((L) => {
+    const kap = polylineCurvature(pts, L);
+    const zoneMaxG = ref.corners.map((c) => {
+      const [z0, z1] = c.zoneM;
+      const len = (((z1 - z0) % N) + N) % N;
+      let g = 0;
+      for (let d = 0; d <= len; d++) {
+        const i = at(z0 + d);
+        g = Math.max(g, (trace.vMs[i] ** 2 * c.dir * kap[i]) / G);
+      }
+      return g;
+    });
+    const dc = zoneMaxG.map((g, k) => g - measured[k].gLeanCal);
+    const dg = zoneMaxG.map((g, k) => g - measured[k].gGpsMax);
+    const st: number[] = [];
+    const all: number[] = [];
+    for (let i = 0; i < N; i++) {
+      all.push((trace.vMs[i] ** 2 * Math.abs(kap[i])) / G);
+      if (trace.vMs[i] * 3.6 > 180 && Math.abs(trace.leanDeg[i]) < 5) st.push(Math.abs(kap[i]));
+    }
+    const mean = (a: number[]): number => a.reduce((x, y) => x + y, 0) / Math.max(1, a.length);
+    return {
+      scaleM: L,
+      zoneMaxG,
+      vsCal: { bias: mean(dc), rmse: rmse(dc), maxAbs: Math.max(...dc.map(Math.abs)) },
+      vsGps: { bias: mean(dg), rmse: rmse(dg) },
+      straightP95: pct(st, 95),
+      straightP99: pct(st, 99),
+      straightN: st.length,
+      p99G: pct(all, 99),
+    };
+  });
+}
+
+export { CURV_SCALE_M };

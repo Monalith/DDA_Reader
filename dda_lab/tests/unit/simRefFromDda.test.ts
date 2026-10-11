@@ -13,6 +13,9 @@ import {
   type DdaJsonRecord,
 } from '../../src/sim/referenceFromDda';
 import { loadPistModel } from '../../scripts/lib/fitLines';
+import { ownLine, panigaleParams } from '../../scripts/lib/ducatiLateral';
+import { fitRider } from '../../src/sim/fitRider';
+import { chooseCurvatureScaleM, CURV_SCALE_SURVEYED_M } from '../../src/sim/line';
 
 const BUNDLED = new URL('../../public/tracks/serres.pist.json', import.meta.url).pathname;
 /** The owner's Ducati run (gitignored inbox; the real-data tests run when it is present). */
@@ -86,6 +89,25 @@ describe.skipIf(!existsSync(RUN))('referenceFromDda: the owner\'s Ducati best la
     expect(Math.abs(tr.speedScale - 1)).toBeLessThan(0.01);
     expect(Math.abs(ref.lengthIntM - tr.lengthM) / tr.lengthM).toBeLessThan(0.005);
     expect(ref.lapTimeS).toBeCloseTo(95.8, 1);
+  });
+
+  // ducati-lateral note §7-8: the GPS line takes the 10 m curvature scale, and
+  // the fitted rider (coast, roll-on, entry minimum) rides the reference speed
+  // on this line within 0.3 s, every apex within 1 km/h
+  it('the fit on the owner\'s own GPS line: 10 m curvature, lap within 0.3 s of the reference speed on it, apexes within 1 km/h', () => {
+    const N = tr.lon.length;
+    const cl = Array.from({ length: N }, (_, i) => [tr.lon[i], tr.lat[i]] as LngLat);
+    expect(chooseCurvatureScaleM(cl)).toBe(CURV_SCALE_SURVEYED_M);
+    const line = ownLine(tr);
+    const fit = fitRider(line, panigaleParams(), ref);
+    expect(Math.abs(fit.lapTimeS - fit.alignedRefLapS)).toBeLessThan(0.3);
+    for (const d of fit.residuals.apexKmh) expect(Math.abs(d)).toBeLessThan(1);
+    // the K7 flick: 0.49 g at the 20 m scale against 0.79 g measured (v²κ) / 0.86 g (calibrated lean)
+    const k7 = fit.corners.find((c) => c.name === 'K7')!;
+    expect(k7.aLatG).toBeGreaterThan(0.7);
+    // the reference coasts into K12 and rolls on out of K5 over seconds
+    expect(fit.corners.find((c) => c.name === 'K11')!.coastInM).toBeGreaterThan(30);
+    expect(fit.corners.find((c) => c.name === 'K5')!.rollOnS).toBeGreaterThan(2);
   });
 
   it('v²κ/g on the GPS line tracks tan(lean) (accel_lat_g is tan(lean), not an accelerometer)', () => {

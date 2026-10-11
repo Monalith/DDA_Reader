@@ -108,6 +108,14 @@ export interface TrackModel {
   sectors: Gate[];
   turns: Turn[];
   schema?: SchemaLayer;
+  /**
+   * Length scale the sim measures this track's line curvature over, metres
+   * (src/sim/line.ts `curvatureScaleM`): the three-point stencil's half-width
+   * and the moving average's. Unset = 20 m, the hand-placed map polyline's
+   * bound; a surveyed (pist) or logged-GPS centreline sets the shorter
+   * `CURV_SCALE_SURVEYED_M`.
+   */
+  curvatureScaleM?: number;
 }
 
 /** Turn geometry carried by an imported file (e.g. a track-map telemetry JSON). */

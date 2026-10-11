@@ -64,6 +64,19 @@ export interface EnvelopeCaps {
   brakeMs2?: Float32Array;
   /** Drive ceiling (replaces μ_drive_eff·g); power, ellipse, TC and wheelie still apply. */
   driveMs2?: Float32Array;
+  /**
+   * Fraction (0…1) of the drive the bike has AFTER power, ellipse, TC and
+   * wheelie: a rider rolling the throttle on (fitRider's roll-on ramp). A cap
+   * on `driveMs2` cannot express it where the engine, not the tyre, limits.
+   */
+  driveScale?: Float32Array;
+  /**
+   * Ceiling on the NET forward acceleration, m/s² (after drag, rolling and
+   * grade): a coasting rider who neither brakes nor drives beyond the
+   * losses (0 = hold speed at most). Unlike `driveMs2` it is not cut by the
+   * ellipse at lean, so a hold stays a hold in a corner.
+   */
+  accelMaxMs2?: Float32Array;
   /** Skip the roll-rate pass: a fitted rider's transitions are already in its lateral caps. */
   skipRollRate?: boolean;
 }

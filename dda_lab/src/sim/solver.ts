@@ -300,6 +300,7 @@ function prepare(line: Line, params: SimParams, caps?: EnvelopeCaps): SolverCtx 
     : (vv: number, i: number): number => Math.min(1, Math.abs(aY(i, vv)) / (aLatTyre * gRatio(i, vv)));
   const brakeArr = caps?.brakeMs2;
   const driveArr = caps?.driveMs2;
+  const driveScaleArr = caps?.driveScale;
 
   const bikeLean = bikeLeanFn(m);
   const bikeRoll = (i: number, vv: number): number => bikeLean(Math.atan(aY(i, vv) / (G * gRatio(i, vv))));
@@ -340,8 +341,10 @@ function prepare(line: Line, params: SimParams, caps?: EnvelopeCaps): SolverCtx 
     const tcFactor = 1 - (1 - tcFloor) * used;
     const aPower = power / (m.massKg * vv);
     const a = Math.min(aPower, (driveArr ? Math.max(0.1, driveArr[i]) : aDriveMax) * gr * ell * tcFactor);
-    if (a <= wheelieLimitMs2(m, vv, 0, G * gr)) return a;
-    return Math.min(a, wheelieLimitMs2(m, vv, bikeRoll(i, vv), G * gr));
+    const aw = a <= wheelieLimitMs2(m, vv, 0, G * gr) ? a : Math.min(a, wheelieLimitMs2(m, vv, bikeRoll(i, vv), G * gr));
+    if (!driveScaleArr) return aw;
+    // the roll-on fraction (floored like the caps, so a scale of 0 is a closed throttle, not a numerical stall)
+    return Math.max(0.1, aw * Math.min(1, Math.max(0, driveScaleArr[i])));
   };
 
   return { p, n, muEff, muPeak, aLatMax, vTop, gs, gRatio, aY, dsAt, latUse, bikeRoll, brakeCap, driveCap };
@@ -571,6 +574,7 @@ export function solve(line: Line, params: SimParams, caps?: EnvelopeCaps): Envel
 
   /** `lossDecelMs2` for this machine. */
   const aLoss = (vv: number): number => lossDecelMs2(p.machine, vv);
+  const accelMaxArr = caps?.accelMaxMs2;
 
   // ---- pass 3: forward (acceleration) ----------------------------------
   //
@@ -587,7 +591,8 @@ export function solve(line: Line, params: SimParams, caps?: EnvelopeCaps): Envel
         const ds = dsAt(i);
         const vv = Math.max(V_MIN, v[j]);
         // grade: uphill (gs > 0) costs drive
-        const a = driveCap(j, vv) - aLoss(vv) - gs[j];
+        const aNet = driveCap(j, vv) - aLoss(vv) - gs[j];
+        const a = accelMaxArr ? Math.min(aNet, accelMaxArr[j]) : aNet;
         const vMax = Math.sqrt(Math.max(V_MIN * V_MIN, vv * vv + 2 * a * ds));
         if (v[i] > vMax) v[i] = Math.max(V_MIN, vMax);
       }

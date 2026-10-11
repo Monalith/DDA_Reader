@@ -11,6 +11,7 @@ import {
 } from '../core/track';
 import type { Gate, LngLat, Session, TrackModel } from '../core/types';
 import { activeTrack, useLab } from './store';
+import { chooseCurvatureScaleM } from '../sim/line';
 
 export const TRACKS_STORAGE_KEY = 'lab.tracks';
 
@@ -146,7 +147,10 @@ export function buildTrackFromSession(s: Session): TrackModel | null {
   const name = s.meta.track || 'Track';
   const id = slug(s.meta.track) || `track-${center[0].toFixed(3)}-${center[1].toFixed(3)}`;
 
-  return { id, name, center, centerline, cumDistM, lengthM, startFinish, sectors, turns };
+  // the sim's line curvature scale: 10 m when this centreline is clean enough
+  // (logged GPS), else the 20 m map default (src/sim/line.ts)
+  const curvatureScaleM = chooseCurvatureScaleM(centerline);
+  return { id, name, center, centerline, cumDistM, lengthM, startFinish, sectors, turns, curvatureScaleM };
 }
 
 /** Read every track saved in localStorage. */

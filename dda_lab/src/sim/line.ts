@@ -422,18 +422,10 @@ export function buildLine(
   // n - 1, matching `stencilK`'s and `extractCorridor`'s step for the same
   // quantity — three copies of this had drifted to two different divisors.
   const stepM = track.lengthM / Math.max(1, n - 1);
-  const margin = params.tyre.kerbMarginM;
 
-  const { leftM: effLeft, rightM: effRight } = effectiveHalfWidths(n, corridor, fallbackHalfWidthM);
-
-  // box constraints: hi = how far left, lo = how far right (negative)
-  const hiM = new Float32Array(n);
-  const loM = new Float32Array(n);
-  for (let i = 0; i < n; i++) {
-    // leave half a bike's width inside the edge, then allow the kerb margin
-    hiM[i] = Math.max(0, effLeft[i] - 0.4) + margin;
-    loM[i] = -(Math.max(0, effRight[i] - 0.4) + margin);
-  }
+  // box constraints: hi = how far left, lo = how far right (negative); half a
+  // bike's width inside the edge, then the kerb margin
+  const { loM, hiM } = offsetBounds(track, corridor, params, fallbackHalfWidthM);
 
   const baseCurv = polylineCurvature(cl, CURV_SCALE_M);
   const d = solveOffsets(n, stepM, baseCurv, loM, hiM, params.rider.kappa);
@@ -447,6 +439,41 @@ export function buildLine(
     }
   }
 
+  return lineFromOffsets(track, d);
+}
+
+/**
+ * Lateral offset bounds the line may use at every centerline vertex, metres
+ * (left positive, right negative), after the bike's half width and the kerb
+ * margin. Exported for the free-trajectory optimiser (spec v2 §2.10), which
+ * treats the offsets as decision variables inside exactly this box.
+ */
+export function offsetBounds(
+  track: TrackModel,
+  corridor: Corridor | undefined,
+  params: SimParams,
+  fallbackHalfWidthM = 5,
+): { loM: Float32Array; hiM: Float32Array } {
+  const n = track.centerline.length;
+  const margin = params.tyre.kerbMarginM;
+  const { leftM: effLeft, rightM: effRight } = effectiveHalfWidths(n, corridor, fallbackHalfWidthM);
+  const hiM = new Float32Array(n);
+  const loM = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    hiM[i] = Math.max(0, effLeft[i] - 0.4) + margin;
+    loM[i] = -(Math.max(0, effRight[i] - 0.4) + margin);
+  }
+  return { loM, hiM };
+}
+
+/**
+ * Build a `Line` from per-vertex lateral offsets off the centerline. This is
+ * the geometry half of `buildLine`, split out so other line generators (the
+ * free-trajectory optimiser, the OCP client) produce a Line the same way.
+ */
+export function lineFromOffsets(track: TrackModel, offsetsM: Float32Array): Line {
+  const cl = track.centerline;
+  const n = cl.length;
   // Shared ~10 m tangent stencil with the corridor extractor and renderer
   // (src/sim/corridor.ts) — a third, divergent normal calculation here caused
   // a real bug at hairpins in an earlier task.
@@ -454,7 +481,7 @@ export function buildLine(
   const points: LngLat[] = new Array(n);
   for (let i = 0; i < n; i++) {
     const [nx, ny] = stencilLeftNormal(cl, i, k);
-    points[i] = fromLocalM(cl[i], [nx * d[i], ny * d[i]]);
+    points[i] = fromLocalM(cl[i], [nx * offsetsM[i], ny * offsetsM[i]]);
   }
 
   const cumDistM = new Float64Array(n);
@@ -470,7 +497,7 @@ export function buildLine(
     curvature: polylineCurvature(points, CURV_SCALE_M),
     cumDistM,
     lengthM,
-    offsetM: d,
+    offsetM: offsetsM,
     // no elevation data yet (spec v2 §2.3): flat road, explicitly
     slopeRad: new Float32Array(n),
     bankRad: new Float32Array(n),

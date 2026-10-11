@@ -3,7 +3,9 @@ import { riderChannels } from '../../src/sim/rider';
 import { solve } from '../../src/sim/solver';
 import { clampParams, DEFAULT_SIM_PARAMS } from '../../src/sim/presets';
 import { cornerLine } from './simSolver.test';
-import { circuitTrack } from './circuitFixture';
+import { circuitTrack, testCaps } from './circuitFixture';
+import { findCorners } from '../../src/sim/corners';
+import { eventProfile } from '../../src/sim/events';
 import { buildLine } from '../../src/sim/line';
 import type { Envelope, Line } from '../../src/sim/types';
 import type { LngLat } from '../../src/core/types';
@@ -551,5 +553,44 @@ describe('riderChannels', () => {
     expect(worstStep).toBeLessThan(2);
     // and it is really braking, so a dead channel cannot pass
     expect(lowest).toBeGreaterThan(8);
+  });
+});
+
+describe('riderChannels from the corner-event profile (v2)', () => {
+  const line = buildLine(circuitTrack(), undefined, P);
+  const env = solve(line, P);
+  const ev = eventProfile(line, env, findCorners(line, env.v, P), P, testCaps(line, P));
+  /** env with the event speed, as index.ts hands it over. */
+  const evEnv: Envelope = { ...env, v: ev.v, tS: ev.tS, lapTimeS: ev.lapTimeS };
+  const ch = riderChannels(line, evEnv, P, ev);
+
+  /** Rises through 5 % in a cyclic channel. */
+  const applications = (b: Float32Array): number => {
+    let c = 0;
+    for (let i = 0; i < b.length; i++) if (b[(i - 1 + b.length) % b.length] < 5 && b[i] >= 5) c++;
+    return c;
+  };
+
+  it('takes brake and tps from the events verbatim, no rate limits or dead-bands', () => {
+    expect(Array.from(ch.brake)).toEqual(Array.from(ev.brake));
+    expect(Array.from(ch.tps)).toEqual(Array.from(ev.tps));
+  });
+
+  it('brakes exactly once per section with hasBrake, on the five-corner fixture', () => {
+    expect(applications(ch.brake)).toBe(ev.corners.filter((c) => c.hasBrake).length);
+    expect(applications(ch.brake)).toBe(5);
+  });
+
+  it('keeps gear, rpm and dtc from the envelope model', () => {
+    const legacy = riderChannels(line, evEnv, P);
+    expect(Array.from(ch.gear)).toEqual(Array.from(legacy.gear));
+    expect(Array.from(ch.rpm)).toEqual(Array.from(legacy.rpm));
+    expect(Array.from(ch.dtc)).toEqual(Array.from(legacy.dtc));
+  });
+
+  it('without ev it is still the v1 per-sample path (LEGACY)', () => {
+    const legacy = riderChannels(line, env, P);
+    expect(legacy.brake.length).toBe(line.points.length);
+    expect(Array.from(legacy.brake)).not.toEqual(Array.from(ev.brake));
   });
 });

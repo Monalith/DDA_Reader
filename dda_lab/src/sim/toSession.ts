@@ -58,6 +58,8 @@ export function toSession(
   id: string,
   name: string,
   color: string,
+  /** Extra per-line-sample channels (e.g. the reference fit's `ref_speed_kmh`). */
+  extra: Array<{ name: string; unit: string; data: ArrayLike<number> }> = [],
 ): Session {
   const t = makeTimeBase(env.lapTimeS, 10);
   const srcT = env.tS;
@@ -83,6 +85,7 @@ export function toSession(
   // margin the rider left
   if (env.gripUsePeak) channels.set('grip_use_peak', channel('grip_use_peak', '', onTimeGrid(env.gripUsePeak, srcT, t)));
   channels.set('gear', channel('gear', '', onTimeGridStep(ch.gear, srcT, t)));
+  for (const x of extra) channels.set(x.name, channel(x.name, x.unit, onTimeGrid(x.data, srcT, t)));
   channels.set(
     'lap_dist',
     channel('lap_dist', 'm', onTimeGrid(Float64Array.from(line.cumDistM), srcT, t)),

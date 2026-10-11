@@ -15,10 +15,42 @@ import { deserializeCorridor, serializeCorridor } from '../sim/corridorCache';
 import { corridorFromPist, parsePistPackage, trackFromPist, type PistPackage } from '../core/pistPackage';
 import { buildMosaic, SAT_ZOOM, tileRangeFor } from '../sim/tiles';
 import { simulate } from '../sim';
+import { fitToReference, latMargin } from '../sim/fitRider';
 import { DERIVED_KEYS, deriveRider } from '../sim/derive';
 import { DEFAULT_SIM_PARAMS, presetById } from '../sim/presets';
 import { gripRiskMessage } from '../sim/risk';
 import type { Corner, Corridor, DerivedRiderKey, Line, SimParams, SolverMode } from '../sim/types';
+
+/** One row of the fit table in the sim panel. */
+export interface FitRow {
+  name: string;
+  dir: 1 | -1;
+  apexRefKmh: number;
+  apexSimKmh: number;
+  aLatG: number;
+  aLatPeakG: number;
+  /** Ideal lean for aLatG, degrees. */
+  leanDeg: number;
+  /** (ceiling − aLat)/ceiling, % (apex / zone peak). */
+  marginPct: number;
+  peakMarginPct: number;
+  zoneRefS: number;
+  zoneSimS: number;
+}
+
+export interface FitSummary {
+  refName: string;
+  lapTimeS: number;
+  refLapTimeS: number;
+  /** The reference speed integrated over the sim line, s. */
+  alignedRefLapS: number;
+  iterations: number;
+  converged: boolean;
+  ceilingG: number;
+  ceilingLeanDeg: number;
+  rows: FitRow[];
+  notes: string[];
+}
 
 /** The two optimal solver modes (spec v2 §2.10). */
 export type OptimalMode = Exclude<SolverMode, 'rider' | 'fit'>;
@@ -196,6 +228,10 @@ export interface LabState {
   runOptimal(mode: OptimalMode, runner: OptimalRunner): Promise<void>;
   /** Load a machine preset: machine, tyre and the kappa default together. */
   applyMachinePreset(id: string): void;
+  /** Result of the last "Fit to reference" run, for the sim panel's table. */
+  simFit?: FitSummary;
+  /** Fit the per-corner rider to the loaded reference lap and add its session. */
+  runFit(): void;
 
   addSession(s: Session): void;
   removeSession(id: string): void;
@@ -381,7 +417,9 @@ const OPT_SESSION: Record<OptimalMode, { id: string; name: string; color: string
   freeTrajectory: { id: SIM_OPT_SESSION_ID, name: 'Ideal line', color: '#2ec4b6' },
   ocp: { id: SIM_OCP_SESSION_ID, name: 'Physics limit', color: '#ff9f1c' },
 };
-const ALL_SIM_IDS = new Set([SIM_SESSION_ID, SIM_OPT_SESSION_ID, SIM_OCP_SESSION_ID]);
+export const SIM_FIT_SESSION_ID = 'sim-fit';
+const SIM_FIT_COLOR = '#ff4d6d';
+const ALL_SIM_IDS = new Set([SIM_SESSION_ID, SIM_OPT_SESSION_ID, SIM_OCP_SESSION_ID, SIM_FIT_SESSION_ID]);
 
 export function defaultLapMeta(st: Pick<LabState, 'sessions'>, sessionId: string, lap: number): LapMeta {
   const s = st.sessions.find((x) => x.id === sessionId);
@@ -980,6 +1018,7 @@ export const useLab = create<LabState>((set, get) => ({
         simOptLapTimeS: {},
         simOptLines: {},
         simOptStale: { freeTrajectory: false, ocp: false },
+        simFit: undefined,
         sessions: st.sessions.filter((s) => !ALL_SIM_IDS.has(s.id)),
         selectedLaps: st.selectedLaps.filter((l) => !ALL_SIM_IDS.has(l.sessionId)),
         refLap: st.refLap && ALL_SIM_IDS.has(st.refLap.sessionId) ? undefined : st.refLap,
@@ -1068,6 +1107,60 @@ export const useLab = create<LabState>((set, get) => ({
       set({ statusMessage: `${mode === 'ocp' ? 'Full OCP' : 'Free trajectory'} failed: ${(e as Error).message}` });
     } finally {
       setBusy(false);
+    }
+  },
+  runFit() {
+    const st0 = get();
+    const track = activeTrack(st0);
+    if (!track) {
+      set({ statusMessage: 'The simulator needs a track — open a session first.' });
+      return;
+    }
+    // the reference: the reference lap's session when it carries one, else the first that does
+    const refSession =
+      (st0.refLap && st0.sessions.find((x) => x.id === st0.refLap!.sessionId && x.reference)) ??
+      st0.sessions.find((x) => x.reference);
+    if (!refSession?.reference) {
+      set({ statusMessage: 'Fit to reference needs a reference lap: open a lap JSON with a corner summary (viraj_ozeti).' });
+      return;
+    }
+    if (!st0.simEnabled) get().setSimEnabled(true);
+    const st = get();
+    try {
+      const { session, fit } = fitToReference(track, st.corridor, st.simParams, refSession.reference, SIM_FIT_SESSION_ID, SIM_FIT_COLOR);
+      const ceil = fit.ceiling.aLatG;
+      const summary: FitSummary = {
+        refName: fit.reference,
+        lapTimeS: fit.lapTimeS,
+        refLapTimeS: fit.refLapTimeS,
+        alignedRefLapS: fit.alignedRefLapS,
+        iterations: fit.iterations,
+        converged: fit.converged,
+        ceilingG: ceil,
+        ceilingLeanDeg: fit.ceiling.leanDeg,
+        rows: fit.corners.map((c) => ({
+          name: c.name,
+          dir: c.dir,
+          apexRefKmh: c.vApexRefMs * 3.6,
+          apexSimKmh: c.vApexMs * 3.6,
+          aLatG: c.aLatG,
+          aLatPeakG: c.aLatPeakG,
+          leanDeg: (Math.atan(c.aLatG) * 180) / Math.PI,
+          marginPct: 100 * latMargin(c.aLatG, ceil),
+          peakMarginPct: 100 * latMargin(c.aLatPeakG, ceil),
+          zoneRefS: c.zoneTimeRefS,
+          zoneSimS: c.zoneTimeSimS,
+        })),
+        notes: fit.notes,
+      };
+      const others = st.sessions.filter((x) => x.id !== SIM_FIT_SESSION_ID);
+      const next = { ...st, sessions: [...others, session] };
+      const selectedLaps = st.selectedLaps.some((l) => l.sessionId === SIM_FIT_SESSION_ID)
+        ? st.selectedLaps
+        : [...st.selectedLaps, { sessionId: SIM_FIT_SESSION_ID, lap: 1 }];
+      set({ sessions: refreshAll(next), selectedLaps, simFit: summary });
+    } catch (e) {
+      set({ statusMessage: `Fit to reference failed: ${(e as Error).message}` });
     }
   },
   applyMachinePreset(id) {

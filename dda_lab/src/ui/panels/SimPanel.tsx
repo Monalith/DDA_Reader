@@ -104,6 +104,7 @@ const MODES: Array<{ mode: SolverMode; label: string; help: string }> = [
   { mode: 'rider', label: 'Sürücü', help: 'Human rider driven by Aggressiveness and Risk. Live on every slider.' },
   { mode: 'freeTrajectory', label: 'Serbest yörünge', help: 'Line and speed optimised together for the ideal rider. Runs in the background on "Hesapla".' },
   { mode: 'ocp', label: 'Tam OCP', help: 'Full minimum-time optimal control, solved by the DDA Lab bridge on THIS computer (seconds on Serres). Runs on "Hesapla".' },
+  { mode: 'fit', label: 'Fit to reference', help: 'Fit a per-corner rider (lateral, braking, drive g) to a loaded reference lap (a lap JSON with viraj_ozeti) and derive every channel from it. Runs on "Fit".' },
 ];
 
 function LockIcon({ locked }: { locked: boolean }) {
@@ -153,6 +154,9 @@ export default function SimPanel() {
   const setSolverMode = useLab((s) => s.setSolverMode);
   const runOptimal = useLab((s) => s.runOptimal);
   const applyPreset = useLab((s) => s.applyMachinePreset);
+  const runFit = useLab((s) => s.runFit);
+  const simFit = useLab((s) => s.simFit);
+  const refSessionName = useLab((s) => s.sessions.find((x) => x.reference)?.reference?.name);
   const workspace = useLab((s) => s.workspace);
   const setWorkspace = useLab((s) => s.setWorkspace);
 
@@ -218,7 +222,7 @@ export default function SimPanel() {
   );
 
   const brakeCount = corners?.filter((c) => c.hasBrake).length ?? 0;
-  const optimal = solverMode === 'rider' ? null : solverMode;
+  const optimal = solverMode === 'rider' || solverMode === 'fit' ? null : solverMode;
   const pinned = new Set(params.rider.overrides);
   const hesapla = () => {
     if (!optimal) return;
@@ -319,7 +323,7 @@ export default function SimPanel() {
       <div className="sim-modebar">
         <div className="seg" role="radiogroup" aria-label="Solver mode" data-testid="sim-mode">
           {MODES.map(({ mode, label, help }) => {
-            const a = mode === 'rider' ? { ok: true } : avail[mode];
+            const a = mode === 'rider' || mode === 'fit' ? { ok: true } : avail[mode];
             return (
               <button
                 key={mode}
@@ -353,6 +357,26 @@ export default function SimPanel() {
             </span>
           </>
         )}
+        {solverMode === 'fit' && (
+          <>
+            <button
+              className="btn primary"
+              data-testid="sim-fit-run"
+              disabled={!refSessionName}
+              title={refSessionName ? `Fit the rider to ${refSessionName}` : 'Open a reference lap first (a lap JSON with a corner summary, viraj_ozeti)'}
+              onClick={() => runFit()}
+            >
+              Fit
+            </button>
+            <span className="sim-fit-status num" data-testid="sim-fit-status" role="status">
+              {simFit
+                ? `Fit: ${simFit.refName} ${fmtLapTime(simFit.lapTimeS)} · ref ${fmtLapTime(simFit.refLapTimeS)} (${fmtDelta(simFit.lapTimeS - simFit.refLapTimeS)})`
+                : refSessionName
+                  ? `Reference: ${refSessionName}`
+                  : 'No reference lap loaded'}
+            </span>
+          </>
+        )}
         {(['freeTrajectory', 'ocp'] as const).map((m) =>
           optLap[m] != null ? (
             <span key={m} className={`sim-opt-time num${optStale[m] ? ' stale' : ''}`} data-testid={`sim-opt-time-${m}`}
@@ -363,6 +387,44 @@ export default function SimPanel() {
           ) : null,
         )}
       </div>
+
+      {solverMode === 'fit' && simFit && (
+        <div className="sim-fit" data-testid="sim-fit">
+          <table className="sim-fit-table" data-testid="sim-fit-table">
+            <thead>
+              <tr>
+                <th>Corner</th>
+                <th title="Reference apex speed (aligned onto the sim line)">Apex ref</th>
+                <th title="Fitted rider's apex speed">Apex sim</th>
+                <th>Δ</th>
+                <th title="Fitted lateral g at the apex">Lat g</th>
+                <th title="Lean the apex lateral g needs (ideal lean, atan of lat g)">Lean °</th>
+                <th title={`Margin to the preset's lateral ceiling min(μ, tan(maxLean·leanUsage)) = ${simFit.ceilingG.toFixed(2)} g (${simFit.ceilingLeanDeg.toFixed(1)}°): apex / tightest point of the zone`}>Margin %</th>
+              </tr>
+            </thead>
+            <tbody>
+              {simFit.rows.map((r) => {
+                const d = r.apexSimKmh - r.apexRefKmh;
+                const tight = Math.min(r.marginPct, r.peakMarginPct);
+                return (
+                  <tr key={r.name} className={tight < 0 ? 'over' : tight < 10 ? 'near' : ''}>
+                    <td>{r.name} {r.dir > 0 ? 'L' : 'R'}</td>
+                    <td className="num">{r.apexRefKmh.toFixed(1)}</td>
+                    <td className="num">{r.apexSimKmh.toFixed(1)}</td>
+                    <td className="num">{d >= 0 ? '+' : ''}{d.toFixed(1)}</td>
+                    <td className="num">{r.aLatG.toFixed(2)}{r.aLatPeakG > r.aLatG + 0.005 ? ` (${r.aLatPeakG.toFixed(2)})` : ''}</td>
+                    <td className="num">{r.leanDeg.toFixed(1)}</td>
+                    <td className="num">{r.marginPct.toFixed(0)}{r.peakMarginPct < r.marginPct - 0.5 ? ` / ${r.peakMarginPct.toFixed(0)}` : ''}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <p className="sim-fit-note">
+            Ceiling {simFit.ceilingG.toFixed(2)} g = {simFit.ceilingLeanDeg.toFixed(1)}° lean. The reference speed ridden on this line: {fmtLapTime(simFit.alignedRefLapS)}. {simFit.iterations} iterations{simFit.converged ? '' : ' (stopped at the cap)'}.
+          </p>
+        </div>
+      )}
 
       {risk && (
         <p className="sim-risk" data-testid="sim-risk" role="status">

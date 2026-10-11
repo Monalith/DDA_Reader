@@ -168,6 +168,10 @@ export function simulate(
 ): SimResult {
   const p = clampParams(params);
 
+  if (mode === 'fit') {
+    // the fit needs a reference lap: fitRider.ts `fitToReference`
+    throw new Error("simulate(): mode 'fit' needs a reference lap — call fitToReference() (src/sim/fitRider.ts)");
+  }
   if (mode !== 'rider') {
     const ip = idealParams(p);
     const n = track.centerline.length;

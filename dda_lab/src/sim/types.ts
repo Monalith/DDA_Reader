@@ -40,8 +40,33 @@ export interface Line {
   nu?: Float32Array;
 }
 
-/** Which solver produces the lap (spec v2 §2.10). */
-export type SolverMode = 'rider' | 'freeTrajectory' | 'ocp';
+/**
+ * Which solver produces the lap (spec v2 §2.10). `fit` is the reference-fit
+ * rider (`fitRider.ts`): per-corner caps fitted to a reference lap's speed.
+ */
+export type SolverMode = 'rider' | 'freeTrajectory' | 'ocp' | 'fit';
+
+/**
+ * Per-sample overrides of the rider's lap-wide ceilings for `solve()`, one
+ * value per line sample, m/s². Absent arrays keep the v2 ceilings. Used by the
+ * reference-fit rider: each corner gets its own lateral, braking and drive g.
+ */
+export interface EnvelopeCaps {
+  /** Lateral ceiling (replaces min(μ_lat_eff, tan φ_max)·g); also the ellipse's lateral axis. */
+  aLatMs2?: Float32Array;
+  /**
+   * The friction ellipse's lateral axis, when it should differ from
+   * `aLatMs2` (a rider who stops at 1.3 g lateral still has the tyre's
+   * remaining grip for braking and drive). Defaults to `aLatMs2`.
+   */
+  latAxisMs2?: Float32Array;
+  /** Tyre braking ceiling (replaces μ_brake_eff·g); trail-brake share and stoppie still apply. */
+  brakeMs2?: Float32Array;
+  /** Drive ceiling (replaces μ_drive_eff·g); power, ellipse, TC and wheelie still apply. */
+  driveMs2?: Float32Array;
+  /** Skip the roll-rate pass: a fitted rider's transitions are already in its lateral caps. */
+  skipRollRate?: boolean;
+}
 
 /**
  * One corner section found by `corners.ts` (spec v2 §2.4). Indices are into

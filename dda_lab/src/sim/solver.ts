@@ -33,7 +33,7 @@
 // envelopes (asserted in simSolver.test.ts).
 import { clampParams } from './presets';
 import { effectiveMu } from './tyre';
-import type { Envelope, Line, SimParams } from './types';
+import type { Envelope, EnvelopeCaps, Line, SimParams } from './types';
 import {
   AIR_DENSITY,
   bikeLeanFn,
@@ -220,7 +220,7 @@ interface SolverCtx {
   driveCap(i: number, vv: number): number;
 }
 
-function prepare(line: Line, params: SimParams): SolverCtx {
+function prepare(line: Line, params: SimParams, caps?: EnvelopeCaps): SolverCtx {
   const p = clampParams(params);
   const n = line.points.length;
   const m = p.machine;
@@ -290,7 +290,16 @@ function prepare(line: Line, params: SimParams): SolverCtx {
   // (spec v2 §2.2), NOT the lean-limited ceiling: running out of lean angle
   // is geometry, and leaves the tyre's longitudinal grip where it was.
   const aLatTyre = Math.max(0.1, muEff.lat * G);
-  const latUse = (vv: number, i: number): number => Math.min(1, Math.abs(aY(i, vv)) / (aLatTyre * gRatio(i, vv)));
+  // EnvelopeCaps (fitRider.ts): a per-sample lateral ceiling is ALSO the
+  // ellipse's lateral axis there — the fitted rider's own lateral g is what
+  // "full lean" means for that corner.
+  const latCapArr = caps?.latAxisMs2 ?? caps?.aLatMs2;
+  const latUse = latCapArr
+    ? (vv: number, i: number): number =>
+        Math.min(1, Math.abs(aY(i, vv)) / (Math.max(0.1, latCapArr[i]) * gRatio(i, vv)))
+    : (vv: number, i: number): number => Math.min(1, Math.abs(aY(i, vv)) / (aLatTyre * gRatio(i, vv)));
+  const brakeArr = caps?.brakeMs2;
+  const driveArr = caps?.driveMs2;
 
   const bikeLean = bikeLeanFn(m);
   const bikeRoll = (i: number, vv: number): number => bikeLean(Math.atan(aY(i, vv) / (G * gRatio(i, vv))));
@@ -304,7 +313,7 @@ function prepare(line: Line, params: SimParams): SolverCtx {
   const brakeCap = (i: number, vv: number): number => {
     const gr = gRatio(i, vv);
     const share = brakeShare(latUse(vv, i), p.rider.trailBrakeDepth, p.rider.trailBrakeProfile);
-    const aGrip = aBrakeMax * gr * share;
+    const aGrip = (brakeArr ? Math.max(0.1, brakeArr[i]) : aBrakeMax) * gr * share;
     if (aGrip <= stoppieUpright * gr) return aGrip;
     return Math.min(aGrip, stoppieLimitMs2(m, bikeRoll(i, vv), G * gr));
   };
@@ -330,7 +339,7 @@ function prepare(line: Line, params: SimParams): SolverCtx {
     const tcFloor = 0.55 + 0.45 * p.rider.tcThreshold;
     const tcFactor = 1 - (1 - tcFloor) * used;
     const aPower = power / (m.massKg * vv);
-    const a = Math.min(aPower, aDriveMax * gr * ell * tcFactor);
+    const a = Math.min(aPower, (driveArr ? Math.max(0.1, driveArr[i]) : aDriveMax) * gr * ell * tcFactor);
     if (a <= wheelieLimitMs2(m, vv, 0, G * gr)) return a;
     return Math.min(a, wheelieLimitMs2(m, vv, bikeRoll(i, vv), G * gr));
   };
@@ -502,7 +511,13 @@ function rollRateCap(ctx: SolverCtx, i: number, vLat: Float32Array, st: RollSten
   return Math.min(lo, vUpper);
 }
 
-export function solve(line: Line, params: SimParams): Envelope {
+/**
+ * The QSS envelope. `caps` (optional) replaces the rider's lap-wide ceilings
+ * with per-sample ones — the reference-fit rider (`fitRider.ts`) uses it to
+ * give every corner its own lateral, braking and drive g without forking the
+ * passes. Without `caps` the solve is exactly the v2 one.
+ */
+export function solve(line: Line, params: SimParams, caps?: EnvelopeCaps): Envelope {
   const n = line.points.length;
   const v = new Float32Array(n);
   const longG = new Float32Array(n);
@@ -513,7 +528,7 @@ export function solve(line: Line, params: SimParams): Envelope {
   const tS = new Float64Array(n);
   if (n < 2) return { v, longG, latG, leanDeg, gripUse, gripUsePeak, tS, lapTimeS: 0 };
 
-  const ctx = prepare(line, params);
+  const ctx = prepare(line, params, caps);
   const { p, aLatMax, vTop, gs, gRatio, aY, dsAt, brakeCap, driveCap, muEff, muPeak } = ctx;
 
   // ---- pass 1: lateral limit -------------------------------------------
@@ -522,8 +537,10 @@ export function solve(line: Line, params: SimParams): Envelope {
   //   v²·(|κ| − c·ν) ≤ aLatMax·cosσ·cosβ + g·cosσ·sinβ
   // A denominator ≤ 0 (a dip loading the tyre faster than the corner asks)
   // means no lateral limit: the top-speed cap applies.
-  const cLat = aLatMax / G;
+  const latArr = caps?.aLatMs2;
   for (let i = 0; i < n; i++) {
+    const aLatI = latArr ? Math.max(0.1, latArr[i]) : aLatMax;
+    const cLat = aLatI / G;
     const k = Math.abs(line.curvature[i]);
     const r = k > 1e-6 ? 1 / k : Infinity;
     let vLat = Infinity;
@@ -532,7 +549,7 @@ export function solve(line: Line, params: SimParams): Envelope {
       const bet = line.bankRad?.[i] ?? 0;
       const nu = line.nu?.[i] ?? 0;
       const den = 1 - cLat * nu * r;
-      const num = (aLatMax * Math.cos(sig) * Math.cos(bet) + G * Math.cos(sig) * Math.sin(bet)) * r;
+      const num = (aLatI * Math.cos(sig) * Math.cos(bet) + G * Math.cos(sig) * Math.sin(bet)) * r;
       vLat = den <= 0 ? Infinity : Math.sqrt(Math.max(0, num / den));
     }
     v[i] = Math.max(V_MIN, Math.min(vTop, vLat));
@@ -545,7 +562,7 @@ export function solve(line: Line, params: SimParams): Envelope {
   // they brake into a lateral-limited apex. A constant-radius arc has
   // dφ/ds = 0 and is untouched; a chicane flip or a curvature step is where it
   // binds.
-  {
+  if (!caps?.skipRollRate) {
     const cap = new Float32Array(n);
     const st = rollStencil(n, dsAt);
     for (let i = 0; i < n; i++) cap[i] = rollRateCap(ctx, i, v, st);

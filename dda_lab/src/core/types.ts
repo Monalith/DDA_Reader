@@ -138,6 +138,11 @@ export interface Session {
   isExample?: boolean;
   /** Produced by the virtual rider, not by a file; marker persistence skips it. */
   isSim?: boolean;
+  /**
+   * A reference lap with a corner summary (`viraj_ozeti`), parsed on import:
+   * what the "Fit to reference" solver mode fits the rider to.
+   */
+  reference?: import('../sim/reference').Reference;
   /** Sample-index ranges of laps the user deleted; re-detected laps centred in one stay dropped. */
   deletedRanges?: Array<[number, number]>;
 }

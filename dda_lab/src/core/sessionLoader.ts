@@ -6,6 +6,7 @@ import { ddaReaderCsvToSession } from './csvImport';
 import { parseBundle, type ParsedBundle } from './bundle';
 import { isTelemetryJson, telemetryJsonToSession } from './telemetryJson';
 import { DDA_NAME_MAP, DEFAULT_PROC, type Channel, type Lap, type Session, type TrackModel } from './types';
+import { isReferenceJson, parseReference } from '../sim/reference';
 
 const STEP_CHANNELS = new Set(['gear', 'lap_mark', 'int1', 'int2', 'dist']);
 
@@ -186,6 +187,14 @@ export async function loadSessionFromFile(file: File, color: string, track?: Tra
     }
     if (isTelemetryJson(j)) {
       session = telemetryJsonToSession(j, base, color, newSessionId);
+      // a lap with a corner summary is also a reference for the fit solver
+      if (isReferenceJson(j)) {
+        try {
+          session.reference = parseReference(j, base);
+        } catch {
+          /* a malformed summary only costs the fit mode */
+        }
+      }
     } else if (j && typeof j === 'object' && Array.isArray((j as DdaReaderJson).records)) {
       session = sessionFromDdaReaderJson(j as DdaReaderJson, base, color);
     } else {

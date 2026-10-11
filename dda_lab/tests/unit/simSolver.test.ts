@@ -191,14 +191,20 @@ function checksum(a: ArrayLike<number>): string {
   return s.toPrecision(17);
 }
 
-/** The v2 envelope on `circuitLine()` at `P`, recorded after W1 Task 1.4. */
+/**
+ * The v2 envelope on `circuitLine()` at `P`. Recorded after W1 Task 1.4
+ * (lap 61.654831) and re-recorded after the roll-rate fix (jerk floor
+ * J_Y_MIN = 6 m/s³, ±20 m dφ/ds stencil, 3° lean dead-band): 60.745382.
+ * The fix moved it because the roll-rate cap binds less at the corner
+ * transitions (rollRateFrac 0.5 / 0.85 / 1: 63.33 / 60.75 / 60.40 s).
+ */
 const PIN = {
-  lapTimeS: '61.654831',
-  v: '333056.18530654907',
-  longG: '-7.7142511345446110',
-  latG: '1698.0136515175400',
-  leanDeg: '-76566.902104722336',
-  gripUse: '4290.3048217235482',
+  lapTimeS: '60.745382',
+  v: '338026.50145721436',
+  longG: '-7.8638236373662949',
+  latG: '1728.5890253243124',
+  leanDeg: '-78170.201274098828',
+  gripUse: '4402.4120898608817',
 } as const;
 
 describe('envelope pin (Review Focus 4)', () => {
@@ -227,56 +233,56 @@ describe('envelope pin (Review Focus 4)', () => {
     expect(checksum(env.gripUse)).toBe(PIN.gripUse);
     expect(Array.from(env.v).slice(0, 50)).toMatchInlineSnapshot(`
       [
-        32.62135314941406,
-        33.180049896240234,
-        33.7467041015625,
-        34.31796646118164,
-        34.891395568847656,
-        35.46440124511719,
-        36.034889221191406,
-        36.600521087646484,
-        37.160728454589844,
-        37.715030670166016,
-        38.26300811767578,
-        38.80423355102539,
-        39.338321685791016,
-        39.864933013916016,
-        40.38364791870117,
-        40.89423751831055,
-        41.3966064453125,
-        41.89073181152344,
-        42.37666320800781,
-        42.85452651977539,
-        43.32455062866211,
-        43.7870979309082,
-        44.24264907836914,
-        44.69178771972656,
-        45.135009765625,
-        45.56793212890625,
-        45.99065399169922,
-        46.40367889404297,
-        46.80747604370117,
-        47.202476501464844,
-        47.589080810546875,
-        47.96765899658203,
-        48.33855438232422,
-        48.702091217041016,
-        49.058570861816406,
-        49.40827560424805,
-        49.75146484375,
-        50.0883903503418,
-        50.419281005859375,
-        50.74435806274414,
-        51.06382369995117,
-        51.377872467041016,
-        51.68669128417969,
-        51.99045181274414,
-        52.28931427001953,
-        52.583438873291016,
-        52.87297439575195,
-        53.158058166503906,
-        53.43882369995117,
-        53.71540069580078,
+        33.50994110107422,
+        34.038143157958984,
+        34.576751708984375,
+        35.12212371826172,
+        35.671607971191406,
+        36.2224235534668,
+        36.772300720214844,
+        37.318756103515625,
+        37.861045837402344,
+        38.39855194091797,
+        38.93072509765625,
+        39.45703125,
+        39.976993560791016,
+        40.49018859863281,
+        40.996116638183594,
+        41.49449157714844,
+        41.98515701293945,
+        42.46805191040039,
+        42.943180084228516,
+        43.410640716552734,
+        43.870635986328125,
+        44.32350540161133,
+        44.76971435546875,
+        45.2098388671875,
+        45.64115905761719,
+        46.062347412109375,
+        46.47390365600586,
+        46.87628936767578,
+        47.269935607910156,
+        47.655235290527344,
+        48.03255844116211,
+        48.402244567871094,
+        48.764617919921875,
+        49.119972229003906,
+        49.468589782714844,
+        49.81072998046875,
+        50.146636962890625,
+        50.47654342651367,
+        50.80066680908203,
+        51.11920928955078,
+        51.43236541748047,
+        51.74031448364258,
+        52.04323196411133,
+        52.341278076171875,
+        52.63460922241211,
+        52.923370361328125,
+        53.20770263671875,
+        53.48773956298828,
+        53.763607025146484,
+        54.035423278808594,
       ]
     `);
   });
@@ -864,15 +870,29 @@ describe('solve', () => {
     // Upright samples only (v2): at lean h_φ < h and the limit RISES (0.93 g
     // at 60° on this machine), so the leaned exit legitimately pulls past 0.5 g.
     const loop = cornerLoop(3000, 0, 100, 40);
-    const peak = Math.max(...Array.from(env.longG).filter((_, i) => loop.curvature[i] === 0));
+    // (and both neighbours upright: longG[i] averages the two segments either
+    // side, and the one leaving a leaned exit carries the leaned limit)
+    const nL = loop.curvature.length;
+    const peak = Math.max(
+      ...Array.from(env.longG).filter(
+        (_, i) => loop.curvature[i] === 0 && loop.curvature[(i + 1) % nL] === 0 && loop.curvature[(i - 1 + nL) % nL] === 0,
+      ),
+    );
     // the front wheel limit caps acceleration; without it this configuration
     // would pull well over 2 g
     expect(peak).toBeLessThanOrEqual(aWheelieG + 1e-3);
     // and sample by sample, against the limit at that sample's speed and roll
     // (net of drag: longG is what is left after the losses)
-    for (let i = 0; i < env.v.length; i++) {
-      const phi = (Math.abs(env.leanDeg[i]) * Math.PI) / 180;
-      const cap = (wheelieLimitMs2(p.machine, env.v[i], phi) - lossDecelMs2(p.machine, env.v[i])) / G;
+    // `longG[i]` is the mean of the segments either side of i, so the bound is
+    // the larger of the limits at i−1, i, i+1 (the arc exit, where roll falls
+    // from 50° to 0 within one sample, is where that matters).
+    const nE = env.v.length;
+    const capAt = (j: number): number => {
+      const phi = (Math.abs(env.leanDeg[j]) * Math.PI) / 180;
+      return (wheelieLimitMs2(p.machine, env.v[j], phi) - lossDecelMs2(p.machine, env.v[j])) / G;
+    };
+    for (let i = 0; i < nE; i++) {
+      const cap = Math.max(capAt((i - 1 + nE) % nE), capAt(i), capAt((i + 1) % nE));
       expect(env.longG[i]).toBeLessThanOrEqual(cap + 0.01);
     }
     // and it is actually reached, so the test would notice if it stopped binding
@@ -1017,16 +1037,23 @@ describe('v2 solver: load transfer, μ_eff ellipse, roll rate (spec v2 §2.1-2.5
     const env = solve(line, p);
     const n = env.v.length;
     let worst = 0;
-    for (let i = 1; i < n - 1; i++) {
-      const dphi = (Math.abs(env.leanDeg[i + 1] - env.leanDeg[i - 1]) * Math.PI) / 180 / 2;
+    // Measured with the solver's own definition (fix(sim) roll-rate): dφ/ds
+    // over a ±20 m stencil (1 m sampling here), skipped where both ends are
+    // under the 3° dead-band, against the jerk-floored bound.
+    const K = 20;
+    for (let i = K; i < n - K; i++) {
+      const a = env.leanDeg[i + K];
+      const b = env.leanDeg[i - K];
+      if (Math.abs(a) < 3 && Math.abs(b) < 3) continue;
+      const dphi = (Math.abs(a - b) * Math.PI) / 180 / (2 * K);
       const rate = env.v[i] * dphi;
-      const bound = 0.5 * Math.max(0.05, ((23.5 - 0.31 * env.v[i]) / 9.81) * Math.cos((env.leanDeg[i] * Math.PI) / 180) ** 2);
+      const jy = Math.max(23.5 - 0.31 * env.v[i], 6);
+      const bound = 0.5 * Math.max(0.05, (jy / 9.81) * Math.cos((env.leanDeg[i] * Math.PI) / 180) ** 2);
       worst = Math.max(worst, rate / bound);
     }
-    // measured on the solved profile (speeds differ across the stencil, the
-    // cap holds them equal). Measured 1.31, at the curvature STEP into the
-    // chicane: the forward pass accelerates the sample after the capped one,
-    // which the fixed-speed stencil cannot see.
+    // measured on the solved profile, where the speeds across the stencil
+    // differ (the cap holds them equal), so a little over 1 is the QSS
+    // stencil, not a leak.
     expect(worst).toBeLessThan(1.4);
     expect(worst).toBeGreaterThan(0.5); // and it does bind
   });

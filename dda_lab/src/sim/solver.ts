@@ -381,6 +381,59 @@ export function driveCapMs2(line: Line, params: SimParams, i: number, vMs: numbe
   return ctxFor(line, params).driveCap(i, vMs);
 }
 
+/**
+ * Half-width of the dφ/ds stencil, metres: the same 20 m as `CURV_SCALE_M` in
+ * line.ts, the scale the line's curvature is measured and smoothed over.
+ * Differentiating that curvature over ±1 sample (2 m) read its residual
+ * centerline noise as roll: ±8-13° of lean wiggle at 260-280 km/h on the
+ * Serres main straight, which no rider follows. Nothing below the curvature's
+ * own resolution is a real roll demand.
+ */
+const ROLL_STENCIL_M = 20;
+/**
+ * Bike roll under which the roll-rate constraint is not applied, when BOTH
+ * stencil ends are below it: 3°. Straight-line lean noise, not a transition.
+ * "öneri", doğrulanmadı.
+ */
+const ROLL_DEADBAND_RAD = (3 * Math.PI) / 180;
+
+/** Per-sample ends and arc length of the roll-rate stencil. */
+interface RollStencil {
+  im: Int32Array;
+  ip: Int32Array;
+  span: Float64Array;
+}
+
+/**
+ * For every sample, the first sample at least `ROLL_STENCIL_M` behind and
+ * ahead of it (wrapping), and the arc length between them. A line shorter
+ * than the stencil uses at most half the loop each way.
+ */
+function rollStencil(n: number, dsAt: (i: number) => number): RollStencil {
+  const im = new Int32Array(n);
+  const ip = new Int32Array(n);
+  const span = new Float64Array(n);
+  const maxK = Math.max(1, Math.floor(n / 2) - 1);
+  for (let i = 0; i < n; i++) {
+    let back = 0;
+    let k = 0;
+    while (k < maxK && back < ROLL_STENCIL_M) {
+      back += dsAt((i - k + n) % n);
+      k++;
+    }
+    im[i] = (i - k + n) % n;
+    let fwd = 0;
+    k = 0;
+    while (k < maxK && fwd < ROLL_STENCIL_M) {
+      k++;
+      fwd += dsAt((i + k) % n);
+    }
+    ip[i] = (i + k) % n;
+    span[i] = back + fwd;
+  }
+  return { im, ip, span };
+}
+
 /** Grid step of the roll-rate cap's scan for its first crossing, m/s. */
 const ROLL_SCAN_STEP_MS = 2;
 /** Bisection steps inside the crossing cell: 2 m/s / 2^20 ≈ 2e-6 m/s. */
@@ -392,7 +445,9 @@ const ROLL_BISECT_ITERS = 20;
  *
  *     v · |dφ/ds| ≤ rollRateFrac · φ̇_max(v, φ)
  *
- * dφ/ds is the central difference of the real bike roll over i−1 … i+1.
+ * dφ/ds is the central difference of the real bike roll over the stencil
+ * `im` … `ip`, which spans `ROLL_STENCIL_M` either side of i (see there), and
+ * the constraint is skipped where both ends are under `ROLL_DEADBAND_RAD`.
  *
  * Solved per sample AT FIXED SPEED across the stencil (quasi-steady: the
  * v'·κ term of the lateral jerk is neglected), except that a neighbour is
@@ -405,15 +460,18 @@ const ROLL_BISECT_ITERS = 20;
  * there, which lifts the cap on the next round. This is that loop's fixed
  * point under the same stencil.
  */
-function rollRateCap(ctx: SolverCtx, i: number, vLat: Float32Array): number {
-  const n = ctx.n;
-  const im = (i - 1 + n) % n;
-  const ip = (i + 1) % n;
-  const ds = ctx.dsAt(i) + ctx.dsAt(ip);
+function rollRateCap(ctx: SolverCtx, i: number, vLat: Float32Array, st: RollStencil): number {
+  const im = st.im[i];
+  const ip = st.ip[i];
+  const ds = st.span[i];
   const vUpper = vLat[i];
   const frac = ctx.p.rider.rollRateFrac;
   const excess = (vv: number): number => {
-    const dphi = Math.abs(ctx.bikeRoll(ip, Math.min(vv, vLat[ip])) - ctx.bikeRoll(im, Math.min(vv, vLat[im]))) / ds;
+    const phiP = ctx.bikeRoll(ip, Math.min(vv, vLat[ip]));
+    const phiM = ctx.bikeRoll(im, Math.min(vv, vLat[im]));
+    // straight-line noise: no roll constraint near upright
+    if (Math.abs(phiP) < ROLL_DEADBAND_RAD && Math.abs(phiM) < ROLL_DEADBAND_RAD) return -1;
+    const dphi = Math.abs(phiP - phiM) / ds;
     return vv * dphi - frac * rollRateBoundRadPerS(vv, ctx.bikeRoll(i, vv));
   };
   if (excess(vUpper) <= 0) return vUpper;
@@ -489,7 +547,8 @@ export function solve(line: Line, params: SimParams): Envelope {
   // binds.
   {
     const cap = new Float32Array(n);
-    for (let i = 0; i < n; i++) cap[i] = rollRateCap(ctx, i, v);
+    const st = rollStencil(n, dsAt);
+    for (let i = 0; i < n; i++) cap[i] = rollRateCap(ctx, i, v, st);
     for (let i = 0; i < n; i++) v[i] = Math.max(V_MIN, Math.min(v[i], cap[i]));
   }
 

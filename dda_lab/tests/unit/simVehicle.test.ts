@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   BINIEWICZ_JY,
+  J_Y_MIN,
   bikeLeanRad,
   cgHeightAtLean,
   idealLeanLimitRad,
@@ -66,6 +67,14 @@ describe('vehicle limits', () => {
     expect(rollRateBoundRadPerS(20, Math.PI / 4)).toBeCloseTo(w20 / 2, 6);
     expect(rollRateBoundRadPerS(40, 0)).toBeLessThan(w20);
     expect(rollRateBoundRadPerS(20, 0)).toBeCloseTo((BINIEWICZ_JY.beta0 + BINIEWICZ_JY.beta1 * 20) / G, 9);
+  });
+  it('floors the JERK at J_Y_MIN past the fit, keeping cos²φ', () => {
+    // thesis fit reaches 6 m/s^3 at (23.5 - 6)/0.31 = 56.5 m/s
+    expect(rollRateBoundRadPerS(80, 0)).toBeCloseTo(J_Y_MIN / G, 12);
+    expect(rollRateBoundRadPerS(200, 0)).toBeCloseTo(J_Y_MIN / G, 12);
+    expect(rollRateBoundRadPerS(80, Math.PI / 4)).toBeCloseTo(J_Y_MIN / G / 2, 12);
+    // and inside the fit it is the fit
+    expect(rollRateBoundRadPerS(30, 0)).toBeCloseTo((23.5 - 0.31 * 30) / G, 12);
   });
   it('roll-rate bound has a positive floor at any speed', () => {
     expect(rollRateBoundRadPerS(200, 0)).toBeGreaterThanOrEqual(0.05);

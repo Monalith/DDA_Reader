@@ -27,6 +27,19 @@ const LIMIT_FLOOR_MS2 = 0.1;
 const ROLL_RATE_FLOOR = 0.05;
 
 /**
+ * Lowest lateral jerk the roll-rate bound allows, m/s^3 (≈ 35°/s of roll
+ * upright at any speed). "öneri", doğrulanmadı.
+ *
+ * Biniewicz's j_y = β0 + β1·V is a linear fit to Supersport data up to about
+ * 70 m/s. Extrapolated past that it reaches zero at 76 m/s (thesis β0) and
+ * goes negative, which pinned the roll rate to its 0.05 rad/s numeric floor
+ * on every fast straight: the main straight's small lean changes at
+ * 260-280 km/h alone cost several seconds on Serres. Flooring the JERK (not
+ * the rate) keeps the fit inside its data and leaves the cos²φ factor intact.
+ */
+export const J_Y_MIN = 6;
+
+/**
  * Biniewicz lateral-jerk bound j_y(V) = β0 + β1·V, used as a roll-rate limit
  * φ̇ ≤ j_y/g·cos²φ (spec v2 §2.5).
  *
@@ -148,12 +161,13 @@ export function idealLeanLimitRad(m: MachineParams, maxBikeLeanRad: number): num
 /**
  * Roll-rate bound, rad/s (spec v2 §2.5, R1 §3.3): the Biniewicz lateral-jerk
  * limit j_y(V) = β0 + β1·V mapped to roll through tan φ = a_y/g, which gives
- * dφ/dt = (ȧ_y/g)·cos²φ. Floored at 0.05 rad/s so a division by it in the
- * solver is always finite. The rider's share of it (`rollRateFrac`) is applied
- * by the caller.
+ * dφ/dt = (ȧ_y/g)·cos²φ. The JERK is floored at `J_Y_MIN` (see there); the
+ * rate is additionally floored at 0.05 rad/s so a division by it in the
+ * solver is always finite (cos²φ → 0 at 90°). The rider's share of it
+ * (`rollRateFrac`) is applied by the caller.
  */
 export function rollRateBoundRadPerS(vMs: number, phiRad: number): number {
-  const jy = BINIEWICZ_JY.beta0 + BINIEWICZ_JY.beta1 * vMs;
+  const jy = Math.max(BINIEWICZ_JY.beta0 + BINIEWICZ_JY.beta1 * vMs, J_Y_MIN);
   const c = Math.cos(phiRad);
   return Math.max(ROLL_RATE_FLOOR, (jy / G) * c * c);
 }

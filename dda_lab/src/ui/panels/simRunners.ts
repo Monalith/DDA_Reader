@@ -105,7 +105,14 @@ export async function optimalAvailability(mode: OptimalMode): Promise<Availabili
   // itself fails when there is no bridge at all
   try {
     const res = await fetch(`${ocpBase()}/ocp/jobs/availability-probe`, { method: 'GET' });
-    if (res.status === 404) return { ok: true };
+    if (res.status === 404) {
+      // the OCP service answers {"error":"not_found"}; a bridge WITHOUT the
+      // /ocp routes (older deploy) answers FastAPI's own {"detail":"Not Found"}
+      const body = (await res.json().catch(() => null)) as { error?: string } | null;
+      return body?.error === 'not_found'
+        ? { ok: true }
+        : { ok: false, reason: 'The lab bridge predates the OCP service — redeploy it with deploy_lab.sh --with-ocp.' };
+    }
     if (res.status === 503) return { ok: false, reason: 'The lab bridge is up but was deployed without the OCP service (deploy_lab.sh --with-ocp).' };
     return { ok: false, reason: `The lab bridge answered ${res.status} to the OCP probe.` };
   } catch {

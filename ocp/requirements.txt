@@ -1,0 +1,5 @@
+# Full OCP service (ocp/ocp_motorcycle.py). Optional: the bridge runs without it
+# and only the OCP jobs fail. Installed on the droplet by `deploy_lab.sh --with-ocp`.
+# CasADi wheels bundle IPOPT + MUMPS; no system solver is needed.
+casadi>=3.6
+numpy>=1.24

@@ -2,6 +2,7 @@
 import { loadBundleFromFile, loadSessionFromFile, isBundle } from '../core/sessionLoader';
 import { activeTrack, SESSION_COLORS, useLab } from '../state/store';
 import { ensureTrackForSession, saveTrackLocal } from '../state/trackActions';
+import { parsePistPackage } from '../core/pistPackage';
 
 /** Opening real data closes the bundled examples (they are just a demo). */
 export function closeExamples(): void {
@@ -13,6 +14,16 @@ export async function openFiles(files: File[], opts: { example?: boolean; colors
   const { addSession, setStatus } = useLab.getState();
   if (!opts.example) closeExamples();
   for (const f of files) {
+    // a `.pist.json` track model (or any JSON that is one) is not a session:
+    // it becomes the track and the rider's corridor
+    if (await isPistPackage(f)) {
+      try {
+        useLab.getState().applyTrackPackage(parsePistPackage(await f.text()));
+      } catch (e) {
+        setStatus(`${f.name}: ${(e as Error).message}`);
+      }
+      continue;
+    }
     if (await isBundle(f)) {
       setStatus(`Loading bundle ${f.name}…`);
       const b = await loadBundleFromFile(f, activeTrack(useLab.getState()));
@@ -38,5 +49,18 @@ export async function openFiles(files: File[], opts: { example?: boolean; colors
       extra = ` · ${s.turnHints.length} turns applied to the track`;
     }
     setStatus(`${f.name}: ${s.laps.length} laps, ${(s.t[s.t.length - 1] / 60).toFixed(1)} min${extra}`);
+  }
+}
+
+/** A pist package by name, or by content for any other .json (version 2 with a centerline and edges). */
+async function isPistPackage(f: File): Promise<boolean> {
+  const name = f.name.toLowerCase();
+  if (name.endsWith('.pist.json')) return true;
+  if (!name.endsWith('.json')) return false;
+  try {
+    const head = await f.slice(0, 2048).text();
+    return head.includes('"version"') && head.includes('"leftEdge"') || (head.includes('"version": 2') && head.includes('"direction"'));
+  } catch {
+    return false;
   }
 }

@@ -419,11 +419,9 @@ describe('fitRider on the corrected BMW lap (v2) on the pist κ 0 kerb 1.0 race 
     for (const c of fit.corners) if (!EXCEPT.has(c.name)) expect(c.aLatG, c.name).toBeLessThanOrEqual(LIMIT_G);
   });
 
-  // RED by design while the exceptions above remain: K2 1.51, K4 1.84,
-  // K6 1.50 g (HEAD c7922fe line). Not a v2 data problem.
-  it('every apex ≤ 1.47 g (no exceptions)', () => {
-    for (const c of fit.corners) expect(c.aLatG, c.name).toBeLessThanOrEqual(LIMIT_G);
-  });
+  // The red-by-design "no exceptions" assertion moved to the lap-time line
+  // (tests/unit/simLapTimeSerres.test.ts, pist-line note §8), which clears
+  // K2, K4 and K6 and leaves K12.
 });
 
 describe('alignReference peak merge (opt-in)', () => {

@@ -3,7 +3,7 @@
 //
 //   cd dda_lab && npx vite-node scripts/fit-reference.ts [reference.json ...]
 //        [--track serres.pist.json] [--line map|centre|race] [--kappa 0..1] [--kerb m] [--compare]
-//        [--line-mode min-time|min-curvature|both]
+//        [--line-mode min-time|min-curvature|lap-time|both]
 //
 // Default (no --track): the Serres track from the file's own lat/lon, no
 // corridor, `DEFAULT_SIM_PARAMS` (1000 preset, μ 1.40) — the map line. With
@@ -192,7 +192,7 @@ export function compareTable(runs: FitRun[]): string {
   const kerbArg = opt('--kerb');
   const compare = argv.includes('--compare');
   const modeArg = opt('--line-mode');
-  if (modeArg && !['min-time', 'min-curvature', 'both'].includes(modeArg)) throw new Error(`--line-mode ${modeArg}: min-time | min-curvature | both`);
+  if (modeArg && !['min-time', 'min-curvature', 'lap-time', 'both'].includes(modeArg)) throw new Error(`--line-mode ${modeArg}: min-time | min-curvature | lap-time | both`);
   const optVals = new Set([trackPath, lineArg, kappaArg, kerbArg, modeArg].filter(Boolean));
   const files = argv.filter((a) => a.endsWith('.json') && !a.endsWith('.pist.json') && !optVals.has(a));
   if (!files.length) files.push(...DEFAULT_FILES);

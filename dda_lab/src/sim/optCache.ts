@@ -25,7 +25,7 @@ const MEMORY_MAX = 8;
 const memory = new Map<string, { offsetsM: Float32Array; lapTimeS: number }>();
 
 /** JSON with object keys sorted, so the hash does not depend on construction order. */
-function stableStringify(v: unknown): string {
+export function stableStringify(v: unknown): string {
   if (Array.isArray(v)) return `[${v.map(stableStringify).join(',')}]`;
   if (v && typeof v === 'object') {
     const o = v as Record<string, unknown>;
@@ -39,7 +39,7 @@ function stableStringify(v: unknown): string {
 }
 
 /** FNV-1a, 32 bit, as 8 hex characters. */
-function fnv1a(s: string): string {
+export function fnv1a(s: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i);

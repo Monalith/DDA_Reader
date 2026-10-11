@@ -1,9 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { buildLine, chooseCurvatureScaleM, CURV_SCALE_M, CURV_SCALE_SURVEYED_M, effectiveHalfWidths, lineFromOffsets, minTimeTrace, MT_ITERS, offsetBounds, polylineCurvature, smoothClosed } from '../../src/sim/line';
 import { clampParams, DEFAULT_SIM_PARAMS } from '../../src/sim/presets';
 import { solve } from '../../src/sim/solver';
 import type { Corridor } from '../../src/sim/types';
 import type { LngLat, TrackModel } from '../../src/core/types';
+import { createOptimiser } from '../../src/sim/freeTrajectory';
+import { clearLapTimeLines, lapTimeKey, lapTimeLineStatus, lapTimeStart, rememberLapTimeLine } from '../../src/sim/lapTimeLine';
 import { CIRCUIT_SEGMENTS, circuitTrack, segmentIndices, trackFromSegments, type Seg } from './circuitFixture';
 
 /**
@@ -691,6 +693,75 @@ describe('min-time line (speed-weighted curvature, iterated against the QSS)', (
       best = Math.min(best, performance.now() - t0);
     }
     expect(best).toBeLessThan(300);
+  });
+});
+
+// lineMode 'lap-time' (pist-line note §8): the free-trajectory descent judged
+// by the rider's own QSS lap, warm-started from the fastest κ-line, stored in
+// lapTimeLine.ts and read back by buildLine.
+describe('lap-time line (direct lap-time descent)', { timeout: 60_000 }, () => {
+  const base = clampParams(DEFAULT_SIM_PARAMS);
+  const at = (kappa: number, lineMode: 'min-curvature' | 'min-time' | 'lap-time') =>
+    clampParams({ ...base, rider: { ...base.rider, kappa, lineDeviationM: 0, lineMode } });
+  const t = sweeperHairpin();
+  const PL = at(0, 'lap-time');
+  let opt!: ReturnType<typeof createOptimiser>;
+  let runMs = 0;
+  let offsets = new Float32Array(0);
+  beforeAll(() => {
+    clearLapTimeLines();
+    const t0 = performance.now();
+    opt = createOptimiser(t.track, t.corridor, PL, { init: lapTimeStart(t.track, t.corridor, PL), rider: 'own' });
+    for (let k = 0; k < 40 && !opt.converged; k++) opt.iterate();
+    runMs = performance.now() - t0;
+    offsets = Float32Array.from(opt.offsetsM);
+  }, 60_000);
+
+  it('survives clampParams', () => {
+    expect(clampParams(PL).rider.lineMode).toBe('lap-time');
+  });
+
+  it('falls back to the min-time line until a result is stored, then rides the stored one', () => {
+    clearLapTimeLines();
+    expect(lapTimeLineStatus(t.track, PL)).toBe('none');
+    const fallback = buildLine(t.track, t.corridor, PL, 6);
+    const mt = buildLine(t.track, t.corridor, at(0, 'min-time'), 6);
+    expect(Array.from(fallback.offsetM)).toEqual(Array.from(mt.offsetM));
+    rememberLapTimeLine(t.track, PL, offsets, opt.lapTimeS);
+    expect(lapTimeLineStatus(t.track, PL)).toBe('fresh');
+    const lt = buildLine(t.track, t.corridor, PL, 6);
+    for (let i = 0; i < offsets.length; i += 50) expect(lt.offsetM[i]).toBeCloseTo(offsets[i], 4);
+    expect(solve(lt, PL).lapTimeS).toBeCloseTo(opt.lapTimeS, 6);
+    // a rider slider moves: the key changes, the stored line is still used (stale)
+    const PR = { ...PL, rider: { ...PL.rider, risk: Math.min(1, PL.rider.risk + 0.1) } };
+    expect(lapTimeKey(t.track, PR)).not.toBe(lapTimeKey(t.track, PL));
+    expect(lapTimeLineStatus(t.track, PR)).toBe('stale');
+    expect(buildLine(t.track, t.corridor, PR, 6).offsetM[100]).toBeCloseTo(offsets[100], 4);
+  });
+
+  it('beats the min-time line by ≥ 0.1 s on the same QSS rider, or opens the sweeper', () => {
+    const mt = buildLine(t.track, t.corridor, at(0, 'min-time'), 6);
+    const lt = lineFromOffsets(t.track, offsets);
+    const tMt = solve(mt, at(0, 'min-time')).lapTimeS;
+    const sweeper = segmentIndices(t.segIdx, 1);
+    const meanK = (l: typeof mt): number => sweeper.reduce((a, i) => a + Math.abs(l.curvature[i]), 0) / sweeper.length;
+    const faster = opt.lapTimeS <= tMt - 0.1;
+    const opened = 1 / meanK(lt) > 1 / meanK(mt) + 3;
+    // measured: 58.602 against 59.607 s (−1.0 s), sweeper mean R 179 against 182 m, ~8.5 s
+    expect(faster || opened, `lap ${opt.lapTimeS.toFixed(3)} vs ${tMt.toFixed(3)} s, sweeper R ${(1 / meanK(lt)).toFixed(0)} vs ${(1 / meanK(mt)).toFixed(0)} m`).toBe(true);
+    expect(opt.lapTimeS).toBeLessThanOrEqual(tMt + 1e-9);
+  });
+
+  it('stays inside the box', () => {
+    const { loM, hiM } = offsetBounds(t.track, t.corridor, PL);
+    for (let i = 0; i < offsets.length; i++) {
+      expect(offsets[i]).toBeLessThanOrEqual(hiM[i] + 1e-6);
+      expect(offsets[i]).toBeGreaterThanOrEqual(loM[i] - 1e-6);
+    }
+  });
+
+  it('runs in the worker budget (< 30 s on this ~1.5k-station fixture)', () => {
+    expect(runMs).toBeLessThan(30_000);
   });
 });
 

@@ -47,7 +47,7 @@ export interface Line {
 export type SolverMode = 'rider' | 'freeTrajectory' | 'ocp' | 'fit';
 
 /** The racing line's κ = 0 objective (`RiderParams.lineMode`). */
-export type LineMode = 'min-curvature' | 'min-time';
+export type LineMode = 'min-curvature' | 'min-time' | 'lap-time';
 
 /**
  * Per-sample overrides of the rider's lap-wide ceilings for `solve()`, one

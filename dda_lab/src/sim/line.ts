@@ -26,6 +26,7 @@
 import { fromLocalM, toLocalM } from '../core/geo';
 import type { LngLat, TrackModel } from '../core/types';
 import { stencilK, stencilLeftNormal } from './corridor';
+import { lapTimeOffsets } from './lapTimeLine';
 import { admmBoxQp, applyAt, normalPenta, solveBoxQp } from './lineQp';
 import { clampParams, DEFAULT_KERB_M } from './presets';
 import { solve } from './solver';
@@ -556,6 +557,29 @@ function p95Abs(a: Float64Array, b: Float64Array): number {
  * and LOSES 1.5-3.5 s on the synthetic sweeper → hairpin; the distance term
  * at 0.1·DIST_GAIN is worth ~0.06 s there on top of the weighting.
  */
+/** Options of the min-time iteration (diagnostics; absent = the shipped line). */
+export interface MinTimeOpts {
+  /**
+   * EXIT-WIDE weighting (pist-line note §8): weight each station's curvature
+   * by the MINIMUM smoothed speed within ±`speedWindowM` instead of its own,
+   * so a corner's slow apex speed is carried into its braking and exit zones.
+   * 0 / absent = the local speed (the shipped min-time line).
+   */
+  speedWindowM?: number;
+}
+
+/** Closed running minimum over ±half samples (O(n·half); half is a few dozen). */
+function windowMin(a: Float32Array, half: number): Float32Array {
+  const n = a.length;
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let m = Infinity;
+    for (let j = -half; j <= half; j++) m = Math.min(m, a[(i + j + n) % n]);
+    out[i] = m;
+  }
+  return out;
+}
+
 export function minTimeOffsets(
   track: TrackModel,
   stepM: number,
@@ -564,6 +588,7 @@ export function minTimeOffsets(
   hiM: Float32Array,
   params: SimParams,
   init?: Float64Array,
+  mtOpts: MinTimeOpts = {},
 ): MinTimeTrace {
   const n = baseCurv.length;
   const kappa = params.rider.kappa;
@@ -587,7 +612,9 @@ export function minTimeOffsets(
       bestIter = it;
     }
     if (it >= MT_ITERS || (it > 0 && movedP95M[it - 1] < MT_TOL_P95_M)) break;
-    const v2 = smoothClosed(Float32Array.from(env.v, (v) => v * v), half);
+    const v2s = smoothClosed(Float32Array.from(env.v, (v) => v * v), half);
+    const win = mtOpts.speedWindowM ?? 0;
+    const v2 = win > 0 ? windowMin(v2s, Math.round(win / Math.max(0.1, stepM))) : v2s;
     // v_ref² = the curvature-weighted mean of v², Σκ²v²/Σκ²: the weights move
     // curvature cost from slow corners to fast ones without changing its
     // total against the distance pull, so κ keeps its meaning
@@ -611,10 +638,17 @@ export function minTimeOffsets(
 }
 
 /** The min-time trace of `buildLine`'s own solve (diagnostics, scripts, tests). */
-export function minTimeTrace(track: TrackModel, corridor: Corridor | undefined, params: SimParams, fallbackHalfWidthM = 5, init?: Float64Array): MinTimeTrace {
+export function minTimeTrace(
+  track: TrackModel,
+  corridor: Corridor | undefined,
+  params: SimParams,
+  fallbackHalfWidthM = 5,
+  init?: Float64Array,
+  mtOpts?: MinTimeOpts,
+): MinTimeTrace {
   const stepM = track.lengthM / Math.max(1, track.centerline.length - 1);
   const { loM, hiM } = offsetBounds(track, corridor, params, fallbackHalfWidthM);
-  return minTimeOffsets(track, stepM, polylineCurvature(track.centerline, CURV_SCALE_M), loM, hiM, params, init);
+  return minTimeOffsets(track, stepM, polylineCurvature(track.centerline, CURV_SCALE_M), loM, hiM, params, init, mtOpts);
 }
 
 export function buildLine(
@@ -637,10 +671,15 @@ export function buildLine(
   // measurement scale: the minimum-curvature target is not a lateral-g
   // measurement, and its re-tuning is its own task (lineQp.ts).
   const baseCurv = polylineCurvature(cl, CURV_SCALE_M);
-  const d =
-    (params.rider.lineMode ?? 'min-time') === 'min-time'
-      ? Float32Array.from(minTimeOffsets(track, stepM, baseCurv, loM, hiM, params).offsets)
-      : Float32Array.from(solveOffsets(n, stepM, baseCurv, loM, hiM, params.rider.kappa));
+  const mode = params.rider.lineMode ?? 'min-time';
+  // 'lap-time': the direct lap-time descent's stored result (lapTimeLine.ts);
+  // none yet for this track → the min-time line
+  const lt = mode === 'lap-time' ? lapTimeOffsets(track, corridor, params, fallbackHalfWidthM) : null;
+  const d = lt
+    ? lt
+    : mode === 'min-curvature'
+      ? Float32Array.from(solveOffsets(n, stepM, baseCurv, loM, hiM, params.rider.kappa))
+      : Float32Array.from(minTimeOffsets(track, stepM, baseCurv, loM, hiM, params).offsets);
 
   // rider wander: a deterministic smooth deviation, clamped back into the box
   const dev = params.rider.lineDeviationM;

@@ -18,7 +18,27 @@ import { clampParams } from './presets';
 import { solve } from './solver';
 import type { Corridor, SimParams } from './types';
 
-export interface FreeTrajOpts {
+/**
+ * How a run starts and what it is judged by. Every field is optional; absent
+ * = the original behaviour (the κ-line of `params`, the ideal rider).
+ */
+export interface FreeTrajStart {
+  /**
+   * Warm start: offsets to begin from (one per centerline vertex), clamped into
+   * the box. The κ-line is still evaluated and the faster of the two is kept,
+   * so the result never loses to it.
+   */
+  init?: Float32Array;
+  /**
+   * Whose lap the search minimises: 'ideal' (default; `idealParams`, the
+   * "Serbest yörünge" ceiling) or 'own' (the caller's params, wander off —
+   * what `lineMode: 'lap-time'` uses, so the line is judged by the same QSS
+   * rider every other line mode is).
+   */
+  rider?: 'ideal' | 'own';
+}
+
+export interface FreeTrajOpts extends FreeTrajStart {
   iterations: number;
   onProgress?: (frac: number, lapTimeS: number) => void;
   shouldCancel?: () => boolean;
@@ -92,24 +112,40 @@ export function createOptimiser(
   track: TrackModel,
   corridor: Corridor | undefined,
   params: SimParams,
+  start: FreeTrajStart = {},
 ): FreeTrajOptimiser {
-  const ideal = idealParams(params);
+  const ideal =
+    (start.rider ?? 'ideal') === 'ideal'
+      ? idealParams(params)
+      : clampParams({ ...params, rider: { ...params.rider, lineDeviationM: 0 } });
   const n = track.centerline.length;
   const { loM, hiM } = offsetBounds(track, corridor, ideal);
   const lapOf = (d: Float32Array): number => solve(lineFromOffsets(track, d), ideal).lapTimeS;
 
   // Start from the user's own κ-line (that is the line the result must never
   // lose to) and from the same line without rider wander; keep the faster.
-  let best = Float32Array.from(buildLine(track, corridor, params).offsetM);
+  // a 'lap-time' rider's κ-line would be this optimiser's own stored result:
+  // start from the min-time line instead
+  const lineP: SimParams =
+    params.rider.lineMode === 'lap-time' ? { ...params, rider: { ...params.rider, lineMode: 'min-time' } } : params;
+  let best = Float32Array.from(buildLine(track, corridor, lineP).offsetM);
   let bestT = lapOf(best);
   if (params.rider.lineDeviationM > 0) {
     const calm = Float32Array.from(
-      buildLine(track, corridor, { ...params, rider: { ...params.rider, lineDeviationM: 0 } }).offsetM,
+      buildLine(track, corridor, { ...lineP, rider: { ...lineP.rider, lineDeviationM: 0 } }).offsetM,
     );
     const calmT = lapOf(calm);
     if (calmT < bestT) {
       best = calm;
       bestT = calmT;
+    }
+  }
+  if (start.init && start.init.length === n) {
+    const warm = Float32Array.from(start.init, (v, i) => Math.min(hiM[i], Math.max(loM[i], v)));
+    const warmT = lapOf(warm);
+    if (warmT < bestT) {
+      best = warm;
+      bestT = warmT;
     }
   }
   const startT = bestT;
@@ -213,7 +249,7 @@ export function optimiseOffsets(
   opts: FreeTrajOpts,
 ): FreeTrajResult {
   const total = Math.max(0, Math.floor(opts.iterations));
-  const opt = createOptimiser(track, corridor, params);
+  const opt = createOptimiser(track, corridor, params, { init: opts.init, rider: opts.rider });
   opts.onProgress?.(0, opt.lapTimeS);
   let done = 0;
   while (done < total && !opt.converged) {

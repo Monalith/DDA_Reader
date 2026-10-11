@@ -445,3 +445,152 @@ Fitted lateral cap at the matched apex, g. "HEAD" is the pre-§7 line (old QP, m
 - **`simLongG`.** The 600 brake onset bound went 1.1 → 1.15 s (now 1.104 s).
 - **`simFreeTrajectory`.** The describe timeout went to 15 s; the box test already took 4.7 s at the 5 s
   default.
+
+## 8. Direct lap-time line (2026-10-12, follow-up to §7.4 "Next")
+
+**Short answer: the direct lap-time descent works.** On the pist Serres corridor it laps 4.2 s faster than the
+κ 0.85 line on the same QSS rider and opens K4 from 107 m to 142 m. It is now `lineMode: 'lap-time'`, behind an
+"Optimise line" button. The cheaper exit-wide weighting was also tried: it gains 0.4 s but does not open K4.
+
+### 8.1 Diagnosis: what `freeTrajectory` is and what it needed
+
+- **What it optimises.** It minimises the QSS lap (`solve`) over the lateral offsets inside exactly the
+  `offsetBounds` box: corridor, kerb margin and `kerbM`. The search is derivative-free coordinate descent: one
+  knot per 20 m, raised-cosine bumps of ±40 m, a step of 1 m (0.05–3 m adaptive), alternating sweeps.
+- **What it was used for.** It drives the UI's "Serbest yörünge" (the free-trajectory solver mode) in the
+  worker. That mode is judged by the *ideal* rider (all s* = 1). Its warm start was only the rider's κ-line,
+  with and without wander.
+- **What was added.** `createOptimiser(track, corridor, params, start?)` takes a new, optional
+  `FreeTrajStart`. `optimiseOffsets` takes the same fields. The change is backward compatible: no `start`
+  means the old behaviour.
+  - **`init`.** Any warm start, clamped into the box. The κ-line is still evaluated and the faster of the two
+    kept, so the result never loses to the κ-line.
+  - **`rider: 'own'`.** Judges the line by the caller's own params with wander off, not the ideal rider. This
+    is the rider every other line mode is judged by.
+- **The owner's path.** `scripts/lib/ownerOffsets.ts` maps his path into the corridor frame. It intersects the
+  Ducati best lap (Run036, lap 6) with every station's stencil normal, the same normal `lineFromOffsets` uses.
+  28 of 1578 stations lie outside the box (kerb use), and the path is clamped for the warm start.
+- **Runs.** Pist Serres, 1578 stations, 1000 preset, μ 1.40, κ 0, kerb 1.0, preset rider. Script:
+  `scripts/lap-time-line.ts`.
+
+| warm start | start → end, QSS lap (preset rider, no wander), s | sweeps | converged | Node time |
+|---|---|---|---|---|
+| κ 0 min-time | 82.450 → **77.326** | 31 | yes | 15.9 s |
+| owner's path (box) | 80.690 → **76.766** | 23 | yes | 13.5 s |
+| κ 0.85 min-time | 80.503 → **76.074** | 19 | yes | 12.6 s |
+| shipped (`lapTimeStart`: fastest of κ {0, 0.5, 0.85, 1}, here κ 1) | 79.840 → **76.344** | 26 | yes | 13.8 s |
+
+- **The descent is local.** The three starts end 1.25 s apart. All of them beat κ 0.85 (80.50 s) by more than
+  3 s.
+- **Is the gain real or a smoothing exploit?** Smoothing the offsets (±10 m) costs the descent's lines 0.3–0.5 s
+  and the κ 0 lines 0.3–0.4 s, so the gain survives. The descent's lines are not artefacts of the 20 m
+  curvature scale.
+  - **One caveat.** Their maximum crossing slope is 0.53–0.58 against 0.37–0.41 for the others. At a 10 m
+    curvature scale (noisy for every line on this centreline) they lose more than the owner's path does.
+
+### 8.2 Per-corner table (BMW 1:19.81 v2 fit, lateral g at the matched apex)
+
+- **What each cell means.** The fitted lateral cap at the matched apex, in g. "K12 zone peak" is the largest
+  cap in K12's zone, which is the 2150–2175 m exit of v2-fit note §3.
+- **The two lap columns.** The QSS lap rows for buildLine-built lines include the preset's 0.4 m wander. The
+  rows for descent results do not. The descent from the κ 0.85 start is reported, as is the shipped one.
+
+| | κ 0 min-curv | κ 0 min-time | κ 0 exit-wide ±60 m | κ .85 | owner path (box) | descent ← κ 0 min-time | descent ← owner | descent ← κ .85 | **lap-time (shipped)** |
+|---|---|---|---|---|---|---|---|---|---|
+| K2 | 1.52 | 1.64 | 1.43 | 1.71 | 1.49 | 1.55 | 1.35 | 1.49 | **1.45** |
+| K3 | 1.35 | 1.32 | 1.28 | 1.70 | 1.20 | 1.13 | 1.08 | 1.16 | **1.18** |
+| K4 | 1.84 | 1.85 | 1.77 | 1.99 | 1.16 | 1.51 | 1.47 | 1.21 | **1.41** |
+| K6 | 1.50 | 1.45 | 1.41 | 1.26 | 1.15 | 1.05 | 0.94 | 1.14 | **1.13** |
+| K8 | 1.23 | 1.23 | 1.18 | 1.42 | 1.36 | 1.09 | 0.91 | 1.34 | **0.88** |
+| K9 | 1.31 | 1.26 | 1.09 | 1.55 | 1.40 | 1.12 | 1.18 | 1.23 | **0.97** |
+| K12 apex | 1.42 | 1.43 | 1.47 | 1.66 | 1.26 | 1.73 | 1.73 | 1.71 | **1.78** |
+| K12 zone peak (exit) | 2.10 | 2.17 | 2.03 | 2.32 | 1.26 | 1.76 | 1.73 | 1.71 | **1.83** |
+| K4 radius at apex / min ±30 m, m | 107 / 107 | 107 / 107 | 112 / 112 | 99 / 99 | 170 / 170 | 137 / 133 | 138 / 136 | 165 / 161 | **142 / 131** |
+| line length, m | 3196 | 3188 | 3181 | 3032 | 3097 | 3091 | 3071 | 3040 | 3052 |
+| QSS lap, preset rider, s | 82.67 | 82.45 | 82.02 | 80.50 | 80.69 | 77.33 | 76.77 | 76.07 | 76.59 (76.34 no wander) |
+| BMW fit lap / ref speed on line, s | 85.12 / 84.48 | 84.82 / 84.34 | 84.84 / 84.18 | 79.09 / 79.49 | 82.00 / 81.71 | 82.62 / 81.56 | 82.20 / 80.50 | 80.42 / 79.23 | 81.85 / 80.43 |
+| apexes over 1.47 g | K2 K4 K6 | K2 K4 | K4 | 8 | K2 | K2 K4 K12 | K12 | K2 K12 | **K12** |
+
+**Reading**
+
+- **K4 opens and is no longer an outlier.** The shipped line opens K4 to 142 m at the matched apex (131 m
+  minimum within ±30 m), against 107 m on the κ 0 lines. The owner's path is 170 m. K4 drops from 1.84 to
+  1.41 g. The κ 0.85 start goes further, to 165 m / 1.21 g.
+- **K2 and K6 fall under 1.47 g.** K2 is 1.45 g and K6 1.13 g. K3, K8 and K9 drop by 0.2–0.35 g.
+- **The K12 exit zone falls, the apex rises.** The exit's zone peak goes from 2.10 to 1.83 g, because the line
+  now runs wide out of K12 as the video shows. The descent pays for that with a tighter kerb-side apex:
+  K12 1.42 → **1.78 g**. It is the one corner left over 1.47 g, on every descent result (1.71–1.78 g).
+- **The fit itself is weaker on this line.** The line is straighter through K4, so `alignRef` notes "no left
+  |κ| peak within 60 m" there. The K4 apex is fitted at −4.6 km/h and K14 at +6.5 km/h, and the fit stops at
+  20 rounds, unconverged.
+  - **Lap.** The fit laps 81.85 s against 80.43 s ref-on-line.
+  - **Zone times.** K5 +1.4 s and K15 +1.6 s: the reference's distance anchors sit on a 3186 m lap, and this
+    line is 3052 m.
+
+### 8.3 Exit-wide weighting (implemented as a diagnostic, not wired)
+
+- **Method.** `minTimeOffsets(..., mtOpts: { speedWindowM })` replaces each station's smoothed v² in the
+  (v/v_ref)² weight with its minimum over ±W m.
+- **Result.** With W = 30 or 60 m it gains 0.43 s over min-time (82.02 against 82.45 s) and moves K4 from 107 m
+  to only 109–112 m. K12's exit drops 2.17 → 1.96–2.03 g, and K2 drops to 1.43–1.46 g.
+- **Verdict.** It does not open K4, so it is not exposed. The default (`speedWindowM` absent) leaves the
+  min-time line unchanged.
+
+### 8.4 Wiring: `lineMode: 'lap-time'`
+
+- **Where the result lives (`src/sim/lapTimeLine.ts`).** `buildLine` never runs the descent (~13 s). It reads
+  a stored result, clamped into the current box.
+  - **Two caches.** One is exact per (track, machine, tyre, rider), using the `optCache` mechanics: memory plus
+    `localStorage`. The other holds the latest result per track. It is used **stale** when only a rider slider
+    moved, and the panel says so.
+  - **Fallback.** With no result, `buildLine` returns the min-time line.
+  - **Warm start.** `lapTimeStart` picks the fastest of the min-time lines at the rider's κ and κ 0 / 0.5 /
+    0.85 / 1.
+- **Worker.** `freeTrajectory.worker.ts` takes `init`, `rider` and `lapTimeStart: true`, so the warm start is
+  computed off the main thread too.
+  - **Runner.** `lapTimeLineRunner` lives in `simRunners.ts`. A newer run now *rejects* the superseded run's
+    promise instead of leaving it pending; before, the store's busy flag never cleared.
+- **Store and panel.**
+  - **Store.** `optimiseLine(runner)` with `simLineOptBusy`, `simLineOptProgress` and `simLineOptLapTimeS`.
+    When a run finishes it sets `lineMode: 'lap-time'` and re-simulates.
+  - **Panel.** "Line objective" gains **Lap time (optimised)**, plus an **Optimise line** button, a progress
+    bar and a status line: optimised (lap) / stale / not optimised yet.
+- **Fit to reference.** The fit uses `buildLine`, so it runs on the stored line.
+  - **Scripts.** `scripts/fit-reference.ts --line-mode lap-time` runs the descent synchronously in
+    `fitLine` (scripts/lib/fitLines.ts).
+- **Browser** (`tests/e2e/lapTimeLine.spec.ts`, Playwright, Serres, κ 0, kerb 1.0):
+  - **Run.** Optimise line takes 13.2–13.9 s from click to done. The lap goes 1:23.61 → 1:17.71.
+  - **Re-simulation.** `setSimParams` on the stored line takes 43–44 ms.
+  - **Fit.** Fit to reference on it: 1:21.85 against 1:19.81.
+  - **Screenshots:** `scratchpad/laptime/lt-map-K2-K4.png` and `lt-map-K12-exit.png` (purple = optimised
+    line, blue = owner lap 6), plus `lt-01-progress.png`, `lt-02-done.png` and `lt-03-fit.png`.
+
+### 8.5 Tests
+
+- **`simFreeTrajectory`.** The warm start is clamped, taken when faster, and ignored at the wrong length.
+  `rider: 'own'` reproduces the caller's QSS lap.
+- **`simLine`, "lap-time line" on `sweeperHairpin`.**
+  - **The gain.** The descent laps 58.602 against 59.607 s for min-time, −1.0 s. The test asks for ≥ 0.1 s or a
+    sweeper opened by ≥ 3 m.
+  - **Fallback and caches.** The fallback is identical to min-time. buildLine reads the stored line, and a
+    rider change reads it as stale.
+  - **Box and time.** The line stays inside the box, and the run takes < 30 s (8.5 s measured).
+- **`simLapTimeSerres` (new).**
+  - **The shipped path.** It converges and beats κ 0.85 by > 1 s. **K4 is ≥ 130 m at the matched apex**
+    (142 m), and the K12 zone peak is < 2.0 g.
+  - **v2 ceiling.** Every apex is ≤ 1.47 g except the documented **K12**. The **red-by-design "no exceptions"**
+    assertion moved here from `simFitRider`, where it is now red on K12 1.78 g alone.
+  - **`simFitRider`.** The v2 block keeps its K2/K4/K6 exception test on the κ 0 min-curvature line.
+- **Suite and typecheck.** The suite has 707 passing and 3 red by design: the two literal v1 BMW tests and the
+  no-exceptions test above. Typecheck is clean for `tsconfig.app.json`, `tsconfig.json` and
+  `scripts/tsconfig.json`.
+
+### 8.6 Next
+
+- **K12's apex.** The descent buys the wide exit with a tight kerb-side apex (1.78 g). Two things to try: a
+  lateral-g penalty in the descent (the ceiling as a soft constraint), or a K12 warm start from the owner's path
+  there (1.26 g).
+- **Multi-start.** The warm start decides 1.25 s and K4 at 131–165 m. Running from the two fastest κ-lines
+  would cost ~2× (~27 s in the worker).
+- **The fit's alignment on wide-exit lines.** K4/K14 apex matching needs work: the descent's lines have no
+  clean |κ| peak at K4.

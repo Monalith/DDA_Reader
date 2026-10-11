@@ -3,7 +3,9 @@
 //   new Worker(new URL('./freeTrajectory.worker.ts', import.meta.url), { type: 'module' })
 //
 // Protocol (plan "Shared interface contract"):
-//   in : { type:'run', id, track, corridor, params, iterations } | { type:'cancel', id }
+//   in : { type:'run', id, track, corridor, params, iterations, init?, rider? } | { type:'cancel', id }
+//        (init/rider: `FreeTrajStart`; `lapTimeStart: true` computes the
+//        'lap-time' line's warm start here, off the main thread)
 //   out: { type:'progress', id, frac, lapTimeS } | { type:'done', id, offsetsM, lapTimeS } | { type:'error', id, message }
 //
 // One iteration runs per macrotask, so a 'cancel' (or a newer 'run', which
@@ -11,10 +13,21 @@
 // 1.5k-sample track). A cancelled run posts nothing further.
 import type { TrackModel } from '../core/types';
 import { createOptimiser } from './freeTrajectory';
+import { lapTimeStart } from './lapTimeLine';
 import type { Corridor, SimParams } from './types';
 
 type InMsg =
-  | { type: 'run'; id: number | string; track: TrackModel; corridor: Corridor | undefined; params: SimParams; iterations: number }
+  | {
+      type: 'run';
+      id: number | string;
+      track: TrackModel;
+      corridor: Corridor | undefined;
+      params: SimParams;
+      iterations: number;
+      init?: Float32Array;
+      rider?: 'ideal' | 'own';
+      lapTimeStart?: boolean;
+    }
   | { type: 'cancel'; id: number | string };
 
 let current: number | string | null = null;
@@ -31,7 +44,8 @@ self.onmessage = (e: MessageEvent<InMsg>): void => {
   current = id;
   const live = (): boolean => current === id;
   try {
-    const opt = createOptimiser(msg.track, msg.corridor, msg.params);
+    const init = msg.lapTimeStart ? lapTimeStart(msg.track, msg.corridor, msg.params) : msg.init;
+    const opt = createOptimiser(msg.track, msg.corridor, msg.params, { init, rider: msg.rider });
     const total = Math.max(0, Math.floor(msg.iterations));
     let done = 0;
     post({ type: 'progress', id, frac: 0, lapTimeS: opt.lapTimeS });

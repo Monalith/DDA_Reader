@@ -201,7 +201,7 @@ export function clampParams(p: SimParams): SimParams {
       tcThreshold: clamp(p.rider.tcThreshold, 0, 1),
       leanUsage: clamp(p.rider.leanUsage, 0, 1),
       kappa: clamp(p.rider.kappa, 0, 1),
-      lineMode: p.rider.lineMode === 'min-curvature' ? 'min-curvature' : 'min-time',
+      lineMode: p.rider.lineMode === 'min-curvature' || p.rider.lineMode === 'lap-time' ? p.rider.lineMode : 'min-time',
       trailBrakeDepth: clamp(p.rider.trailBrakeDepth, 0, 1),
       trailBrakeProfile: clamp(p.rider.trailBrakeProfile, 0, 1),
     },

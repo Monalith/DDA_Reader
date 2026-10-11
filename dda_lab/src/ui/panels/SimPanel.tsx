@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useLab, type OptimalMode } from '../../state/store';
+import { activeTrack, useLab, type OptimalMode } from '../../state/store';
+import { lapTimeLineStatus } from '../../sim/lapTimeLine';
 import { DERIVED_KEYS } from '../../sim/derive';
 import { DEFAULT_KERB_M, MACHINE_PRESETS } from '../../sim/presets';
 import type { DerivedRiderKey, LineMode, SimParams, SolverMode } from '../../sim/types';
 import { fmtDelta, fmtLapTime } from '../../state/selectors';
-import { optimalAvailability, optimalRunner, type Availability } from './simRunners';
+import { lapTimeLineRunner, optimalAvailability, optimalRunner, type Availability } from './simRunners';
 import { rangeValue } from './simRange';
 import './SimPanel.css';
 
@@ -155,6 +156,13 @@ export default function SimPanel() {
   const runOptimal = useLab((s) => s.runOptimal);
   const applyPreset = useLab((s) => s.applyMachinePreset);
   const runFit = useLab((s) => s.runFit);
+  const lineOptBusy = useLab((s) => s.simLineOptBusy);
+  const lineOptProgress = useLab((s) => s.simLineOptProgress);
+  const lineOptLap = useLab((s) => s.simLineOptLapTimeS);
+  const optimiseLine = useLab((s) => s.optimiseLine);
+  const track = useLab((s) => activeTrack(s));
+  // re-read on every render: the status depends on a module cache the store does not hold
+  const ltStatus = track ? lapTimeLineStatus(track, params) : 'none';
   const simFit = useLab((s) => s.simFit);
   const refSessionName = useLab((s) => s.sessions.find((x) => x.reference)?.reference?.name);
   const workspace = useLab((s) => s.workspace);
@@ -453,8 +461,37 @@ export default function SimPanel() {
             >
               <option value="min-time">Min time</option>
               <option value="min-curvature">Min curvature</option>
+              <option value="lap-time">Lap time (optimised)</option>
             </select>
           </label>
+          <div className="sim-line-opt">
+            <button
+              className="btn"
+              data-testid="sim-optimise-line"
+              disabled={lineOptBusy || typeof Worker === 'undefined' || !track}
+              title="Optimise the line directly for this rider's lap time (free-trajectory descent from the fastest κ-line, ~10-20 s in the background), then ride it: Line objective → Lap time."
+              onClick={() => void optimiseLine(lapTimeLineRunner)}
+            >
+              {lineOptBusy ? 'Optimising…' : 'Optimise line'}
+            </button>
+            {lineOptBusy && (
+              <span className="sim-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100}
+                aria-valuenow={Math.round(lineOptProgress * 100)} data-testid="sim-line-opt-progress">
+                <span style={{ width: `${Math.round(lineOptProgress * 100)}%` }} />
+              </span>
+            )}
+            <span className="sim-line-opt-status num" data-testid="sim-line-opt-status" role="status">
+              {lineOptBusy
+                ? `${Math.round(lineOptProgress * 100)} %`
+                : (params.rider.lineMode ?? 'min-time') !== 'lap-time'
+                  ? ltStatus === 'none' ? '' : 'optimised line ready'
+                  : ltStatus === 'none'
+                    ? 'not optimised yet: min-time line'
+                    : ltStatus === 'stale'
+                      ? 'rider changed since: press Optimise line again'
+                      : lineOptLap != null ? `optimised (${fmtLapTime(lineOptLap)})` : 'optimised'}
+            </span>
+          </div>
           <Slider label="Line style (C↔V)" value={params.rider.kappa} min={0} max={1} step={0.01}
             testId="sim-kappa" onChange={(v) => debouncedSetSimParams({ rider: { kappa: v } })} />
           <Slider label="Kerb allowance" value={params.tyre.kerbM ?? DEFAULT_KERB_M} min={0} max={2} step={0.1} unit="m" decimals={1}

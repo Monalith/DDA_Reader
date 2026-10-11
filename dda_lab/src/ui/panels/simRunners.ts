@@ -15,6 +15,7 @@ import { idealParams } from '../../sim/freeTrajectory';
 import { lineFromOffsets } from '../../sim/line';
 import { buildOcpRequest, ocpBase, submitOcp, waitForOcp } from '../../sim/ocpClient';
 import { optCacheKey, readOpt, writeOpt, type KVStorage } from '../../sim/optCache';
+import { cachedLapTimeLine, LAP_TIME_ITERATIONS, rememberLapTimeLine } from '../../sim/lapTimeLine';
 import { solve } from '../../sim/solver';
 
 export interface Availability {
@@ -44,6 +45,18 @@ function freeTrajWorker(): Worker {
   return worker;
 }
 
+/**
+ * The run a newer request cancels. A cancelled run posts nothing further, so
+ * its promise is rejected here instead of hanging (the store's busy flag
+ * would otherwise never clear).
+ */
+let pending: { id: number; reject: (e: Error) => void } | null = null;
+function supersede(w: Worker, id: number, reject: (e: Error) => void): void {
+  if (id > 1) w.postMessage({ type: 'cancel', id: id - 1 });
+  pending?.reject(new Error('superseded by a newer optimiser run'));
+  pending = { id, reject };
+}
+
 type WorkerOut =
   | { type: 'progress'; id: number; frac: number; lapTimeS: number }
   | { type: 'done'; id: number; offsetsM: Float32Array; lapTimeS: number }
@@ -63,7 +76,7 @@ const freeTrajectoryRunner: OptimalRunner = (track, corridor, params, onProgress
     const w = freeTrajWorker();
     const id = ++seq;
     // a newer request supersedes the running one (plan Review Focus #5)
-    if (id > 1) w.postMessage({ type: 'cancel', id: id - 1 });
+    supersede(w, id, reject);
     const onMessage = (e: MessageEvent<WorkerOut>): void => {
       const m = e.data;
       if (!m || m.id !== id) return;
@@ -71,15 +84,55 @@ const freeTrajectoryRunner: OptimalRunner = (track, corridor, params, onProgress
         onProgress(m.frac, m.lapTimeS);
       } else if (m.type === 'done') {
         w.removeEventListener('message', onMessage);
+        if (pending?.id === id) pending = null;
         writeOpt(key, m.offsetsM, m.lapTimeS, storage);
         resolve({ offsetsM: m.offsetsM, lapTimeS: m.lapTimeS });
       } else if (m.type === 'error') {
         w.removeEventListener('message', onMessage);
+        if (pending?.id === id) pending = null;
         reject(new Error(m.message));
       }
     };
     w.addEventListener('message', onMessage);
     w.postMessage({ type: 'run', id, track, corridor, params, iterations: FREE_TRAJ_ITERATIONS });
+  });
+
+/**
+ * `lineMode: 'lap-time'` (pist-line note §8): the same worker, judged by the
+ * rider's own QSS lap and warm-started from the fastest κ-line. Cached per
+ * track + machine + tyre + rider (lapTimeLine.ts, memory + localStorage).
+ */
+export const lapTimeLineRunner: OptimalRunner = (track, corridor, params, onProgress) =>
+  new Promise((resolve, reject) => {
+    const storage = safeStorage();
+    const cached = cachedLapTimeLine(track, params, storage);
+    if (cached) {
+      const lapTimeS = solve(lineFromOffsets(track, cached), { ...params, rider: { ...params.rider, lineDeviationM: 0 } }).lapTimeS;
+      onProgress(1, lapTimeS);
+      resolve({ offsetsM: cached, lapTimeS });
+      return;
+    }
+    const w = freeTrajWorker();
+    const id = ++seq;
+    supersede(w, id, reject);
+    const onMessage = (e: MessageEvent<WorkerOut>): void => {
+      const m = e.data;
+      if (!m || m.id !== id) return;
+      if (m.type === 'progress') {
+        onProgress(m.frac, m.lapTimeS);
+      } else if (m.type === 'done') {
+        w.removeEventListener('message', onMessage);
+        if (pending?.id === id) pending = null;
+        rememberLapTimeLine(track, params, m.offsetsM, m.lapTimeS, storage);
+        resolve({ offsetsM: m.offsetsM, lapTimeS: m.lapTimeS });
+      } else if (m.type === 'error') {
+        w.removeEventListener('message', onMessage);
+        if (pending?.id === id) pending = null;
+        reject(new Error(m.message));
+      }
+    };
+    w.addEventListener('message', onMessage);
+    w.postMessage({ type: 'run', id, track, corridor, params, iterations: LAP_TIME_ITERATIONS, rider: 'own', lapTimeStart: true });
   });
 
 const ocpRunner: OptimalRunner = async (track, corridor, params, onProgress) => {

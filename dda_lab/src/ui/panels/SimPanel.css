@@ -38,3 +38,5 @@
 .sim-panel .sim-fit-table tr.near td:last-child { color: #f4b400; }
 .sim-panel .sim-fit-table tr.over td:last-child { color: #ff6b6b; font-weight: 600; }
 .sim-panel .sim-fit-note { font-size: 11px; color: var(--fg-dim); margin: 4px 0 0; }
+.sim-panel .sim-line-opt { display: flex; align-items: center; gap: 8px; margin: 2px 0 6px; flex-wrap: wrap; }
+.sim-panel .sim-line-opt-status { font-size: 11px; color: var(--fg-dim); }

@@ -226,6 +226,18 @@ export interface LabState {
   setSolverMode(mode: SolverMode): void;
   /** Run an optimal solver (the "Hesapla" button) and add its session. */
   runOptimal(mode: OptimalMode, runner: OptimalRunner): Promise<void>;
+  /** "Optimise line" (lineMode 'lap-time', pist-line note §8): a run in progress. */
+  simLineOptBusy: boolean;
+  /** 0..1 while it runs. */
+  simLineOptProgress: number;
+  /** The rider's QSS lap on the last optimised line, s. */
+  simLineOptLapTimeS?: number;
+  /**
+   * Run the direct lap-time line optimiser (the runner stores its result in
+   * lapTimeLine.ts), then switch `lineMode` to 'lap-time' and re-simulate, so
+   * the rider mode and "Fit to reference" run on that line.
+   */
+  optimiseLine(runner: OptimalRunner): Promise<void>;
   /** Load a machine preset: machine, tyre and the kappa default together. */
   applyMachinePreset(id: string): void;
   /** Result of the last "Fit to reference" run, for the sim panel's table. */
@@ -463,6 +475,9 @@ export const useLab = create<LabState>((set, get) => ({
   simOptLapTimeS: {},
   simOptLines: {},
   simOptStale: { freeTrajectory: false, ocp: false },
+  simLineOptBusy: false,
+  simLineOptProgress: 0,
+  simLineOptLapTimeS: undefined,
 
   addSession(s) {
     const { workspace, sessions } = get();
@@ -1107,6 +1122,30 @@ export const useLab = create<LabState>((set, get) => ({
       set({ statusMessage: `${mode === 'ocp' ? 'Full OCP' : 'Free trajectory'} failed: ${(e as Error).message}` });
     } finally {
       setBusy(false);
+    }
+  },
+  async optimiseLine(runner) {
+    const st0 = get();
+    if (st0.simLineOptBusy) return;
+    const track = activeTrack(st0);
+    if (!track) {
+      set({ statusMessage: 'The simulator needs a track — open a session first.' });
+      return;
+    }
+    if (!st0.simEnabled) get().setSimEnabled(true);
+    const { corridor, simParams } = get();
+    const trackId = track.id;
+    set({ simLineOptBusy: true, simLineOptProgress: 0 });
+    try {
+      const r = await runner(track, corridor, simParams, (frac) => set({ simLineOptProgress: Math.min(1, Math.max(0, frac)) }));
+      if (get().activeTrackId !== trackId) return;
+      set({ simLineOptLapTimeS: r.lapTimeS, simLineOptProgress: 1 });
+      // the runner stored the line; this re-simulates the rider mode on it
+      get().setSimParams({ rider: { lineMode: 'lap-time' } });
+    } catch (e) {
+      set({ statusMessage: `Optimise line failed: ${(e as Error).message}` });
+    } finally {
+      set({ simLineOptBusy: false });
     }
   },
   runFit() {

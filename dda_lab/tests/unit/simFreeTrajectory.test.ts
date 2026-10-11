@@ -6,10 +6,11 @@ import { DEFAULT_SIM_PARAMS, clampParams } from '../../src/sim/presets';
 import { circuitTrack } from './circuitFixture';
 
 // the ideal rider the optimiser uses internally
-const P = clampParams({
+const P0 = clampParams({
   ...DEFAULT_SIM_PARAMS,
   rider: { ...DEFAULT_SIM_PARAMS.rider, sBrake: 1, sDrive: 1, sLat: 1, rollRateFrac: 1 },
 });
+const P = P0;
 
 // 15 s: the optimiser runs several laps per test; at the 5 s default the box
 // test already sat at 4.7 s, and the min-time line (pist-line note §7) adds
@@ -70,6 +71,34 @@ describe('optimiseOffsets', { timeout: 15_000 }, () => {
     const r = optimiseOffsets(track, undefined, P, { iterations: 10, shouldCancel: () => true });
     expect(r.iterationsDone).toBe(0);
     expect(r.lapTimeS).toBeLessThanOrEqual(start + 1e-6);
+  });
+
+  it('takes a warm start (FreeTrajStart.init), clamped into the box, and never loses to it', () => {
+    const { track, corridor } = circuitTrack();
+    // no wander, so the κ-line is the only built start
+    const P = clampParams({ ...P0, rider: { ...P0.rider, lineDeviationM: 0 } });
+    const { loM, hiM } = offsetBounds(track, corridor, P);
+    // a deliberately poor start: the box's left edge everywhere (out of the box where it is narrower)
+    const init = Float32Array.from(hiM, (v) => v + 2);
+    const clamped = Float32Array.from(init, (v, i) => Math.min(hiM[i], Math.max(loM[i], v)));
+    const opt = createOptimiser(track, corridor, P, { init });
+    const kappaLine = solve(buildLine(track, corridor, P), P).lapTimeS;
+    expect(opt.startLapTimeS).toBeCloseTo(Math.min(kappaLine, solve(lineFromOffsets(track, clamped), P).lapTimeS), 6);
+    // a good start is taken: the optimiser's own result fed back in starts there
+    const r = optimiseOffsets(track, corridor, P, { iterations: 2 });
+    const again = createOptimiser(track, corridor, P, { init: r.offsetsM });
+    expect(again.startLapTimeS).toBeCloseTo(r.lapTimeS, 6);
+    // a wrong-length init is ignored
+    expect(createOptimiser(track, corridor, P, { init: new Float32Array(3) }).startLapTimeS).toBeCloseTo(kappaLine, 6);
+  });
+
+  it("rider 'own' judges the caller's params (no wander), not the ideal rider", () => {
+    const { track, corridor } = circuitTrack();
+    const timid = clampParams({ ...DEFAULT_SIM_PARAMS, rider: { ...DEFAULT_SIM_PARAMS.rider, sBrake: 0.5, sLat: 0.6 } });
+    const r = optimiseOffsets(track, corridor, timid, { iterations: 1, rider: 'own' });
+    const own = clampParams({ ...timid, rider: { ...timid.rider, lineDeviationM: 0 } });
+    expect(solve(lineFromOffsets(track, r.offsetsM), own).lapTimeS).toBeCloseTo(r.lapTimeS, 6);
+    expect(solve(lineFromOffsets(track, r.offsetsM), P).lapTimeS).toBeLessThan(r.lapTimeS);
   });
 
   it('one iteration on a ~1500-sample track takes under 2 s', () => {

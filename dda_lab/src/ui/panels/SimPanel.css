@@ -1,0 +1,30 @@
+/* Sim panel v2 additions (spec v2 §2.9). Base sim styles live in panels.css. */
+.sim-panel .sim-laptime { margin: 0 4px; }
+.sim-panel .sim-counts { font-size: 12px; color: var(--fg-dim); font-variant-numeric: tabular-nums; margin-right: 10px; }
+.sim-panel .sim-modebar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
+.sim-panel .sim-modebar .seg button { padding: 4px 11px; }
+.sim-panel .sim-modebar .seg button:disabled { opacity: 0.45; cursor: not-allowed; }
+.sim-panel .sim-progress {
+  width: 140px; height: 6px; border-radius: 3px; background: var(--panel-2); overflow: hidden;
+  border: 1px solid var(--border);
+}
+.sim-panel .sim-progress > span { display: block; height: 100%; background: var(--accent-2); transition: width 120ms linear; }
+.sim-panel .sim-opt-time { font-size: 13px; font-variant-numeric: tabular-nums; }
+.sim-panel .sim-opt-time.stale { color: var(--fg-dim); text-decoration: line-through; }
+.sim-panel .sim-top-sliders .sim-slider { grid-template-columns: 110px 1fr 56px; }
+.sim-panel .sim-top-sliders .sim-slider-label { color: var(--fg); font-weight: 600; font-size: 13px; }
+.sim-panel .sim-top-sliders input[type='range'] { height: 22px; }
+.sim-panel .sim-ideal-note { font-size: 11px; color: var(--fg-dim); margin: 2px 0 6px; }
+.sim-panel fieldset:disabled .sim-top-sliders { opacity: 0.45; }
+.sim-panel details.sim-advanced { margin-top: 6px; border-top: 1px solid var(--border); padding-top: 4px; }
+.sim-panel details.sim-advanced > summary { cursor: pointer; color: var(--fg-dim); font-size: 12px; user-select: none; }
+.sim-panel .sim-adv-row { display: grid; grid-template-columns: 22px 110px 1fr 64px; gap: 6px; align-items: center; margin: 3px 0; }
+.sim-panel .sim-lock {
+  width: 22px; height: 22px; display: inline-grid; place-items: center; padding: 0;
+  background: transparent; border: 1px solid transparent; border-radius: 4px; color: var(--fg-dim);
+}
+.sim-panel .sim-lock.pinned { color: var(--accent); border-color: var(--border); cursor: pointer; }
+.sim-panel .sim-lock:not(.pinned) { cursor: default; }
+.sim-panel .sim-adv-row .sim-slider-label { font-size: 12px; color: #9aa7b8; }
+.sim-panel .sim-adv-row.pinned .sim-slider-label { color: var(--fg); }
+.sim-panel .sim-adv-row .sim-slider-value { font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }

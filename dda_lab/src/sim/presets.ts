@@ -30,35 +30,70 @@ export const MACHINE_PRESETS: MachinePreset[] = [
   {
     id: '250',
     label: '250 cc (Ninja 400 / RC390 class)',
-    machine: { powerKw: 33, massKg: 235, cdA: 0.36, wheelbaseM: 1.37, riderMassKg: 75, cgRearM: 0.671, tyreCrownM: 0.08, hangOffM: 0.15, cgHeightM: 0.58, finalDrive: 3.07, gearRatios: [2.92, 2.06, 1.6, 1.33, 1.15, 1.0] },
+    machine: {
+      powerKw: 33, massKg: 235, cdA: 0.36, wheelbaseM: 1.37,
+      riderMassKg: 75, // source: R1 §3.2 hang-off table, m_r 75 kg (rider in leathers), öneri
+      cgRearM: 0.671, // source: R1 §3.1 S1000RR+rider b/p = 0.70/1.44 = 0.486; here 0.49, öneri
+      tyreCrownM: 0.06, // source: R1 §3.2 t = 0.06 column; 140-150 section rear on this class, öneri
+      hangOffM: 0.2, // source: R1 §3.2 d_r range 0-0.3 m; less seat to move across on a small bike, öneri
+      cgHeightM: 0.58, finalDrive: 3.07, gearRatios: [2.92, 2.06, 1.6, 1.33, 1.15, 1.0],
+    },
     tyre: { mu: 1.25, maxLeanDeg: 52, kerbMarginM: 0.3, gripScale: 1 },
     kappa: 0.1,
   },
   {
     id: '600',
     label: '600 cc supersport (R6 / ZX-6R class)',
-    machine: { powerKw: 88, massKg: 265, cdA: 0.33, wheelbaseM: 1.38, riderMassKg: 75, cgRearM: 0.676, tyreCrownM: 0.08, hangOffM: 0.15, cgHeightM: 0.56, finalDrive: 2.81, gearRatios: [2.58, 2.0, 1.67, 1.44, 1.29, 1.15] },
+    machine: {
+      powerKw: 88, massKg: 265, cdA: 0.33, wheelbaseM: 1.38,
+      riderMassKg: 75, // source: R1 §3.2 hang-off table, m_r 75 kg, öneri
+      cgRearM: 0.676, // source: R1 §3.1 S1000RR+rider b/p = 0.486; here 0.49, öneri
+      tyreCrownM: 0.07, // source: R1 §3.2 t 0.06-0.09; 180/55 rear, between the 250 and 1000 classes, öneri
+      hangOffM: 0.25, // source: R1 §3.2 table, d_r 0.25 m track hang-off, öneri
+      cgHeightM: 0.56, finalDrive: 2.81, gearRatios: [2.58, 2.0, 1.67, 1.44, 1.29, 1.15],
+    },
     tyre: { mu: 1.3, maxLeanDeg: 56, kerbMarginM: 0.4, gripScale: 1 },
     kappa: 0.45,
   },
   {
     id: '1000',
     label: '1000 cc superbike (R1 / ZX-10R class)',
-    machine: { powerKw: 147, massKg: 285, cdA: 0.34, wheelbaseM: 1.41, riderMassKg: 75, cgRearM: 0.691, tyreCrownM: 0.08, hangOffM: 0.15, cgHeightM: 0.55, finalDrive: 2.56, gearRatios: [2.6, 2.0, 1.67, 1.44, 1.29, 1.15] },
+    machine: {
+      powerKw: 147, massKg: 285, cdA: 0.34, wheelbaseM: 1.41,
+      riderMassKg: 75, // source: R1 §3.2 hang-off table, m_r 75 kg, öneri
+      cgRearM: 0.691, // source: R1 §3.1 S1000RR+rider b/p = 0.486; here 0.49, öneri
+      tyreCrownM: 0.08, // source: R1 §3.2 worked example t = 0.08 (190/55-17 race rear), öneri
+      hangOffM: 0.25, // source: R1 §3.2 table, d_r 0.25 m track hang-off, öneri
+      cgHeightM: 0.55, finalDrive: 2.56, gearRatios: [2.6, 2.0, 1.67, 1.44, 1.29, 1.15],
+    },
     tyre: { mu: 1.33, maxLeanDeg: 58, kerbMarginM: 0.5, gripScale: 1 },
     kappa: 0.85,
   },
   {
     id: 'panigale-v4',
     label: 'Ducati Panigale V4',
-    machine: { powerKw: 158, massKg: 290, cdA: 0.34, wheelbaseM: 1.47, riderMassKg: 75, cgRearM: 0.72, tyreCrownM: 0.08, hangOffM: 0.15, cgHeightM: 0.55, finalDrive: 2.5, gearRatios: [2.46, 1.94, 1.64, 1.45, 1.32, 1.21] },
+    machine: {
+      powerKw: 158, massKg: 290, cdA: 0.34, wheelbaseM: 1.47,
+      riderMassKg: 75, // source: R1 §3.2 hang-off table, m_r 75 kg, öneri (W4 replaces with the owner's mass)
+      cgRearM: 0.72, // source: R1 §3.1 S1000RR+rider b/p = 0.486; here 0.49, öneri
+      tyreCrownM: 0.08, // source: R1 §3.2 worked example t = 0.08 (200/60-17 race rear), öneri
+      hangOffM: 0.25, // source: R1 §3.2 table, d_r 0.25 m track hang-off, öneri (W4 fits the owner laps)
+      cgHeightM: 0.55, finalDrive: 2.5, gearRatios: [2.46, 1.94, 1.64, 1.45, 1.32, 1.21],
+    },
     tyre: { mu: 1.35, maxLeanDeg: 59, kerbMarginM: 0.5, gripScale: 1 },
     kappa: 0.85,
   },
   {
     id: 'custom',
     label: 'Custom',
-    machine: { powerKw: 100, massKg: 270, cdA: 0.34, wheelbaseM: 1.4, riderMassKg: 75, cgRearM: 0.686, tyreCrownM: 0.08, hangOffM: 0.15, cgHeightM: 0.56, finalDrive: 2.7, gearRatios: [2.6, 2.0, 1.67, 1.44, 1.29, 1.15] },
+    machine: {
+      powerKw: 100, massKg: 270, cdA: 0.34, wheelbaseM: 1.4,
+      riderMassKg: 75, // source: R1 §3.2 hang-off table, m_r 75 kg, öneri
+      cgRearM: 0.686, // source: R1 §3.1 S1000RR+rider b/p = 0.486; here 0.49, öneri
+      tyreCrownM: 0.08, // source: R1 §3.2 worked example t = 0.08, öneri
+      hangOffM: 0.2, // source: R1 §3.2 d_r range 0-0.3 m, mid-range, öneri
+      cgHeightM: 0.56, finalDrive: 2.7, gearRatios: [2.6, 2.0, 1.67, 1.44, 1.29, 1.15],
+    },
     tyre: { mu: 1.3, maxLeanDeg: 56, kerbMarginM: 0.4, gripScale: 1 },
     kappa: 0.5,
   },
@@ -69,9 +104,12 @@ export function presetById(id: string): MachinePreset {
 }
 
 const DEFAULT_RIDER: RiderParams = {
-  // Spec v2 §2.6 top-level parameters. Until W6 wires `deriveRider()` into
-  // the store these two are carried but NOT yet applied: the explicit fields
-  // below are the v1 calibration and still drive the solver.
+  // Spec v2 §2.6 top-level parameters. The STORE runs `deriveRider()` on
+  // these (initial state and every `setSimParams` patch), so in the app the
+  // derived fields below are overwritten. DEFAULT_SIM_PARAMS itself keeps the
+  // explicit v1 calibration so the offline harnesses (simSerres, W4) still
+  // measure what they measured; the merge recalibrates μ against the derived
+  // rider (plan "Merge" step 3).
   aggressiveness: 0.7,
   risk: 0.5,
   overrides: [],

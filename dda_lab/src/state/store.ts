@@ -13,8 +13,35 @@ import { CorridorError, extractCorridor } from '../sim/corridor';
 import { fetchCorridor, putCorridor } from '../sim/corridorService';
 import { buildMosaic, SAT_ZOOM, tileRangeFor } from '../sim/tiles';
 import { simulate } from '../sim';
+import { DERIVED_KEYS, deriveRider } from '../sim/derive';
 import { DEFAULT_SIM_PARAMS, presetById } from '../sim/presets';
-import type { Corridor, Line, SimParams } from '../sim/types';
+import { gripRiskMessage } from '../sim/risk';
+import type { Corner, Corridor, DerivedRiderKey, Line, SimParams, SolverMode } from '../sim/types';
+
+/** The two optimal solver modes (spec v2 §2.10). */
+export type OptimalMode = Exclude<SolverMode, 'rider'>;
+
+/**
+ * An optimal solver, injected so a node test can drive `runOptimal` without a
+ * Worker or a bridge. The browser passes a wrapper around the free-trajectory
+ * worker (W2) or the OCP client (W5).
+ */
+export type OptimalRunner = (
+  track: TrackModel,
+  corridor: Corridor | undefined,
+  params: SimParams,
+  onProgress: (frac: number, lapTimeS?: number) => void,
+) => Promise<{ offsetsM: Float32Array; vMs?: Float32Array; lapTimeS: number }>;
+
+/** Rider with every non-pinned field derived from aggressiveness/risk. */
+function withDerivedRider(p: SimParams): SimParams {
+  return { ...p, rider: deriveRider(p.rider, p.tyre) };
+}
+
+/** The store's starting parameters: the shipped defaults with the rider derived. */
+export const INITIAL_SIM_PARAMS: SimParams = withDerivedRider(DEFAULT_SIM_PARAMS);
+
+const DERIVED_SET = new Set<string>(DERIVED_KEYS);
 
 /** Workspace (panels, math, label colours…) is remembered in this browser between visits. */
 export const WORKSPACE_KEY = 'dda-lab-workspace';
@@ -124,9 +151,31 @@ export interface LabState {
   /** The generated line, for the map layer. */
   simLine?: Line;
   simLapTimeS?: number;
+  /** Corner sections of the rider-mode lap (header count, map markers). */
+  simCorners?: Corner[];
+  /** Risk banner text for the rider-mode lap, or null. */
+  simRisk: string | null;
+  /** Which solver's session the panel highlights. Switching never computes. */
+  solverMode: SolverMode;
+  simOptBusy: Record<OptimalMode, boolean>;
+  /** 0..1 per optimal mode. */
+  simOptProgress: Record<OptimalMode, number>;
+  simOptLapTimeS: Partial<Record<OptimalMode, number>>;
+  simOptLines: Partial<Record<OptimalMode, Line>>;
+  /** True once machine/tyre/line params moved after that optimal lap was computed. */
+  simOptStale: Record<OptimalMode, boolean>;
   setSimEnabled(on: boolean): void;
-  /** Patch any subset of the three parameter groups and re-simulate. */
+  /**
+   * Patch any subset of the three parameter groups, re-derive the rider from
+   * aggressiveness/risk and re-simulate the RIDER mode only. Patching a derived
+   * key pins it (adds it to `rider.overrides`). Never runs an optimal solver.
+   */
   setSimParams(patch: { machine?: Partial<SimParams['machine']>; tyre?: Partial<SimParams['tyre']>; rider?: Partial<SimParams['rider']> }): void;
+  /** Unpin a derived rider key so it follows the sliders again. */
+  clearOverride(key: DerivedRiderKey): void;
+  setSolverMode(mode: SolverMode): void;
+  /** Run an optimal solver (the "Hesapla" button) and add its session. */
+  runOptimal(mode: OptimalMode, runner: OptimalRunner): Promise<void>;
   /** Load a machine preset: machine, tyre and the kappa default together. */
   applyMachinePreset(id: string): void;
 
@@ -306,7 +355,15 @@ function refreshAll(st: Pick<LabState, 'sessions' | 'refLap' | 'tracks' | 'activ
 }
 
 export const SIM_SESSION_ID = 'sim';
+export const SIM_OPT_SESSION_ID = 'sim-opt';
+export const SIM_OCP_SESSION_ID = 'sim-ocp';
 const SIM_COLOR = '#c77dff';
+/** Session id, name and colour per optimal mode (spec v2 §2.10: second and third colour). */
+const OPT_SESSION: Record<OptimalMode, { id: string; name: string; color: string }> = {
+  freeTrajectory: { id: SIM_OPT_SESSION_ID, name: 'Ideal line', color: '#2ec4b6' },
+  ocp: { id: SIM_OCP_SESSION_ID, name: 'Physics limit', color: '#ff9f1c' },
+};
+const ALL_SIM_IDS = new Set([SIM_SESSION_ID, SIM_OPT_SESSION_ID, SIM_OCP_SESSION_ID]);
 
 export function defaultLapMeta(st: Pick<LabState, 'sessions'>, sessionId: string, lap: number): LapMeta {
   const s = st.sessions.find((x) => x.id === sessionId);
@@ -337,10 +394,18 @@ export const useLab = create<LabState>((set, get) => ({
   corridor: undefined,
   corridorBusy: false,
   corridorToken: loadCorridorToken(),
-  simParams: DEFAULT_SIM_PARAMS,
+  simParams: INITIAL_SIM_PARAMS,
   simEnabled: false,
   simLine: undefined,
   simLapTimeS: undefined,
+  simCorners: undefined,
+  simRisk: null,
+  solverMode: 'rider',
+  simOptBusy: { freeTrajectory: false, ocp: false },
+  simOptProgress: { freeTrajectory: 0, ocp: 0 },
+  simOptLapTimeS: {},
+  simOptLines: {},
+  simOptStale: { freeTrajectory: false, ocp: false },
 
   addSession(s) {
     const { workspace, sessions } = get();
@@ -796,10 +861,15 @@ export const useLab = create<LabState>((set, get) => ({
         simEnabled: false,
         simLine: undefined,
         simLapTimeS: undefined,
-        sessions: st.sessions.filter((s) => s.id !== SIM_SESSION_ID),
-        selectedLaps: st.selectedLaps.filter((l) => l.sessionId !== SIM_SESSION_ID),
-        refLap: st.refLap?.sessionId === SIM_SESSION_ID ? undefined : st.refLap,
-        cursor: st.cursor?.sessionId === SIM_SESSION_ID ? null : st.cursor,
+        simCorners: undefined,
+        simRisk: null,
+        simOptLapTimeS: {},
+        simOptLines: {},
+        simOptStale: { freeTrajectory: false, ocp: false },
+        sessions: st.sessions.filter((s) => !ALL_SIM_IDS.has(s.id)),
+        selectedLaps: st.selectedLaps.filter((l) => !ALL_SIM_IDS.has(l.sessionId)),
+        refLap: st.refLap && ALL_SIM_IDS.has(st.refLap.sessionId) ? undefined : st.refLap,
+        cursor: st.cursor && ALL_SIM_IDS.has(st.cursor.sessionId) ? null : st.cursor,
       }));
       return;
     }
@@ -807,27 +877,106 @@ export const useLab = create<LabState>((set, get) => ({
     runSim(set, get);
   },
   setSimParams(patch) {
-    set((st) => ({
-      simParams: {
+    set((st) => {
+      // patching a derived key by hand pins it (spec v2 §2.6 advanced panel)
+      const pinned = new Set<DerivedRiderKey>(patch.rider?.overrides ?? st.simParams.rider.overrides ?? []);
+      for (const k of Object.keys(patch.rider ?? {})) if (DERIVED_SET.has(k)) pinned.add(k as DerivedRiderKey);
+      const next: SimParams = {
         machine: { ...st.simParams.machine, ...patch.machine },
         tyre: { ...st.simParams.tyre, ...patch.tyre },
-        rider: { ...st.simParams.rider, ...patch.rider },
-      },
-    }));
+        rider: { ...st.simParams.rider, ...patch.rider, overrides: [...pinned] },
+      };
+      return { simParams: withDerivedRider(next), simOptStale: staleAfter(st, patch) };
+    });
     if (get().simEnabled) runSim(set, get);
+  },
+  clearOverride(key) {
+    set((st) => {
+      const rider = { ...st.simParams.rider, overrides: st.simParams.rider.overrides.filter((k) => k !== key) };
+      return { simParams: withDerivedRider({ ...st.simParams, rider }) };
+    });
+    if (get().simEnabled) runSim(set, get);
+  },
+  setSolverMode(mode) {
+    // highlight only: the optimal solvers run from runOptimal (the button)
+    set({ solverMode: mode });
+  },
+  async runOptimal(mode, runner) {
+    const st0 = get();
+    if (st0.simOptBusy[mode]) return;
+    const track = activeTrack(st0);
+    if (!track) {
+      set({ statusMessage: 'The simulator needs a track — open a session first.' });
+      return;
+    }
+    if (!st0.simEnabled) get().setSimEnabled(true);
+    const { corridor, simParams } = get();
+    const trackId = track.id;
+    const setBusy = (busy: boolean): void =>
+      set({ simOptBusy: { ...get().simOptBusy, [mode]: busy } });
+    setBusy(true);
+    set({ simOptProgress: { ...get().simOptProgress, [mode]: 0 } });
+    try {
+      const r = await runner(track, corridor, simParams, (frac) => {
+        set({ simOptProgress: { ...get().simOptProgress, [mode]: Math.min(1, Math.max(0, frac)) } });
+      });
+      const st = get();
+      // the simulator was switched off or the track changed while it ran
+      if (!st.simEnabled || st.activeTrackId !== trackId) return;
+      const meta = OPT_SESSION[mode];
+      const res = simulate(track, corridor, simParams, meta.id, meta.name, meta.color, mode, {
+        offsetsM: r.offsetsM,
+        vMs: r.vMs,
+      });
+      const others = st.sessions.filter((s) => s.id !== meta.id);
+      const next = { ...st, sessions: [...others, res.session] };
+      const selectedLaps = st.selectedLaps.some((l) => l.sessionId === meta.id)
+        ? st.selectedLaps
+        : [...st.selectedLaps, { sessionId: meta.id, lap: 1 }];
+      set({
+        sessions: refreshAll(next),
+        selectedLaps,
+        simOptLapTimeS: { ...st.simOptLapTimeS, [mode]: res.lapTimeS },
+        simOptLines: { ...st.simOptLines, [mode]: res.line },
+        simOptStale: { ...st.simOptStale, [mode]: false },
+        simOptProgress: { ...st.simOptProgress, [mode]: 1 },
+      });
+    } catch (e) {
+      set({ statusMessage: `${mode === 'ocp' ? 'Full OCP' : 'Free trajectory'} failed: ${(e as Error).message}` });
+    } finally {
+      setBusy(false);
+    }
   },
   applyMachinePreset(id) {
     const preset = presetById(id);
     set((st) => ({
-      simParams: {
+      simParams: withDerivedRider({
         machine: { presetId: preset.id, ...preset.machine },
         tyre: { ...preset.tyre },
         rider: { ...st.simParams.rider, kappa: preset.kappa },
-      },
+      }),
+      simOptStale: staleAfter(st, { machine: {} }),
     }));
     if (get().simEnabled) runSim(set, get);
   },
 }));
+
+/**
+ * Which optimal laps go out of date after a patch. The optimal solvers use the
+ * ideal rider, so a rider patch only matters through the line (kappa, line
+ * deviation are not used either — the optimiser owns the line); machine and
+ * tyre always do.
+ */
+function staleAfter(
+  st: Pick<LabState, 'simOptStale' | 'simOptLapTimeS'>,
+  patch: { machine?: object; tyre?: object; rider?: object },
+): LabState['simOptStale'] {
+  const touches = patch.machine !== undefined || patch.tyre !== undefined;
+  return {
+    freeTrajectory: st.simOptStale.freeTrajectory || (touches && st.simOptLapTimeS.freeTrajectory !== undefined),
+    ocp: st.simOptStale.ocp || (touches && st.simOptLapTimeS.ocp !== undefined),
+  };
+}
 
 /**
  * Run the simulator and put its session in the workspace, replacing any previous
@@ -844,20 +993,30 @@ function runSim(
     set({ statusMessage: 'The simulator needs a track — open a session first.' });
     return;
   }
-  const { session, line, lapTimeS } = simulate(
+  // RIDER mode only: this runs on every slider patch, so it must never touch
+  // the optimal solvers (plan Review Focus #5) — those are `runOptimal`.
+  const { session, line, lapTimeS, corners, envelope } = simulate(
     track,
     st.corridor,
     st.simParams,
     SIM_SESSION_ID,
     'Virtual rider',
     SIM_COLOR,
+    'rider',
   );
   const others = st.sessions.filter((s) => s.id !== SIM_SESSION_ID);
   const next = { ...st, sessions: [...others, session] };
   const selectedLaps = st.selectedLaps.some((l) => l.sessionId === SIM_SESSION_ID)
     ? st.selectedLaps
     : [...st.selectedLaps, { sessionId: SIM_SESSION_ID, lap: 1 }];
-  set({ sessions: refreshAll(next), selectedLaps, simLine: line, simLapTimeS: lapTimeS });
+  set({
+    sessions: refreshAll(next),
+    selectedLaps,
+    simLine: line,
+    simLapTimeS: lapTimeS,
+    simCorners: corners,
+    simRisk: gripRiskMessage(envelope.gripUse, envelope.gripUsePeak),
+  });
 }
 
 // autosave the workspace (debounced) so panel layouts, math channels and label styles survive a reload

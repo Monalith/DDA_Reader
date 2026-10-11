@@ -197,6 +197,147 @@ applies the common choices with one click; **Apply to all sessions** copies the 
 Derived channels (`long_g`, `delta_t` …) and math channels are recomputed from the filtered
 value, so filtering `speed` also cleans every formula that uses it.
 
+## 6b. Virtual rider v2 — the model behind the Sim tab
+
+The **Sim** tab drives a virtual lap round the active track. The result is an ordinary session
+(`Virtual rider`, plus `Ideal line` / `Physics limit` for the optimal modes), so every chart,
+map colour, Δ channel and formula above works on it. Units inside the solver are metres,
+seconds, m/s and radians; the session carries km/h and degrees like any recording.
+Design: `docs/superpowers/specs/2026-10-11-virtual-rider-design-v2.md`; research R1-R4 under
+`docs/superpowers/research/`. Every coefficient marked *öneri* is a proposal awaiting
+calibration on the owner's laps.
+
+### The line and the envelope
+
+The κ-line (C↔V line style slider) is built from the centerline and the extracted corridor as
+before. The quasi-steady-state (QSS) solver then finds the fastest speed profile on that line
+that no limit below forbids; in v2 that envelope is an **upper bound**, and the rider's events
+(below) decide where under it the lap actually runs: `v = min(v_event, v_QSS)`.
+
+### Below-peak tyre: the scaled friction ellipse (R2 §3.4-3.5)
+
+The rider never uses the tyre's peak. Each axis keeps the share the allowed slip `s` (a fraction
+of the slip at peak force) gives, through a normalised Magic Formula:
+
+```
+g(s, C) = sin( C · atan( tan(π/(2C)) · s ) )         g(0) = 0, g(1) = 1, monotone
+μ_brake = μx · gripScale · g(sBrake, 1.6)            front, braking
+μ_drive = μx · gripScale · g(sDrive, 1.6)            rear, drive
+μ_lat   = μy · gripScale · g(sLat,   1.3)            lateral
+(a_x / (μ_long·g̃))² + (a_y / (μ_lat·g̃))² ≤ 1
+```
+
+Control values: g(0.5; 1.6) = 0.856, g(0.6; 1.6) = 0.92, g(0.8; 1.6) = 0.985. The curve is flat
+near the peak, which is why riding under the limit costs little lap time and buys a lot of
+margin. `grip_use` is now measured against the rider's own ceiling (μ_eff): 1.0 means "the
+rider's margin is used up", not "the tyre is gone"; `gripUsePeak` is the same demand against
+μ_peak. The banner fires above 1.05 on the first and says whether the second still holds.
+
+### Load transfer: wheelie and stoppie (R1 §3.1)
+
+With `b` = rear contact → CG (`cgRearM`), `p` the wheelbase, `h` the CG height and `t` the tyre
+crown radius, the CG height at bike lean φ and the two pitch limits are
+
+```
+h_φ        = t + (h − t)·cos φ
+a_wheelie  = g·b/h_φ − F_D·h/(m·h_φ)                 drive cap (front lifts)
+a_stoppie  = g·(p − b)/h_φ                           tyre braking cap (rear lifts); drag adds on top
+braking (tyre share) = min(μ_brake·g·ellipse, a_stoppie, brakingG·g)
+```
+
+v1 used `g·p/(2h)`, i.e. `b = p/2` and no drag term. Presets carry `b/p ≈ 0.49` (R1's S1000RR +
+rider estimate 0.70/1.44), *öneri*.
+
+### Bike lean vs ideal lean: crown and hang-off (R1 §3.2)
+
+The ideal lean is `tan φ_i = a_y/g̃`. The motorcycle leans further because the contact patch
+rolls round the tyre crown, and less when the rider hangs off (rider mass `m_r` moved `d_r`
+inside, combined offset `e = m_r·d_r/m`):
+
+```
+φ_bike = φ_i + asin( t·sin φ_i / R ) − atan2(e, h − t),     R = √((h − t)² + e²)
+```
+
+The tyre's lean limit applies to `φ_bike`, so the corner-speed limit is the ideal lean that
+inverts it (bisection, monotone). With t = 0.08 m and no hang-off a 58° tyre limit is only ~51°
+ideal (≈ 1.24 g); 0.25 m of hang-off gives most of it back. The `lean` channel is the bike lean,
+comparable with an IMU. Presets: `tyreCrownM` 0.06-0.08, `hangOffM` 0.2-0.25 m, `riderMassKg`
+75 kg (*öneri*).
+
+### 3D road budget (R1 §3.5, no data yet)
+
+With slope σ, banking β and normal curvature ν the tyres see
+
+```
+ã_x = a_x + g·sin σ      ã_y = v²κ − g·cos σ·sin β      g̃ = g·cos σ·cos β + v²·ν
+```
+
+and the ellipse, the lean and the pitch limits use `g̃`, `ã_x`, `ã_y`. All three channels are
+zero until a DEM reader exists, and then the model reproduces v1 bit for bit.
+
+### Roll rate (R1 §3.3, Biniewicz)
+
+`φ̇_max(V, φ) = rollRateFrac · (β0 + β1·V)/g · cos²φ`, β0 = 23.5 m/s³, β1 = −0.31 s⁻²
+(thesis values; the paper's 32.56 is *doğrulanmadı*). The envelope adds `v ≤ φ̇_max / |dφ/ds|`,
+iterated 2-3 times; this is what makes S-bends and chicanes cost time.
+
+### Corner events: one brake, one throttle per corner (R3 §3)
+
+Corners are found on the speed profile, not the geometry: local minima of `v_QSS` whose
+prominence is at least `max(8 km/h, 5 % · v)`; two minima with no room to accelerate between them
+(`gap < v²/(2·a_drive)`) are ONE corner (a chicane, with its lean flips listed). Per corner:
+
+```
+A  speed apex (min v)          Ageo  max |κ|
+T  turn-in: |κ| rises past 0.25·|κ|max      E  exit: |κ| falls below it, or the next B
+B  brake point (from the template)          P  throttle pick-up = A + throttleDelayS
+hasBrake = v_entry > v_A + 8 km/h            (a flat-out kink gets no brake event)
+```
+
+The event template integrates backward from A for braking — tyre deceleration builds at
+`brakeRiseGps`, plateaus at the braking cap and releases with `brakeShare(latUse, depth, profile)`
+as lean comes on; B is where that curve meets the previous corner's drive curve — and forward
+from A for the drive: maintenance throttle (`a_x ≈ 0`) until P, a smooth roll-on over `rollOnS`
+to the drive cap, then full throttle until the next B. `brake` and `tps` come straight from the
+template; the header shows the corner count and how many of them are braked for, and
+`cornerEventsGeoJson` gives the B/T/A/P/E points for the map.
+
+### Aggressiveness and Risk (R3 §5; all *öneri*)
+
+Two sliders produce every other rider number (`src/sim/derive.ts`, `DERIVE_TABLE`).
+**A** (aggressiveness) is timing; **R** (risk) is force level.
+
+| Derived | Formula | A/R = 0 → 1 |
+|---|---|---|
+| sBrake | 0.30 + 0.65·R | 0.30 → 0.95 |
+| sDrive | 0.50 + 0.45·R | 0.50 → 0.95 |
+| sLat | 0.55 + 0.42·R | 0.55 → 0.97 |
+| brakingG | μx · gripScale · g(sBrake, 1.6) | via the tyre curve |
+| leanUsage | g(sLat, 1.3) | ~0.78 → ~0.99 |
+| trailBrakeDepth | 0.3 + 0.6·R | 0.3 → 0.9 |
+| trailBrakeProfile | R | 0 → 1 |
+| brakeRiseGps | (0.6 + 0.4·A) · 2.8 g/s | 1.7 → 2.8 g/s (2.8 measured on both reference laps) |
+| throttleDelayS | 1.6 − 1.4·A | 1.6 → 0.2 s |
+| rollOnS | 1.2 − 0.8·A | 1.2 → 0.4 s |
+| rollRateFrac | 0.5 + 0.5·A | 50 → 100 % of the bound |
+| tcThreshold | 0.5 | constant |
+
+Open **Gelişmiş** to see the derived values. Moving one pins it (lock icon, orange): it then
+ignores the sliders until you click the lock. The two parameters are separable in data: A shows
+in roll rate, brake build, pick-up time and roll-on; R in braking g, lean and slip percentiles.
+
+### Solver modes
+
+| Mode | What | When it runs |
+|---|---|---|
+| **Sürücü** | the model above, the human rider | live, on every slider (< 50 ms) |
+| **Serbest yörünge** | line offsets and speed optimised together for the IDEAL rider (s = 1, full roll rate, braking at μx) | in a Web Worker, on **Hesapla** |
+| **Tam OCP** | minimum-time optimal control (CasADi) on the lab server | on **Hesapla**, minutes; greyed when the bridge is unreachable |
+
+All three can be loaded at once (`sim`, `sim-opt`, `sim-ocp`): rider vs ideal line vs physics
+limit, compared with the usual Δ tools. A slider never starts an optimal run; after a machine or
+tyre change an optimal lap is shown struck through as out of date until you press Hesapla again.
+
 ## 7. Tips
 
 - Compare `deriv(speed)` on raw vs `lowpass(speed, 1)`: differentiation amplifies noise, so filter first.

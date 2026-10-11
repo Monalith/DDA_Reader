@@ -465,5 +465,15 @@ export function buildLine(
   const closing = toLocalM(points[n - 1], points[0]);
   const lengthM = cumDistM[n - 1] + Math.hypot(closing[0], closing[1]);
 
-  return { points, curvature: polylineCurvature(points, CURV_SCALE_M), cumDistM, lengthM, offsetM: d };
+  return {
+    points,
+    curvature: polylineCurvature(points, CURV_SCALE_M),
+    cumDistM,
+    lengthM,
+    offsetM: d,
+    // no elevation data yet (spec v2 §2.3): flat road, explicitly
+    slopeRad: new Float32Array(n),
+    bankRad: new Float32Array(n),
+    nu: new Float32Array(n),
+  };
 }

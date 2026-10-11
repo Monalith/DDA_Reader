@@ -277,7 +277,10 @@ describe('solve', () => {
     const broken = clampParams({
       machine: { ...P.machine, powerKw: 0, massKg: 0, cdA: 0, cgHeightM: 0, wheelbaseM: 0 },
       tyre: { mu: 0, maxLeanDeg: 0, kerbMarginM: 0, gripScale: 0 },
-      rider: { lineDeviationM: 0, brakingG: 0, brakeRiseGps: 0, throttleDelayS: 0, tcThreshold: 0, leanUsage: 0, kappa: 0, trailBrakeDepth: 0, trailBrakeProfile: 0 },
+      rider: {
+        aggressiveness: 0, risk: 0, overrides: [], sBrake: 0, sDrive: 0, sLat: 0, rollOnS: 0, rollRateFrac: 0,
+        lineDeviationM: 0, brakingG: 0, brakeRiseGps: 0, throttleDelayS: 0, tcThreshold: 0, leanUsage: 0, kappa: 0, trailBrakeDepth: 0, trailBrakeProfile: 0,
+      },
     });
     const env = solve(circleLine(60), broken);
     expect(Number.isFinite(env.lapTimeS)).toBe(true);

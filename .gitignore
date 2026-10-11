@@ -62,3 +62,6 @@ scratch/
 # Local corridor store (DATA_DIR == BASE_DIR when dda_lab_bridge.py isn't
 # frozen, so unfrozen dev runs write corridors here instead of outside the repo)
 corridors/
+
+# local telemetry drop zone (contains a token file)
+_inbox/

@@ -1,10 +1,12 @@
 import { expect, test, type Page } from '@playwright/test';
 
-// "Optimise line" (lineMode 'lap-time', pist-line note §8) on the bundled pist
-// Serres: the free-trajectory worker descends the rider's own QSS lap, the
-// rider mode then rides the stored line, and "Fit to reference" runs on it.
-// With the owner's Ducati lap (Run036, gitignored _inbox) loaded too, the map
-// shows his path next to the optimised line; SIM_SHOTS_DIR saves the views.
+// "Optimise line" (lineMode 'lap-time', pist-line note §8-9) on the bundled
+// pist Serres: the free-trajectory worker descends the rider's own QSS lap from
+// the fastest κ-line and — with the owner's Ducati lap (Run036, gitignored
+// _inbox) loaded — from his GPS path too, with the BMW v2 reference pricing
+// lateral g over the ceiling; the rider mode then rides the stored line, and
+// "Fit to reference" runs on it. The map shows the owner's path next to the
+// optimised line; SIM_SHOTS_DIR saves the views.
 const BMW_V2 = new URL('../../public/examples/serres_BMW_1-19-81_v2.json', import.meta.url).pathname;
 const OWNER = '/Users/macbookmini/projects/DDA_Reader/_inbox/Run036-219926-00.00.dda';
 const SHOTS = process.env.SIM_SHOTS_DIR;
@@ -17,6 +19,8 @@ type Bounds = [[number, number], [number, number]];
 // lon/lat boxes of the optimised line's K2 → K4 and K12 → exit (scratch bounds.ts on the stored line)
 const K2_K4: Bounds = [[23.51667, 41.06955], [23.52143, 41.07077]];
 const K12_EXIT: Bounds = [[23.51275, 41.07099], [23.51513, 41.07163]];
+// K11 → K12 kerb → exit, tighter (the corner the lateral-g penalty reshapes, note §9)
+const K12: Bounds = [[23.51355, 41.07082], [23.51535, 41.07170]];
 
 async function fitMap(page: Page, b: Bounds): Promise<void> {
   await page.evaluate((bb) => {
@@ -54,9 +58,20 @@ test('optimise line: worker run, progress, the rider rides it, the fit runs on i
   const t0 = Date.now();
   await page.getByTestId('sim-optimise-line').click();
   await expect(page.getByTestId('sim-line-opt-progress')).toBeVisible();
+  await expect(page.getByTestId('sim-line-opt-status')).toContainText('start 1/', { timeout: 10_000 });
   await shot(page, 'lt-01-progress');
+  const owner = fs.existsSync(OWNER);
+  if (owner) {
+    await expect(page.getByTestId('sim-line-opt-status')).toContainText('start 2/2', { timeout: 60_000 });
+    console.log(`second start at ${((Date.now() - t0) / 1000).toFixed(1)} s: ${await page.getByTestId('sim-line-opt-status').textContent()}`);
+    await shot(page, 'lt-01b-progress-start2');
+  }
   await expect(page.getByTestId('sim-line-opt-status')).toContainText('optimised', { timeout: 180_000 });
   const runMs = Date.now() - t0;
+  console.log(`info: ${await page.getByTestId('sim-line-opt-info').textContent()}`);
+  await expect(page.getByTestId('sim-line-opt-info')).toContainText(owner ? 'of 2 starts' : 'of 1 start');
+  await expect(page.getByTestId('sim-line-opt-info')).toContainText('lateral-g penalty');
+  expect(runMs).toBeLessThan(40_000); // worker budget 28 s + the warm-start/alignment prep + UI
   await expect(page.getByTestId('sim-line-mode')).toHaveValue('lap-time');
   const after = (await page.getByTestId('sim-laptime').textContent()) ?? '';
   console.log(`optimise line: ${(runMs / 1000).toFixed(1)} s in the browser; lap ${before} → ${after}`);
@@ -76,6 +91,13 @@ test('optimise line: worker run, progress, the rider rides it, the fit runs on i
   await page.getByTestId('sim-fit-run').click();
   await expect(page.getByTestId('sim-fit-table').locator('tbody tr')).toHaveCount(16);
   console.log(`fit: ${await page.getByTestId('sim-fit-status').textContent()}`);
+  const fitRows = await page.evaluate(() => {
+    type St = { simFit?: { rows: Array<{ name: string; aLatG: number; aLatPeakG: number }> }; simLineOptInfo?: unknown };
+    const st = (window as unknown as { __lab: { getState: () => St } }).__lab.getState();
+    return { info: st.simLineOptInfo, rows: (st.simFit?.rows ?? []).filter((r) => ['K2', 'K4', 'K6', 'K12'].includes(r.name)) };
+  });
+  console.log(`run: ${JSON.stringify(fitRows.info)}`);
+  console.log(`fit g: ${fitRows.rows.map((r) => `${r.name} ${r.aLatG.toFixed(2)}${r.name === 'K12' ? ` (zone ${r.aLatPeakG.toFixed(2)})` : ''}`).join(', ')}`);
   await shot(page, 'lt-03-fit');
 
   // map views: the owner's lap (Ducati best, lap 6) + the optimised line (the
@@ -100,4 +122,6 @@ test('optimise line: worker run, progress, the rider rides it, the fit runs on i
   if (SHOTS) await page.getByTestId('map-wrap').screenshot({ path: `${SHOTS}/lt-map-K2-K4.png` });
   await fitMap(page, K12_EXIT);
   if (SHOTS) await page.getByTestId('map-wrap').screenshot({ path: `${SHOTS}/lt-map-K12-exit.png` });
+  await fitMap(page, K12);
+  if (SHOTS) await page.getByTestId('map-wrap').screenshot({ path: `${SHOTS}/lt-map-K12.png` });
 });

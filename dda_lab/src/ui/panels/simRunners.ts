@@ -15,7 +15,7 @@ import { idealParams } from '../../sim/freeTrajectory';
 import { lineFromOffsets } from '../../sim/line';
 import { buildOcpRequest, ocpBase, submitOcp, waitForOcp } from '../../sim/ocpClient';
 import { optCacheKey, readOpt, writeOpt, type KVStorage } from '../../sim/optCache';
-import { cachedLapTimeLine, LAP_TIME_ITERATIONS, rememberLapTimeLine } from '../../sim/lapTimeLine';
+import { cachedLapTimeLine, lapTimeVariant, rememberLapTimeLine } from '../../sim/lapTimeLine';
 import { solve } from '../../sim/solver';
 
 export interface Availability {
@@ -58,8 +58,8 @@ function supersede(w: Worker, id: number, reject: (e: Error) => void): void {
 }
 
 type WorkerOut =
-  | { type: 'progress'; id: number; frac: number; lapTimeS: number }
-  | { type: 'done'; id: number; offsetsM: Float32Array; lapTimeS: number }
+  | { type: 'progress'; id: number; frac: number; lapTimeS: number; start?: number; starts?: number; label?: string }
+  | { type: 'done'; id: number; offsetsM: Float32Array; lapTimeS: number; info?: { kept: string; ms: number; outOfBudget: boolean; starts?: Array<{ label: string; lapTimeS: number }> } }
   | { type: 'error'; id: number; message: string };
 
 const freeTrajectoryRunner: OptimalRunner = (track, corridor, params, onProgress) =>
@@ -98,14 +98,22 @@ const freeTrajectoryRunner: OptimalRunner = (track, corridor, params, onProgress
   });
 
 /**
- * `lineMode: 'lap-time'` (pist-line note §8): the same worker, judged by the
- * rider's own QSS lap and warm-started from the fastest κ-line. Cached per
- * track + machine + tyre + rider (lapTimeLine.ts, memory + localStorage).
+ * `lineMode: 'lap-time'` (pist-line note §8-9): the same worker, judged by the
+ * rider's own QSS lap; multi-start — the fastest κ-line, plus the owner's GPS
+ * path (`ctx.warmStarts`) when a recorded lap is loaded — keep the fastest; the
+ * soft lateral-g ceiling on when a reference lap (`ctx.reference`) is loaded.
+ * Cached per track + machine + tyre + rider + those starts/reference
+ * (lapTimeLine.ts, memory + localStorage).
  */
-export const lapTimeLineRunner: OptimalRunner = (track, corridor, params, onProgress) =>
+export const lapTimeLineRunner: OptimalRunner = (track, corridor, params, onProgress, ctx) =>
   new Promise((resolve, reject) => {
     const storage = safeStorage();
-    const cached = cachedLapTimeLine(track, params, storage);
+    const warmStartOffsets = ctx?.warmStarts ?? [];
+    const variant = lapTimeVariant({
+      warmStarts: warmStartOffsets.map((o) => lineFromOffsets(track, o)),
+      reference: ctx?.reference,
+    });
+    const cached = cachedLapTimeLine(track, params, storage, variant);
     if (cached) {
       const lapTimeS = solve(lineFromOffsets(track, cached), { ...params, rider: { ...params.rider, lineDeviationM: 0 } }).lapTimeS;
       onProgress(1, lapTimeS);
@@ -119,12 +127,12 @@ export const lapTimeLineRunner: OptimalRunner = (track, corridor, params, onProg
       const m = e.data;
       if (!m || m.id !== id) return;
       if (m.type === 'progress') {
-        onProgress(m.frac, m.lapTimeS);
+        onProgress(m.frac, m.lapTimeS, m.start != null && m.starts != null ? { start: m.start, starts: m.starts, label: m.label ?? '' } : undefined);
       } else if (m.type === 'done') {
         w.removeEventListener('message', onMessage);
         if (pending?.id === id) pending = null;
-        rememberLapTimeLine(track, params, m.offsetsM, m.lapTimeS, storage);
-        resolve({ offsetsM: m.offsetsM, lapTimeS: m.lapTimeS });
+        rememberLapTimeLine(track, params, m.offsetsM, m.lapTimeS, storage, variant);
+        resolve({ offsetsM: m.offsetsM, lapTimeS: m.lapTimeS, info: m.info });
       } else if (m.type === 'error') {
         w.removeEventListener('message', onMessage);
         if (pending?.id === id) pending = null;
@@ -132,7 +140,15 @@ export const lapTimeLineRunner: OptimalRunner = (track, corridor, params, onProg
       }
     };
     w.addEventListener('message', onMessage);
-    w.postMessage({ type: 'run', id, track, corridor, params, iterations: LAP_TIME_ITERATIONS, rider: 'own', lapTimeStart: true });
+    w.postMessage({
+      type: 'run',
+      id,
+      track,
+      corridor,
+      params,
+      iterations: 0,
+      lapTimeRun: { warmStartOffsets, reference: ctx?.reference },
+    });
   });
 
 const ocpRunner: OptimalRunner = async (track, corridor, params, onProgress) => {

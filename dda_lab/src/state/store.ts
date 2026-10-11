@@ -16,6 +16,8 @@ import { corridorFromPist, parsePistPackage, trackFromPist, type PistPackage } f
 import { buildMosaic, SAT_ZOOM, tileRangeFor } from '../sim/tiles';
 import { simulate } from '../sim';
 import { fitToReference, latMargin } from '../sim/fitRider';
+import { ownerOffsets } from '../sim/ownerOffsets';
+import type { Reference } from '../sim/reference';
 import { DERIVED_KEYS, deriveRider } from '../sim/derive';
 import { DEFAULT_SIM_PARAMS, presetById } from '../sim/presets';
 import { gripRiskMessage } from '../sim/risk';
@@ -64,8 +66,13 @@ export type OptimalRunner = (
   track: TrackModel,
   corridor: Corridor | undefined,
   params: SimParams,
-  onProgress: (frac: number, lapTimeS?: number) => void,
-) => Promise<{ offsetsM: Float32Array; vMs?: Float32Array; lapTimeS: number }>;
+  onProgress: (frac: number, lapTimeS?: number, stage?: { start: number; starts: number; label: string }) => void,
+  /**
+   * The lap-time line's extras (pist-line note §9): warm starts as offsets
+   * (the owner's GPS path) and the reference lap for the lateral-g penalty.
+   */
+  ctx?: { warmStarts?: Float32Array[]; reference?: Reference },
+) => Promise<{ offsetsM: Float32Array; vMs?: Float32Array; lapTimeS: number; info?: { kept: string; ms: number; outOfBudget: boolean; starts?: Array<{ label: string; lapTimeS: number }> } }>;
 
 /** Rider with every non-pinned field derived from aggressiveness/risk. */
 function withDerivedRider(p: SimParams): SimParams {
@@ -232,6 +239,10 @@ export interface LabState {
   simLineOptProgress: number;
   /** The rider's QSS lap on the last optimised line, s. */
   simLineOptLapTimeS?: number;
+  /** Which warm start the run is descending (note §9: "start 2/2"), while it runs. */
+  simLineOptStage?: { start: number; starts: number; label: string };
+  /** What the last run used and kept: starts, reference, wall time. */
+  simLineOptInfo?: { starts: string[]; reference?: string; kept?: string; ms?: number; outOfBudget?: boolean; startLapsS?: number[] };
   /**
    * Run the direct lap-time line optimiser (the runner stores its result in
    * lapTimeLine.ts), then switch `lineMode` to 'lap-time' and re-simulate, so
@@ -1135,17 +1146,42 @@ export const useLab = create<LabState>((set, get) => ({
     if (!st0.simEnabled) get().setSimEnabled(true);
     const { corridor, simParams } = get();
     const trackId = track.id;
-    set({ simLineOptBusy: true, simLineOptProgress: 0 });
+    // note §9: the reference lap (lateral-g penalty) and the owner's GPS path (a warm start)
+    const ctx = lapTimeContext(get(), track);
+    set({
+      simLineOptBusy: true,
+      simLineOptProgress: 0,
+      simLineOptStage: undefined,
+      simLineOptInfo: { starts: ['κ-line', ...(ctx.ownerName ? [ctx.ownerName] : [])], reference: ctx.reference?.name },
+    });
+    const t0 = performance.now();
     try {
-      const r = await runner(track, corridor, simParams, (frac) => set({ simLineOptProgress: Math.min(1, Math.max(0, frac)) }));
+      const r = await runner(
+        track,
+        corridor,
+        simParams,
+        (frac, _lap, stage) => set({ simLineOptProgress: Math.min(1, Math.max(0, frac)), ...(stage ? { simLineOptStage: stage } : {}) }),
+        { warmStarts: ctx.warmStarts, reference: ctx.reference },
+      );
       if (get().activeTrackId !== trackId) return;
-      set({ simLineOptLapTimeS: r.lapTimeS, simLineOptProgress: 1 });
+      const info = get().simLineOptInfo;
+      set({
+        simLineOptLapTimeS: r.lapTimeS,
+        simLineOptProgress: 1,
+        simLineOptInfo: info && {
+          ...info,
+          kept: r.info?.kept,
+          ms: r.info?.ms ?? performance.now() - t0,
+          outOfBudget: r.info?.outOfBudget,
+          startLapsS: r.info?.starts?.map((x) => x.lapTimeS),
+        },
+      });
       // the runner stored the line; this re-simulates the rider mode on it
       get().setSimParams({ rider: { lineMode: 'lap-time' } });
     } catch (e) {
       set({ statusMessage: `Optimise line failed: ${(e as Error).message}` });
     } finally {
-      set({ simLineOptBusy: false });
+      set({ simLineOptBusy: false, simLineOptStage: undefined });
     }
   },
   runFit() {
@@ -1215,6 +1251,45 @@ export const useLab = create<LabState>((set, get) => ({
     if (get().simEnabled) runSim(set, get);
   },
 }));
+
+/**
+ * The lap-time line's extras from the loaded sessions (pist-line note §9):
+ *   reference  the reference lap's session when it carries a corner summary,
+ *              else the first that does (the same rule as "Fit to reference");
+ *   warm start the owner's GPS path: the reference lap when it is a recorded
+ *              lap with GPS, else the best lap of the first recorded session
+ *              with GPS, mapped into the corridor (`ownerOffsets`).
+ */
+function lapTimeContext(
+  st: Pick<LabState, 'sessions' | 'refLap'>,
+  track: TrackModel,
+): { reference?: Reference; warmStarts: Float32Array[]; ownerName?: string } {
+  const refSession =
+    (st.refLap && st.sessions.find((x) => x.id === st.refLap!.sessionId && x.reference)) ?? st.sessions.find((x) => x.reference);
+  const gps = (x: Session): boolean => !x.isSim && !x.reference && x.channels.has('gps_lon') && x.channels.has('gps_lat');
+  const fromRef = st.refLap ? st.sessions.find((x) => x.id === st.refLap!.sessionId && gps(x)) : undefined;
+  const session = fromRef ?? st.sessions.find(gps);
+  const lap = session && (fromRef ? session.laps.find((l) => l.n === st.refLap!.lap) : (session.laps.find((l) => l.isBest) ?? session.laps.find((l) => l.kind === 'flying')));
+  const warmStarts: Float32Array[] = [];
+  let ownerName: string | undefined;
+  if (session && lap) {
+    const lonC = session.channels.get('gps_lon')!.data;
+    const latC = session.channels.get('gps_lat')!.data;
+    const lon: number[] = [];
+    const lat: number[] = [];
+    for (let i = lap.startIdx; i <= lap.endIdx && i < lonC.length; i++) {
+      if (Number.isFinite(lonC[i]) && Number.isFinite(latC[i])) {
+        lon.push(lonC[i]);
+        lat.push(latC[i]);
+      }
+    }
+    if (lon.length > 50) {
+      warmStarts.push(ownerOffsets(track, lon, lat));
+      ownerName = `${session.name} lap ${lap.n}`;
+    }
+  }
+  return { reference: refSession?.reference, warmStarts, ownerName };
+}
 
 /**
  * Which optimal laps go out of date after a patch. The optimal solvers use the

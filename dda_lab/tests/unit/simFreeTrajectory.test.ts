@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { createOptimiser, optimiseOffsets } from '../../src/sim/freeTrajectory';
+import { createOptimiser, LAT_G_PENALTY_DEFAULT, latGPenaltyS, optimiseOffsets } from '../../src/sim/freeTrajectory';
+import { createLapTimeRun, runLapTimeLine } from '../../src/sim/lapTimeLine';
 import { buildLine, lineFromOffsets, offsetBounds } from '../../src/sim/line';
 import { solve } from '../../src/sim/solver';
 import { DEFAULT_SIM_PARAMS, clampParams } from '../../src/sim/presets';
@@ -109,5 +110,82 @@ describe('optimiseOffsets', { timeout: 15_000 }, () => {
     opt.iterate();
     const ms = performance.now() - t0;
     expect(ms).toBeLessThan(2000);
+  });
+});
+
+// pist-line note §9: forceInit, the soft lateral-g ceiling, the multi-start run
+describe('lap-time line extras (note §9)', { timeout: 60_000 }, () => {
+  const own = clampParams({ ...DEFAULT_SIM_PARAMS, rider: { ...DEFAULT_SIM_PARAMS.rider, lineDeviationM: 0 } });
+
+  it('forceInit starts from the init alone, even when the κ-line is faster', () => {
+    const { track, corridor } = circuitTrack();
+    const { hiM } = offsetBounds(track, corridor, own);
+    const init = Float32Array.from(hiM); // the left edge everywhere: a poor line
+    const t = solve(lineFromOffsets(track, init), own).lapTimeS;
+    expect(createOptimiser(track, corridor, own, { init, rider: 'own' }).startLapTimeS).toBeLessThan(t);
+    expect(createOptimiser(track, corridor, own, { init, rider: 'own', forceInit: true }).startLapTimeS).toBeCloseTo(t, 6);
+  });
+
+  it('latGPenaltyS: λ·Σ excess²·ds; 0.1 g over 20 m at the default λ ≈ 0.1 s; zero on the QSS speed', () => {
+    const { track, corridor } = circuitTrack();
+    const line = buildLine(track, corridor, own);
+    const env = solve(line, own);
+    // the QSS speed never asks more than the rider's lateral limit (≤ the 1.4 g ceiling)
+    expect(latGPenaltyS(line, env, { ceilingG: 1.4, lambda: LAT_G_PENALTY_DEFAULT })).toBe(0);
+    // a reference speed that asks exactly ceiling + 0.1 g over a 20 m stretch
+    const n = line.points.length;
+    const v = new Float32Array(n);
+    let len = 0;
+    for (let i = 0; i < n - 1; i++) {
+      const k = Math.abs(line.curvature[i]);
+      if (len < 20 && k > 1e-3) {
+        v[i] = Math.sqrt((1.5 * 9.81) / k);
+        len += line.cumDistM[i + 1] - line.cumDistM[i];
+      }
+    }
+    const pen = latGPenaltyS(line, null, { vRefMs: v, ceilingG: 1.4, lambda: LAT_G_PENALTY_DEFAULT });
+    expect(pen).toBeGreaterThan(0.08);
+    expect(pen).toBeLessThan(0.12);
+  });
+
+  it('the penalty shapes the descent: the objective is lap + penalty, lapTimeS the pure lap', () => {
+    const { track, corridor } = circuitTrack();
+    const line = buildLine(track, corridor, own);
+    // a reference 10 % faster than the rider everywhere: over the ceiling in every corner
+    const v = Float32Array.from(solve(line, own).v, (x) => x * 1.1);
+    const latG = { vRefMs: v, ceilingG: 1.4, lambda: LAT_G_PENALTY_DEFAULT };
+    const o = createOptimiser(track, corridor, own, { rider: 'own', latG });
+    o.iterate();
+    const best = lineFromOffsets(track, Float32Array.from(o.offsetsM));
+    const env = solve(best, own);
+    expect(o.lapTimeS).toBeCloseTo(env.lapTimeS, 6);
+    expect(o.objective).toBeCloseTo(env.lapTimeS + latGPenaltyS(best, env, latG), 6);
+    expect(o.objective).toBeGreaterThan(o.lapTimeS);
+  });
+
+  it('multi-start keeps the fastest QSS lap and reports "start k/n" progress', () => {
+    const { track, corridor } = circuitTrack();
+    const { loM } = offsetBounds(track, corridor, own);
+    const poor = lineFromOffsets(track, Float32Array.from(loM));
+    const stages = new Set<string>();
+    const r = runLapTimeLine(track, corridor, { ...own, rider: { ...own.rider, lineMode: 'lap-time' } }, { warmStarts: [poor], iterations: 2 }, (p) =>
+      stages.add(`${p.start}/${p.starts} ${p.labels[p.start - 1]}`),
+    );
+    expect(r.starts.map((s) => s.label)).toEqual(['κ-line', 'owner path']);
+    expect([...stages]).toEqual(['1/2 κ-line', '2/2 owner path']);
+    for (const s of r.starts) expect(r.lapTimeS).toBeLessThanOrEqual(s.lapTimeS);
+    expect(solve(lineFromOffsets(track, r.offsetsM), own).lapTimeS).toBeCloseTo(r.lapTimeS, 6);
+  });
+
+  it('stops at the time budget with the best line so far', () => {
+    const { track, corridor } = circuitTrack();
+    let clock = 0;
+    const run = createLapTimeRun(track, corridor, own, { budgetMs: 1, now: () => clock });
+    expect(run.step()).toBe(true); // first sweep inside the budget
+    clock = 5;
+    expect(run.step()).toBe(false);
+    const r = run.result();
+    expect(r.outOfBudget).toBe(true);
+    expect(r.starts[0].sweeps).toBe(1);
   });
 });

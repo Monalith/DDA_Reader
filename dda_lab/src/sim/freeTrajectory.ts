@@ -15,8 +15,8 @@
 import type { TrackModel } from '../core/types';
 import { buildLine, lineFromOffsets, offsetBounds } from './line';
 import { clampParams } from './presets';
-import { solve } from './solver';
-import type { Corridor, SimParams } from './types';
+import { G, solve } from './solver';
+import type { Corridor, Envelope, Line, SimParams } from './types';
 
 /**
  * How a run starts and what it is judged by. Every field is optional; absent
@@ -36,6 +36,59 @@ export interface FreeTrajStart {
    * rider every other line mode is).
    */
   rider?: 'ideal' | 'own';
+  /**
+   * Start from `init` alone: skip the κ-line comparison (a multi-start run
+   * wants each start to be its own basin, not the κ-line again when it is
+   * faster). Ignored without a valid `init`.
+   */
+  forceInit?: boolean;
+  /**
+   * Soft lateral-g ceiling (pist-line note §9): the objective becomes
+   * lap + `latGPenaltyS(...)`. Absent = the plain lap time.
+   */
+  latG?: LatGPenalty;
+  /** Control-knot spacing, m (default 20); the bump half-width is twice it. */
+  knotSpacingM?: number;
+}
+
+/**
+ * `λ · Σ_i max(0, a_demand,i − a_ceiling)² · ds_i`, with a_demand = v(s)²·|κ(s)|
+ * in g. `vRefMs` (one per centerline station) is a REFERENCE rider's speed
+ * mapped by station (the BMW v2 lap aligned on the start line), so the term
+ * prices a line on which that rider would need more lateral g than the
+ * ceiling. Without it the line's own QSS speed is used — and then the term is
+ * zero by construction (the QSS lateral pass caps v²|κ| at the rider's limit,
+ * which is ≤ the ceiling), so it only matters with a reference.
+ */
+export interface LatGPenalty {
+  vRefMs?: Float32Array;
+  /** Lateral ceiling, g (`lateralCeilingG`: min(μ_lat, tan(maxLean·leanUsage))). */
+  ceilingG: number;
+  /** λ, seconds per g² per metre of line. */
+  lambda: number;
+}
+
+/**
+ * Default λ: 0.1 g of excess held over 20 m costs 0.1 s (0.1² · 20 · λ = 0.1).
+ * Öneri, not tuned against a measurement.
+ */
+export const LAT_G_PENALTY_DEFAULT = 0.5;
+
+/** The penalty term in seconds-equivalent (see `LatGPenalty`). */
+export function latGPenaltyS(line: Line, env: Envelope | null, pen: LatGPenalty): number {
+  const n = line.points.length;
+  const v = pen.vRefMs && pen.vRefMs.length === n ? pen.vRefMs : env?.v;
+  if (!v || !(pen.lambda > 0)) return 0;
+  const s = line.cumDistM;
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    const a = (v[i] * v[i] * Math.abs(line.curvature[i])) / G;
+    const ex = a - pen.ceilingG;
+    if (ex <= 0) continue;
+    const ds = i < n - 1 ? s[i + 1] - s[i] : line.lengthM - s[n - 1];
+    sum += ex * ex * ds;
+  }
+  return pen.lambda * sum;
 }
 
 export interface FreeTrajOpts extends FreeTrajStart {
@@ -91,7 +144,10 @@ export function idealParams(params: SimParams): SimParams {
 export interface FreeTrajOptimiser {
   /** Best offsets so far (a live view: copy before transferring). */
   readonly offsetsM: Float32Array;
+  /** QSS lap of the best line, s (the penalty, when any, is not in it). */
   readonly lapTimeS: number;
+  /** What the search minimises: `lapTimeS` + the lateral-g penalty, s. */
+  readonly objective: number;
   /** Lap time of the line the search started from. */
   readonly startLapTimeS: number;
   /** True once every knot's step has shrunk below the minimum. */
@@ -120,7 +176,15 @@ export function createOptimiser(
       : clampParams({ ...params, rider: { ...params.rider, lineDeviationM: 0 } });
   const n = track.centerline.length;
   const { loM, hiM } = offsetBounds(track, corridor, ideal);
-  const lapOf = (d: Float32Array): number => solve(lineFromOffsets(track, d), ideal).lapTimeS;
+  const pen = start.latG;
+  let lastLap = 0;
+  /** The objective of offsets `d`; leaves their pure QSS lap in `lastLap`. */
+  const lapOf = (d: Float32Array): number => {
+    const line = lineFromOffsets(track, d);
+    const env = solve(line, ideal);
+    lastLap = env.lapTimeS;
+    return pen ? env.lapTimeS + latGPenaltyS(line, env, pen) : env.lapTimeS;
+  };
 
   // Start from the user's own κ-line (that is the line the result must never
   // lose to) and from the same line without rider wander; keep the faster.
@@ -128,9 +192,13 @@ export function createOptimiser(
   // start from the min-time line instead
   const lineP: SimParams =
     params.rider.lineMode === 'lap-time' ? { ...params, rider: { ...params.rider, lineMode: 'min-time' } } : params;
-  let best = Float32Array.from(buildLine(track, corridor, lineP).offsetM);
+  const forced = !!start.forceInit && !!start.init && start.init.length === n;
+  let best = forced
+    ? Float32Array.from(start.init!, (v, i) => Math.min(hiM[i], Math.max(loM[i], v)))
+    : Float32Array.from(buildLine(track, corridor, lineP).offsetM);
   let bestT = lapOf(best);
-  if (params.rider.lineDeviationM > 0) {
+  let bestLap = lastLap;
+  if (!forced && params.rider.lineDeviationM > 0) {
     const calm = Float32Array.from(
       buildLine(track, corridor, { ...lineP, rider: { ...lineP.rider, lineDeviationM: 0 } }).offsetM,
     );
@@ -138,23 +206,27 @@ export function createOptimiser(
     if (calmT < bestT) {
       best = calm;
       bestT = calmT;
+      bestLap = lastLap;
     }
   }
-  if (start.init && start.init.length === n) {
+  if (!forced && start.init && start.init.length === n) {
     const warm = Float32Array.from(start.init, (v, i) => Math.min(hiM[i], Math.max(loM[i], v)));
     const warmT = lapOf(warm);
     if (warmT < bestT) {
       best = warm;
       bestT = warmT;
+      bestLap = lastLap;
     }
   }
-  const startT = bestT;
+  const startT = bestLap;
 
   // Knots and their raised-cosine bumps, by distance along the centerline,
   // wrapping across the start line (the lap is closed).
   const L = track.lengthM;
   const s = track.cumDistM;
-  const nKnots = Math.max(1, Math.round(L / KNOT_SPACING_M));
+  const spacing = start.knotSpacingM && start.knotSpacingM > 0 ? start.knotSpacingM : KNOT_SPACING_M;
+  const bumpHalf = (BUMP_HALF_M / KNOT_SPACING_M) * spacing;
+  const nKnots = Math.max(1, Math.round(L / spacing));
   const bumps: Bump[] = [];
   {
     let j = 0;
@@ -167,9 +239,9 @@ export function createOptimiser(
       for (let i = 0; i < n; i++) {
         let ds = Math.abs(s[i] - centre);
         if (ds > L / 2) ds = L - ds;
-        if (ds < BUMP_HALF_M) {
+        if (ds < bumpHalf) {
           idx.push(i);
-          w.push(0.5 * (1 + Math.cos((Math.PI * ds) / BUMP_HALF_M)));
+          w.push(0.5 * (1 + Math.cos((Math.PI * ds) / bumpHalf)));
         }
       }
       bumps.push({ idx: Int32Array.from(idx), w: Float32Array.from(w) });
@@ -193,6 +265,7 @@ export function createOptimiser(
     if (t < bestT - IMPROVE_EPS_S) {
       best.set(trial);
       bestT = t;
+      bestLap = lastLap;
       return true;
     }
     return false;
@@ -205,6 +278,9 @@ export function createOptimiser(
       return best;
     },
     get lapTimeS() {
+      return bestLap;
+    },
+    get objective() {
       return bestT;
     },
     startLapTimeS: startT,
@@ -249,7 +325,7 @@ export function optimiseOffsets(
   opts: FreeTrajOpts,
 ): FreeTrajResult {
   const total = Math.max(0, Math.floor(opts.iterations));
-  const opt = createOptimiser(track, corridor, params, { init: opts.init, rider: opts.rider });
+  const opt = createOptimiser(track, corridor, params, opts);
   opts.onProgress?.(0, opt.lapTimeS);
   let done = 0;
   while (done < total && !opt.converged) {

@@ -594,3 +594,179 @@ Fitted lateral cap at the matched apex, g. "HEAD" is the pre-§7 line (old QP, m
   would cost ~2× (~27 s in the worker).
 - **The fit's alignment on wide-exit lines.** K4/K14 apex matching needs work: the descent's lines have no
   clean |κ| peak at K4.
+
+## 9. Multi-start + soft lateral-g ceiling (2026-10-12, follow-up to §8.6)
+
+**Short answer: partly.** With the penalty on and two starts, the BMW v2 fit puts **every apex under 1.47 g**,
+K12 included (1.78 → 0.99 g). K2/K4/K6 stay under, K4 opens to 150 m, and the lap is 76.66 s (+0.31 s against
+§8). But the K12 number is mostly the fit's apex matching. On that line `alignReference` matches K12 to the
+*exit-side* |κ| peak (centreline 2115 m, R 90 m), not the kerb-side one (2052 m). The penalty's own measure is
+the BMW speed fixed per station × |κ| over K12's kerb → exit. It drops from 1.76 to **1.55 g**, not under 1.47
+g. In the browser, the owner path read from the .dda (not the JSON trace) wins the keep-best. The fit there
+reads K12 **1.59 g**.
+
+### 9.1 Method
+
+- **Soft lateral-g ceiling** (`freeTrajectory.ts`, `FreeTrajStart.latG`, `latGPenaltyS`).
+  - **The objective.** It becomes lap + λ_g · Σ_i max(0, v_ref,i²·|κ_i|/g − a_ceil)² · ds_i.
+    - **κ.** κ is the trial line's own `line.curvature`, the one the fit's `aLatG` uses.
+    - **The ceiling.** a_ceil = min(μ_lat, tan(maxLean·leanUsage)) = 1.40 g (`lateralCeilingG`).
+    - **v_ref.** v_ref is the BMW v2 speed aligned (`alignReference`, the fit's corner matching) on start
+      (a), held fixed per centerline station. Station i is the same cross-section on every line built from
+      offsets.
+  - **Default λ_g.** `LAT_G_PENALTY_DEFAULT` = 0.5 s/(g²·m), so 0.1 g held over 20 m costs 0.1 s.
+  - **When it is on.** `latGPenalty` defaults to on when a reference is given (`refSpeedMs` or `reference`) and
+    off otherwise.
+  - **Without a reference.** The term would use the line's own QSS speed. **It is then zero by construction**:
+    the QSS lateral pass caps v²|κ| at the rider's limit, which is ≤ the ceiling. A unit test checks this.
+  - **What `lapTimeS` reports.** It stays the pure QSS lap; `objective` is the lap plus the penalty.
+- **Multi-start** (`lapTimeLine.ts`, `createLapTimeRun` / `runLapTimeLine`, `LapTimeRunOpts`).
+  - **The starts.** (a) is the fastest κ-line (`lapTimeStart`, as §8). (b) is each line in
+    `warmStarts: Line[]`, the owner's GPS path through `ownerOffsets`. (c), optional, is the min-time line at
+    the rider's κ.
+  - **Each start is its own basin.** Each one runs with `forceInit`, so the κ-line is not compared in again.
+  - **Keep-best.** The run keeps **the fastest QSS lap**, as specified. §9.2 shows what the objective rule would
+    pick.
+  - **Scheduling.** With one or two starts, every start runs to convergence. With three or more, every start
+    gets 8 probe sweeps and then the fastest continues alone.
+  - **Budget.** A 28 s wall-clock budget returns the best line so far and sets `outOfBudget`.
+  - **Knot spacing.** `knotSpacingM` is exposed for the sensitivity run; the bump half-width stays 2× the
+    spacing.
+- **Browser.**
+  - **The owner path.** `ownerOffsets` moved to `src/sim/ownerOffsets.ts`; `scripts/lib` re-exports it.
+    `optimiseLine` (store) collects the extras through `lapTimeContext`.
+    - **Reference.** The reference is picked as "Fit to reference" picks it.
+    - **Owner path.** It is the reference lap when that is a recorded GPS lap. Otherwise it is the best lap of
+      the first recorded session with `gps_lon`/`gps_lat`.
+  - **Runner and worker.** The runner passes the owner path as offsets plus the `Reference`. The worker runs
+    `createLapTimeRun` one sweep per macrotask.
+  - **Progress and panel.** Progress carries `start k/n` and a label. The panel shows "start 2/2 (owner path) ·
+    52 %", then "kept owner path of 2 starts · lateral-g penalty vs BMW v2 · 25.8 s".
+  - **Cache.** The exact cache key gains a variant: the warm-start hashes, the reference and λ.
+
+### 9.2 Serres results (`scripts/lap-time-multistart.ts`, Node, pist Serres, 1000 preset, κ 0, kerb 1.0; BMW v2 fit on `buildLine` with the 0.4 m wander)
+
+Owner path = Ducati Run036 lap 6 from the JSON trace (`analyseRun`), as in §8.
+
+| | single start (§8) | multi-start a,b | multi-start a,b + penalty (**shipped**) | multi-start a,b,c (probe 8) + penalty |
+|---|---|---|---|---|
+| K2 g (apex) | 1.45 | 1.45 | **1.41** | 1.54 |
+| K4 g (apex) | 1.41 | 1.41 | **1.33** | 1.42 |
+| K6 g (apex) | 1.13 | 1.13 | **1.15** | 1.08 |
+| K12 g (apex) | 1.78 | 1.78 | **0.99** | 1.53 |
+| K12 zone peak g (exit) | 1.83 | 1.83 | **0.99** | 1.53 |
+| K12 fit apex at centreline s, m | 2052 | 2052 | **2115** | 2052 |
+| K12 demand at the fixed v_ref, max over s 2030–2160 m, g | 1.76 | 1.76 | **1.55** | 1.43 |
+| K4 radius at apex, m | 142 | 142 | **150** | 157 |
+| QSS lap (no wander), s | 76.344 | 76.344 | **76.657** | 76.808 |
+| kept start | κ-line | κ-line | κ-line | owner (out of budget) |
+| apexes over 1.47 g | K12 | K12 | **none** | K2, K12 |
+| BMW fit lap / ref-on-line, s | 81.85 / 80.43 | 81.85 / 80.43 | 82.23 / 80.91 | 81.23 / 80.10 |
+| run time (Node), s | 12.9 | 26.3 | **27.0** | 28.5 (budget) |
+
+**Each start run to convergence** (the `--only diag` run; QSS lap / fit K12 apex / fixed-v_ref K12 demand):
+
+| start | no penalty | penalty λ 0.5 |
+|---|---|---|
+| (a) κ-line | 76.344 s / 1.78 g / 1.76 g, 26 sweeps, 12.6 s | 76.657 s / 0.99 g / 1.55 g, 26 sweeps, 13.3 s |
+| (b) owner path | 76.766 s / 1.73 g / —, 23 sweeps, 13.2 s | 76.686 s / 1.53 g / 1.43 g, 25 sweeps, 12.5 s |
+| (c) min-time | 77.241 s / 1.76 g / —, 31 sweeps, 14.9 s | 77.812 s / 1.54 g / —, 30 sweeps, 14.3 s |
+
+**Reading**
+
+- **The multi-start alone changes nothing** on this setup. The κ-line start is still the fastest
+  (76.34 against 76.77 and 77.24 s), so the start-dependence of §8 is now *bounded* rather than removed.
+  - **Start (c).** The min-time start is the slowest in every run.
+  - **The budget.** Its 8 probe sweeps cost ~10 s per start, because the early sweeps are the expensive ones.
+    Three starts do not fit 28 s, so (c) stays optional and off by default.
+- **The penalty works on the corners it can see.**
+  - **K12 measured at the fixed v_ref.** It falls from 1.76 to 1.55 g from the κ-line start, and to 1.43 g
+    from the owner's.
+  - **The cost.** It costs the κ-line start 0.31 s. It gains the owner start 0.08 s, because the descent is
+    local and the penalty steers it into another basin.
+  - **K2, K4 and K6.** They stay under 1.47 g; K4 opens further, to 150 m.
+- **The fit's K12 = 0.99 g is an alignment artefact, not the corner.** The penalised κ-line straightens the
+  kerb-side part of K12 (R 53 → 61 m at 2060 m). `findCorners` then matches K12's apex 63 m later, on the
+  exit-side peak.
+  - **What that does to the speed.** The BMW's 106 km/h apex speed is put there, against the 132 km/h the
+    fixed alignment has at that station.
+  - **Where the demand really is.** On the fixed v_ref the line still asks 1.48–1.54 g between 2060 and
+    2131 m. The "every apex ≤ 1.47 g" test therefore passes on the fit, and the new K12-demand test is red
+    (1.55 g).
+- **Keep-best rule.** With keep-best by QSS lap, the κ-line + penalty line is kept (76.657 against 76.686 s).
+  Keep-best by objective (lap + penalty: 76.735 against 76.713 s) would keep the owner start's line: fit K12
+  1.53 g, demand 1.43 g. The difference is 0.03 s either way.
+
+**λ sensitivity** (a,b, run to convergence; kept = fastest lap):
+
+| λ_g, s/(g²·m) | kept | lap, s | fit K2 / K4 / K6 / K12, g | K12 fixed-v_ref demand, g | K4 R, m |
+|---|---|---|---|---|---|
+| 0.2 | owner | 76.522 | 1.47 / 1.51 / 1.08 / 1.58 | 1.47 | 134 |
+| **0.5** | κ-line | 76.657 | 1.41 / 1.33 / 1.15 / **0.99** | 1.55 | 150 |
+| 2.0 | owner | 76.458 | 1.54 / 1.52 / 1.13 / 1.53 | 1.43 | 132 |
+
+The fit's per-corner g is **not monotonic in λ**. Which start wins flips, and the alignment re-matches K4 and
+K12 differently on every line. The fixed-v_ref demand is the steadier measure (1.43–1.55 g).
+
+### 9.3 Sensitivity: 10 m control spacing (a,b + penalty, no budget)
+
+| | 20 m (shipped) | 10 m |
+|---|---|---|
+| kept | κ-line | κ-line |
+| QSS lap, s | 76.657 | **76.026** |
+| K2 / K4 / K6 g | 1.41 / 1.33 / 1.15 | 1.54 / 1.49 / 1.17 |
+| K12 apex / zone peak g (fit apex at) | 0.99 / 0.99 (2115 m) | 1.64 / 1.64 (2048 m) |
+| K12 fixed-v_ref demand, g | 1.55 | 1.52 |
+| K4 radius, m | 150 | 143 |
+| over 1.47 g | none | K2, K3, K4, K12 |
+| run time (Node), s | 27.0 | **49.6** (25.7 + 23.4) |
+
+- **K12 changes.** The fit moves back to the kerb-side peak, at 1.64 g. The fixed demand barely moves (1.52 g).
+- **The lap.** It gains 0.63 s, but the line puts K2/K3/K4 over 1.47 g. This is the §8.1 caveat again: finer
+  bumps buy curvature that the 20 m stencil only half sees.
+- **Runtime.** It does **not** stay under 30 s (49.6 s), so 20 m stays.
+
+### 9.4 Browser (`tests/e2e/lapTimeLine.spec.ts`, Playwright, BMW v2 + Run036.dda loaded, κ 0, kerb 1.0)
+
+- **The run.** Optimise line takes **26.0–26.5 s** from click to done; the worker reports 25.8–25.9 s. Start
+  2/2 begins at 15.0 s. The lap goes 1:23.61 → 1:17.07 (rider mode, with wander).
+- **The starts.**
+  - **κ-line.** 76.657 s, identical to Node.
+  - **Owner path.** 76.488 s, so the **owner path is kept**. It is read from the .dda session's Float32
+    `gps_lon/lat` on the browser's lap 6 slice, not from the JSON trace, and it descends into another basin.
+- **The fit on it.** K2 1.45, K4 1.37, K6 1.08, **K12 1.59 g** (zone 1.59). The fit laps 1:22.23 against
+  1:19.81.
+- **Screenshots** (`scratchpad/k12/`):
+  - **K12.** `lt-map-K12.png`: K11 → K12 → exit; purple = optimised, blue = owner lap 6.
+  - **The rest.** `lt-map-K12-exit.png`, `lt-map-K2-K4.png`, `lt-01-progress.png`,
+    `lt-01b-progress-start2.png` ("start 2/2 (owner path) · 52 %"), `lt-02-done.png` and `lt-03-fit.png`.
+
+### 9.5 Tests
+
+- **`simLapTimeSerres`.** It now runs multi-start (κ-line + owner, when the gitignored Run036 is present) with
+  the penalty. The run has no budget cut, so a loaded runner still converges.
+  - **What passes.** Every start converges. The run beats κ 0.85 by > 1 s (76.66 against 80.50 s), K4 is
+    ≥ 130 m (150 m), and the K12 zone is < 2 g.
+  - **"Every apex ≤ 1.47 g (no exceptions)" passes.** The exception list is now empty, so the "except K12"
+    test merged into it.
+  - **New, red by design.** "K12 kerb → exit demand at the reference speed ≤ 1.47 g" fails at 1.554 g.
+- **`simFreeTrajectory` (+5).**
+  - **`forceInit`.** It starts from the init alone.
+  - **`latGPenaltyS`.** 0.1 g over 20 m ≈ 0.1 s, and the term is zero on the QSS speed.
+  - **The objective.** The objective is lap + penalty, and `lapTimeS` is the pure lap.
+  - **Multi-start.** It keeps the fastest lap and reports "1/2 κ-line", "2/2 owner path".
+  - **Budget.** The run stops at the time budget.
+- **`simFitRider`.** The comment is updated; the v2 κ 0 min-curvature K2/K4/K6 exception test is unchanged.
+- **Suite and typecheck.** The suite has 712 passing and 3 red by design: the two literal v1 BMW tests, and the
+  K12-demand test above. Typecheck is clean for `tsconfig.app.json`, `tsconfig.json` and
+  `scripts/tsconfig.json`.
+
+### 9.6 Next
+
+- **Measure K12 against a fixed alignment.** The fit re-aligns the reference to every line, and on wide-exit
+  lines K4/K12 apex matching jumps between |κ| peaks (§8.6 third item). Until it is pinned, the fit's per-corner
+  g on descent lines is not a reliable ceiling check. Two options: pin the fit's alignment to the start line's,
+  or report the fixed-v_ref demand next to it.
+- **Get K12 under 1.47 g at the fixed v_ref.** A hard(er) ceiling would do it: λ ≥ 2 on K12 alone, or an
+  exact-penalty |excess| term. The quadratic leaves 0.1–0.15 g of residual, which the lap time buys back.
+- **`fit-reference.ts --line-mode lap-time`.** `scripts/lib/fitLines.ts` still runs the §8 single start.

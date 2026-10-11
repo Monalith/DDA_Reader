@@ -419,9 +419,11 @@ describe('fitRider on the corrected BMW lap (v2) on the pist κ 0 kerb 1.0 race 
     for (const c of fit.corners) if (!EXCEPT.has(c.name)) expect(c.aLatG, c.name).toBeLessThanOrEqual(LIMIT_G);
   });
 
-  // The red-by-design "no exceptions" assertion moved to the lap-time line
-  // (tests/unit/simLapTimeSerres.test.ts, pist-line note §8), which clears
-  // K2, K4 and K6 and leaves K12.
+  // The "no exceptions" assertion moved to the lap-time line
+  // (tests/unit/simLapTimeSerres.test.ts, pist-line note §8-9): the single-start
+  // line cleared K2, K4 and K6 and left K12 (1.78 g); multi-start + the soft
+  // lateral-g penalty clears K12 on the fit (its red-by-design companion there
+  // is the K12 demand at the fixed reference speed, ~1.55 g).
 });
 
 describe('alignReference peak merge (opt-in)', () => {

@@ -159,6 +159,8 @@ export default function SimPanel() {
   const lineOptBusy = useLab((s) => s.simLineOptBusy);
   const lineOptProgress = useLab((s) => s.simLineOptProgress);
   const lineOptLap = useLab((s) => s.simLineOptLapTimeS);
+  const lineOptStage = useLab((s) => s.simLineOptStage);
+  const lineOptInfo = useLab((s) => s.simLineOptInfo);
   const optimiseLine = useLab((s) => s.optimiseLine);
   const track = useLab((s) => activeTrack(s));
   // re-read on every render: the status depends on a module cache the store does not hold
@@ -469,7 +471,7 @@ export default function SimPanel() {
               className="btn"
               data-testid="sim-optimise-line"
               disabled={lineOptBusy || typeof Worker === 'undefined' || !track}
-              title="Optimise the line directly for this rider's lap time (free-trajectory descent from the fastest κ-line, ~10-20 s in the background), then ride it: Line objective → Lap time."
+              title="Optimise the line directly for this rider's lap time (free-trajectory descent from the fastest κ-line and, when a recorded lap with GPS is loaded, from that path too; the fastest is kept; ≤ 30 s in the background), then ride it: Line objective → Lap time. With a reference lap loaded, corners where the reference speed on the line would need more lateral g than the ceiling are penalised."
               onClick={() => void optimiseLine(lapTimeLineRunner)}
             >
               {lineOptBusy ? 'Optimising…' : 'Optimise line'}
@@ -482,7 +484,7 @@ export default function SimPanel() {
             )}
             <span className="sim-line-opt-status num" data-testid="sim-line-opt-status" role="status">
               {lineOptBusy
-                ? `${Math.round(lineOptProgress * 100)} %`
+                ? `${lineOptStage ? `start ${lineOptStage.start}/${lineOptStage.starts} (${lineOptStage.label}) · ` : ''}${Math.round(lineOptProgress * 100)} %`
                 : (params.rider.lineMode ?? 'min-time') !== 'lap-time'
                   ? ltStatus === 'none' ? '' : 'optimised line ready'
                   : ltStatus === 'none'
@@ -491,6 +493,14 @@ export default function SimPanel() {
                       ? 'rider changed since: press Optimise line again'
                       : lineOptLap != null ? `optimised (${fmtLapTime(lineOptLap)})` : 'optimised'}
             </span>
+            {!lineOptBusy && lineOptInfo?.kept && (
+              <span className="sim-line-opt-status num" data-testid="sim-line-opt-info">
+                kept {lineOptInfo.kept} of {lineOptInfo.starts.length} start{lineOptInfo.starts.length === 1 ? '' : 's'}
+                {lineOptInfo.reference ? ` · lateral-g penalty vs ${lineOptInfo.reference}` : ''}
+                {lineOptInfo.ms != null ? ` · ${(lineOptInfo.ms / 1000).toFixed(1)} s` : ''}
+                {lineOptInfo.outOfBudget ? ' (stopped at the time budget)' : ''}
+              </span>
+            )}
           </div>
           <Slider label="Line style (C↔V)" value={params.rider.kappa} min={0} max={1} step={0.01}
             testId="sim-kappa" onChange={(v) => debouncedSetSimParams({ rider: { kappa: v } })} />

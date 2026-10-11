@@ -390,4 +390,26 @@ describe('corridor JSON export / import', () => {
     expect(useLab.getState().importCorridorJson('{"version":2,"centerline":[]}')).toBe(false);
     expect(useLab.getState().statusMessage).toMatch(/Track model import/);
   });
+
+  it('keeps the track model corridor on Extract and reveals the line layers when the rider is enabled', async () => {
+    const { useLab } = await import('../../src/state/store');
+    const fs = await import('node:fs');
+    const text = fs.readFileSync(new URL('../../public/tracks/serres.pist.json', import.meta.url), 'utf8');
+    useLab.setState({ tracks: [], activeTrackId: undefined, trackPackage: undefined, corridor: undefined, sessions: [], simEnabled: false });
+    expect(useLab.getState().importCorridorJson(text)).toBe(true);
+    const before = useLab.getState().corridor!;
+    useLab.setState({ corridor: undefined });
+    await useLab.getState().extractCorridorNow();
+    const st = useLab.getState();
+    expect(st.corridor?.known.filter(Boolean).length).toBe(before.known.filter(Boolean).length);
+    expect(st.statusMessage).toMatch(/comes from the track model/);
+    // enabling the rider needs no session on a track model, and shows its layers
+    useLab.getState().setWorkspace({ mapLayers: { ...st.workspace.mapLayers, idealLine: false, corridor: false } });
+    useLab.getState().setSimEnabled(true);
+    const on = useLab.getState();
+    expect(on.simLine).toBeDefined();
+    expect(on.simLapTimeS).toBeGreaterThan(60);
+    expect(on.workspace.mapLayers.idealLine).toBe(true);
+    expect(on.workspace.mapLayers.corridor).toBe(true);
+  });
 });

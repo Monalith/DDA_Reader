@@ -909,6 +909,17 @@ export const useLab = create<LabState>((set, get) => ({
       set({ statusMessage: 'Load a session first — the corridor is extracted along its track.' });
       return;
     }
+    // a .pist.json track model carries surveyed asphalt edges: they ARE the
+    // corridor, nothing stored or extracted from GPS may replace them
+    if (st.trackPackage && track.id.startsWith('pist-')) {
+      const c = corridorFromPist(st.trackPackage, track);
+      if (c) {
+        const pct = Math.round((100 * c.known.filter(Boolean).length) / c.known.length);
+        set({ corridor: c, statusMessage: `Corridor comes from the track model "${st.trackPackage.name}" (${pct} % resolved) — nothing to extract.` });
+        if (get().simEnabled) runSim(set, get);
+        return;
+      }
+    }
     // the server already has one for this exact centerline: use it, fetch nothing
     const stored = await fetchCorridor(track);
     if (stored) {
@@ -976,7 +987,16 @@ export const useLab = create<LabState>((set, get) => ({
       }));
       return;
     }
-    set({ simEnabled: true });
+    // the rider's line and corridor are what the user switched on to see:
+    // reveal those map layers (they start hidden) instead of asking for a
+    // second click in the Layers menu
+    const ws = get().workspace;
+    const ml = ws.mapLayers;
+    const simEnabledPatch: Partial<LabState> = { simEnabled: true };
+    if (ml.idealLine === false || ml.corridor === false) {
+      simEnabledPatch.workspace = { ...ws, mapLayers: { ...ml, idealLine: true, corridor: true } };
+    }
+    set(simEnabledPatch);
     runSim(set, get);
   },
   setSimParams(patch) {

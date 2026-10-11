@@ -12,7 +12,7 @@ import { browserTileLoader } from '../sim/browserTiles';
 import { CorridorError, extractCorridor } from '../sim/corridor';
 import { fetchCorridor, putCorridor } from '../sim/corridorService';
 import { deserializeCorridor, serializeCorridor } from '../sim/corridorCache';
-import { corridorFromPist, trackFromPist, type PistPackage } from '../core/pistPackage';
+import { corridorFromPist, parsePistPackage, trackFromPist, type PistPackage } from '../core/pistPackage';
 import { buildMosaic, SAT_ZOOM, tileRangeFor } from '../sim/tiles';
 import { simulate } from '../sim';
 import { DERIVED_KEYS, deriveRider } from '../sim/derive';
@@ -21,7 +21,7 @@ import { gripRiskMessage } from '../sim/risk';
 import type { Corner, Corridor, DerivedRiderKey, Line, SimParams, SolverMode } from '../sim/types';
 
 /** The two optimal solver modes (spec v2 §2.10). */
-export type OptimalMode = Exclude<SolverMode, 'rider'>;
+export type OptimalMode = Exclude<SolverMode, 'rider' | 'fit'>;
 
 /**
  * An optimal solver, injected so a node test can drive `runOptimal` without a
@@ -857,16 +857,27 @@ export const useLab = create<LabState>((set, get) => ({
     return JSON.stringify(serializeCorridor(track, st.corridor));
   },
   importCorridorJson(text) {
-    const track = activeTrack(get());
-    if (!track) {
-      set({ statusMessage: 'Load a session first — a corridor belongs to its track.' });
-      return false;
-    }
     let raw: unknown;
     try {
       raw = JSON.parse(text);
     } catch {
       set({ statusMessage: 'Corridor import: not valid JSON.' });
+      return false;
+    }
+    // A `.pist.json` track model carries its own track AND corridor: it needs
+    // no session loaded, and becomes the active track the rider runs on.
+    if (raw && typeof raw === 'object' && (raw as { version?: unknown }).version === 2 && Array.isArray((raw as { centerline?: unknown }).centerline)) {
+      try {
+        get().applyTrackPackage(parsePistPackage(text));
+        return true;
+      } catch (e) {
+        set({ statusMessage: `Track model import: ${(e as Error).message}` });
+        return false;
+      }
+    }
+    const track = activeTrack(get());
+    if (!track) {
+      set({ statusMessage: 'Load a session or a .pist.json track model first — a corridor belongs to its track.' });
       return false;
     }
     const corridor = deserializeCorridor(track, raw);

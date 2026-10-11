@@ -134,6 +134,7 @@ export default function SimPanel() {
   const exportCorridorJson = useLab((s) => s.exportCorridorJson);
   const importCorridorJson = useLab((s) => s.importCorridorJson);
   const corridorFileRef = useRef<HTMLInputElement>(null);
+  const trackPackage = useLab((s) => s.trackPackage);
   const corridorToken = useLab((s) => s.corridorToken);
   const setCorridorToken = useLab((s) => s.setCorridorToken);
   const params = useLab((s) => s.simParams);
@@ -245,6 +246,11 @@ export default function SimPanel() {
             {corners.length} corners · {brakeCount} brake
           </span>
         )}
+        {trackPackage && (
+          <span className="panel-note" data-testid="sim-track-model" title="The imported .pist.json track model the rider runs on">
+            track: {trackPackage.name}
+          </span>
+        )}
         <span className="bp-spacer" />
         <button data-testid="sim-extract" disabled={busy} onClick={() => void extract()}>
           {busy ? 'Extracting…' : 'Extract corridor'}
@@ -278,7 +284,11 @@ export default function SimPanel() {
         >
           ⤓ JSON
         </button>
-        <button data-testid="sim-corridor-import" title="Import a corridor JSON for the loaded circuit" onClick={() => corridorFileRef.current?.click()}>
+        <button
+          data-testid="sim-corridor-import"
+          title="Import a .pist.json track model (becomes the track the rider runs on) or a corridor JSON for the loaded circuit"
+          onClick={() => corridorFileRef.current?.click()}
+        >
           ⤒ JSON
         </button>
         <input

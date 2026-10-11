@@ -374,4 +374,20 @@ describe('corridor JSON export / import', () => {
     expect(useLab.getState().importCorridorJson('{"version":1}')).toBe(false);
     expect(useLab.getState().importCorridorJson('not json')).toBe(false);
   });
+
+  it('accepts a .pist.json track model through the same import, with no session loaded', async () => {
+    const { useLab } = await import('../../src/state/store');
+    const fs = await import('node:fs');
+    const text = fs.readFileSync(new URL('../../public/tracks/serres.pist.json', import.meta.url), 'utf8');
+    useLab.setState({ tracks: [], activeTrackId: undefined, trackPackage: undefined, corridor: undefined, sessions: [] });
+    expect(useLab.getState().importCorridorJson(text)).toBe(true);
+    const st = useLab.getState();
+    expect(st.trackPackage?.name).toBeTruthy();
+    expect(st.activeTrackId).toMatch(/^pist-/);
+    expect(st.corridor).toBeDefined();
+    expect(st.statusMessage).toMatch(/Track model/);
+    // a malformed package reports, not throws
+    expect(useLab.getState().importCorridorJson('{"version":2,"centerline":[]}')).toBe(false);
+    expect(useLab.getState().statusMessage).toMatch(/Track model import/);
+  });
 });

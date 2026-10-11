@@ -33,6 +33,7 @@ import {
 } from './MapLayers';
 import { mapBus } from './mapBus';
 import SchemaImport from './SchemaImport';
+import MapTextControls from './MapTextControls';
 import { EXAMPLES, fetchExampleFile } from '../core/examples';
 import { openFiles } from './openFiles';
 
@@ -144,6 +145,7 @@ export default function MapView() {
   const [ready, setReady] = useState(false);
   const [basemap, setBasemap] = useState<Basemap>('satellite');
   const [layersOpen, setLayersOpen] = useState(false);
+  const [textOpen, setTextOpen] = useState(false);
   const [measure, setMeasure] = useState(false);
   const [measurePts, setMeasurePts] = useState<LngLat[]>([]);
   const [gateEdit, setGateEdit] = useState(false);
@@ -557,15 +559,28 @@ export default function MapView() {
     const ts = turnLabels.turnSize ?? DEFAULT_TURN_LABELS.turnSize!;
     const tc = turnLabels.turnColor ?? DEFAULT_TURN_LABELS.turnColor!;
     const ps = turnLabels.pointSize ?? DEFAULT_TURN_LABELS.pointSize!;
+    const es = turnLabels.eventSize ?? 11;
+    const ec = turnLabels.eventColor ?? '#ffffff';
     if (map.getLayer('markers-turn')) {
       map.setLayoutProperty('markers-turn', 'text-size', zoomRadius(Math.max(8, ts - 2), ts + 5));
       map.setPaintProperty('markers-turn', 'text-color', tc);
     }
-    for (const kind of ['apex', 'turnin', 'brake', 'throttle']) {
-      const id = `markers-${kind}-label`;
-      if (map.getLayer(id)) map.setLayoutProperty(id, 'text-size', zoomRadius(Math.max(8, ps - 1), ps + 3));
+    // the track model's corner names follow the turn-name style
+    if (map.getLayer('pist-corner-label')) {
+      map.setLayoutProperty('pist-corner-label', 'text-size', zoomRadius(Math.max(8, ts - 4), ts + 2));
+      map.setPaintProperty('pist-corner-label', 'text-color', tc);
     }
-  }, [ready, turnLabels.turnSize, turnLabels.turnColor, turnLabels.pointSize]);
+    for (const [kind, own] of POINT_LABEL_COLOURS) {
+      const id = `markers-${kind}-label`;
+      if (!map.getLayer(id)) continue;
+      map.setLayoutProperty(id, 'text-size', zoomRadius(Math.max(8, ps - 1), ps + 3));
+      map.setPaintProperty(id, 'text-color', turnLabels.pointColor ?? own);
+    }
+    if (map.getLayer('corner-events-label')) {
+      map.setLayoutProperty('corner-events-label', 'text-size', zoomRadius(Math.max(8, es - 2), es + 3));
+      map.setPaintProperty('corner-events-label', 'text-color', ec);
+    }
+  }, [ready, turnLabels.turnSize, turnLabels.turnColor, turnLabels.pointSize, turnLabels.pointColor, turnLabels.eventSize, turnLabels.eventColor]);
 
   // ---------- user data markers (pins with the marker name) ----------
   useEffect(() => {
@@ -649,6 +664,7 @@ export default function MapView() {
       if (e.key !== 'Escape') return;
       clearMeasure();
       setLayersOpen(false);
+      setTextOpen(false);
       setStartLineMode(false);
       setStartLineMsg(null);
     };
@@ -925,9 +941,17 @@ export default function MapView() {
         <span className="map-spacer" />
 
         <button
+          className={`map-btn ${textOpen ? 'active' : ''}`}
+          data-testid="map-text"
+          onClick={() => { setTextOpen((v) => !v); setLayersOpen(false); }}
+          title="Size and colour of the texts on the map"
+        >
+          Aa
+        </button>
+        <button
           className={`map-btn ${layersOpen ? 'active' : ''}`}
           data-testid="map-layers"
-          onClick={() => setLayersOpen((v) => !v)}
+          onClick={() => { setLayersOpen((v) => !v); setTextOpen(false); }}
         >
           Layers
         </button>
@@ -940,6 +964,13 @@ export default function MapView() {
           {maximized ? '⤡' : '⤢'}
         </button>
       </div>
+
+      {textOpen && (
+        <div className="map-pop map-pop-wide" data-testid="map-text-pop">
+          <div className="ps-section">Map text</div>
+          <MapTextControls turnLabels={turnLabels} setTurnLabels={(patch) => setWorkspace({ turnLabels: { ...turnLabels, ...patch } })} deltas />
+        </div>
+      )}
 
       {layersOpen && (
         <div className="map-pop" data-testid="map-layers-pop">
@@ -977,6 +1008,9 @@ export default function MapView() {
 }
 
 // ---------------------------------------------------------------- helpers
+
+/** the km/h point labels' own colours (apex, turn-in, brake, throttle), unless one colour is chosen */
+const POINT_LABEL_COLOURS = [['apex', '#ffffff'], ['turnin', '#ffd166'], ['brake', '#ff6b6b'], ['throttle', '#3ddc84']] as const;
 
 function setVis(map: maplibregl.Map, id: string, on: boolean): void {
   if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');
@@ -1289,7 +1323,7 @@ function addDataLayers(map: maplibregl.Map): void {
   });
 
   // speed labels (km/h) next to the apex / turn-in / brake / throttle points
-  for (const [kind, color] of [['apex', '#ffffff'], ['turnin', '#ffd166'], ['brake', '#ff6b6b'], ['throttle', '#3ddc84']] as const) {
+  for (const [kind, color] of POINT_LABEL_COLOURS) {
     map.addLayer({
       id: `markers-${kind}-label`,
       type: 'symbol',

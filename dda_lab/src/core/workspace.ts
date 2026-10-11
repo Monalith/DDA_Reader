@@ -59,8 +59,11 @@ const WorkspaceObject = z.object({
       turnSize: z.number().min(8).max(32).optional(),
       turnColor: z.string().optional(),
       pointSize: z.number().min(8).max(28).optional(),
+      pointColor: z.string().optional(),
+      eventSize: z.number().min(8).max(28).optional(),
+      eventColor: z.string().optional(),
     })
-    .default(() => clone(DEFAULT_TURN_LABELS) as Required<Pick<TurnLabelStyle, 'show' | 'size' | 'gain' | 'loss' | 'best'>> & { onMap: boolean; speed: boolean; turnSize?: number; turnColor?: string; pointSize?: number }),
+    .default(() => clone(DEFAULT_TURN_LABELS) as Required<Pick<TurnLabelStyle, 'show' | 'size' | 'gain' | 'loss' | 'best'>> & { onMap: boolean; speed: boolean; turnSize?: number; turnColor?: string; pointSize?: number; pointColor?: string; eventSize?: number; eventColor?: string }),
 });
 
 export const WorkspaceSchema = WorkspaceObject as unknown as z.ZodType<Workspace>;

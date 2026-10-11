@@ -205,6 +205,11 @@ export interface TurnLabelStyle {
   turnColor?: string;
   /** km/h labels next to apex / brake / throttle points */
   pointSize?: number;
+  /** one colour for every km/h point label; unset = each kind keeps its own (apex white, brake red…) */
+  pointColor?: string;
+  /** B / T / A / P / E corner-event letters of the virtual rider */
+  eventSize?: number;
+  eventColor?: string;
 }
 
 export const DEFAULT_TURN_LABELS: TurnLabelStyle = { show: false, onMap: true, speed: true, size: 16, gain: '#00e676', loss: '#ff3d57', best: '#ffffff', turnSize: 15, turnColor: '#ffd166', pointSize: 13 };

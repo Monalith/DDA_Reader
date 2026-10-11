@@ -327,3 +327,11 @@
 }
 .data-marker.on { outline: 2px solid #ffffff; }
 .examples-select { color: var(--accent, #ff6a00); font-weight: 600; }
+
+/* the "Aa" map-text popover: wide enough for a slider + colour per row */
+.map-pop-wide { min-width: 330px; }
+.map-pop-wide .ps-row { display: flex; align-items: center; gap: 6px; padding: 3px 0; }
+.map-pop-wide .ps-row input[type='range'] { flex: 1; min-width: 90px; }
+.map-pop-wide input[type='color'] { width: 30px; height: 20px; padding: 0; border: 1px solid var(--border, #262d37); background: transparent; }
+.map-pop-wide .ps-section { font-weight: 600; margin-bottom: 4px; }
+.map-pop-wide label { text-transform: none; }

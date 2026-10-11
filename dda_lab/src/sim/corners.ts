@@ -66,6 +66,15 @@ const MERGE_DRIVE_FRAC = 0.5;
  */
 const APEX_DWELL_S = 1.0;
 
+/**
+ * The short-straight merge only applies while the speed between the two
+ * apexes stays within this fraction of the slower apex speed. Source: none
+ * measured — öneri, set between the synthetic 60 m chicane (6.6 m/s over
+ * 28 m/s = 0.23, one section by the plan's own test) and Serres' last S
+ * (15.8 over 31.7 = 0.50, which a rider brakes into twice). W4 calibrates.
+ */
+const MERGE_MAX_RISE_FRAC = 0.3;
+
 export interface CornerOpts {
   /** Turn-in/exit curvature fraction, default `K_FRAC` (0.25). */
   kFrac?: number;
@@ -203,6 +212,11 @@ export function findCorners(line: Line, v: Float32Array, params: SimParams, opts
   // after it apart (the sweeper's 57 m/s would ask for 250 m of straight) and
   // puts a 60 m chicane's two halves together.
   //
+  // The short-straight rule also needs the speed to stay near the slower
+  // apex in between (`MERGE_MAX_RISE_FRAC`): an S whose middle is a flip of
+  // curvature but where the profile still climbs 15 m/s (Serres' last
+  // complex, 32 → 48 → 32 m/s) is two corners to a rider, not one.
+  //
   // Either way, only when the second apex is NOT a threshold slower than the
   // first: a section has ONE brake, and it ends at the section's first apex
   // (`events.ts`), so a second apex that needs a real brake of its own (the
@@ -221,7 +235,8 @@ export function findCorners(line: Line, v: Float32Array, params: SimParams, opts
       let straight = 0;
       for (let i = nx(a); i !== b; i = nx(i)) if (kAbs[i] < kThr) straight += ds[i];
       const noSecondBrake = v[b] >= v[a] - thrAt(v[a]);
-      mergeNext[k] = noSecondBrake && (rise < thrAt(vHi) || straight < (vLo * vLo) / (2 * aDrive));
+      const noRoom = straight < (vLo * vLo) / (2 * aDrive) && rise < MERGE_MAX_RISE_FRAC * vLo;
+      mergeNext[k] = noSecondBrake && (rise < thrAt(vHi) || noRoom);
     }
   }
   // groups of consecutive kept minima (cyclic): start a group after every non-merge

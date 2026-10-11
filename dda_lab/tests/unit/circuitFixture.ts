@@ -2,7 +2,10 @@
 // of a *.test.ts file so that importing it does not re-register that file's
 // suites in every test file that needs the fixture.
 import type { LngLat, TrackModel } from '../../src/core/types';
-import type { Corridor } from '../../src/sim/types';
+import type { Corridor, Line, SimParams } from '../../src/sim/types';
+import type { EventCaps } from '../../src/sim/events';
+import { G, brakeShare, lossDecelMs2 } from '../../src/sim/solver';
+import { clampParams } from '../../src/sim/presets';
 
 /** Named segments of `circuitTrack`, in order. */
 export const CIRCUIT_SEGMENTS = {
@@ -186,6 +189,33 @@ export function chicaneTrack(halfWidthM = 6, dsM = 2, jitterM = 0): TrackAndPart
     'chicane',
     'synthetic chicane',
   );
+}
+
+/**
+ * `EventCaps` built the way the CURRENT (v1) solver's passes build them, from
+ * `params.tyre.mu`, `brakeShare` and `lossDecelMs2`. W1's `brakeCapMs2` /
+ * `driveCapMs2` are deliberately not imported (written in parallel; index.ts
+ * wires the real ones). Mirroring the solver keeps the event template inside
+ * the QSS envelope it is clipped against.
+ */
+export function testCaps(line: Line, params: SimParams): EventCaps {
+  const p = clampParams(params);
+  const mu = p.tyre.mu * p.tyre.gripScale;
+  const aLatMax = Math.max(0.1, Math.min(mu, Math.tan((p.tyre.maxLeanDeg * p.rider.leanUsage * Math.PI) / 180)) * G);
+  const aBrakeMax = Math.max(0.1, Math.min(p.rider.brakingG, mu) * G);
+  const aWheelie = (G * p.machine.wheelbaseM) / (2 * p.machine.cgHeightM);
+  const power = p.machine.powerKw * 1000;
+  const latUse = (i: number, v: number): number => Math.min(1, (v * v * Math.abs(line.curvature[i])) / aLatMax);
+  return {
+    brakeCapMs2: (i, v) => aBrakeMax * brakeShare(latUse(i, v), p.rider.trailBrakeDepth, p.rider.trailBrakeProfile),
+    driveCapMs2: (i, v) => {
+      const u = latUse(i, v);
+      const ellipse = Math.sqrt(Math.max(0, 1 - u * u));
+      const tc = 1 - (1 - (0.55 + 0.45 * p.rider.tcThreshold)) * u;
+      return Math.min(power / (p.machine.massKg * Math.max(2, v)), mu * G * ellipse * tc, aWheelie);
+    },
+    lossDecelMs2: (v) => lossDecelMs2(p.machine, v),
+  };
 }
 
 /** Indices of one named segment of `circuitTrack`. */

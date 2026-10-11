@@ -3,6 +3,7 @@ import { GRIP_WARN, gripRiskMessage } from '../../src/sim/risk';
 import { solve } from '../../src/sim/solver';
 import { buildLine } from '../../src/sim/line';
 import { clampParams, DEFAULT_SIM_PARAMS, MACHINE_PRESETS, presetById } from '../../src/sim/presets';
+import { deriveRider } from '../../src/sim/derive';
 import { circuitTrack } from './circuitFixture';
 
 const { track, corridor } = circuitTrack(6, 2, 0.25);
@@ -41,6 +42,19 @@ describe('grip risk banner', () => {
     }
   });
 
+  it('does not fire anywhere on the Aggressiveness x Risk grid the store derives', () => {
+    // the app never runs DEFAULT_SIM_PARAMS' explicit rider: the store derives
+    // every rider field from A/R, so that is the configuration to hold quiet
+    for (const a of [0, 0.5, 1]) {
+      for (const r of [0, 0.5, 1]) {
+        const base = clampParams(DEFAULT_SIM_PARAMS);
+        const p = { ...base, rider: deriveRider({ ...base.rider, aggressiveness: a, risk: r }, base.tyre) };
+        const env = solve(buildLine(track, corridor, p), p);
+        expect(gripRiskMessage(env.gripUse, env.gripUsePeak), `A=${a} R=${r}`).toBeNull();
+      }
+    }
+  });
+
   it('fires on a genuinely over-the-limit grip trace, naming the peak and the share of the lap', () => {
     // The solver's own passes cannot produce this any more: braking is
     // friction-limited (I3) and the lateral limit caps v at sqrt(aLatMax*r), so
@@ -59,6 +73,45 @@ describe('grip risk banner', () => {
     // is inert above 0.915 on the default preset
     expect(msg!.toLowerCase()).not.toContain('lean');
     expect(msg!.toLowerCase()).toContain('trail brake depth');
+  });
+
+  it("measures the peak against the rider's own ceiling, not the tyre's", () => {
+    // spec v2 §2.8: gripUse is normalised to μ_eff, so the banner speaks of the
+    // rider's ceiling; without gripUsePeak it does not invent a tyre figure
+    const g = new Float32Array(100).fill(0.5);
+    g[3] = 1.2;
+    const msg = gripRiskMessage(g)!;
+    expect(msg).toContain("120 % of the rider's grip ceiling");
+    expect(msg).not.toContain('of the tyre');
+  });
+
+  it('names both figures when the peak-mu channel is given', () => {
+    const g = new Float32Array(100).fill(0.5);
+    const gp = new Float32Array(100).fill(0.4);
+    g[3] = 1.2;
+    gp[3] = 0.93;
+    const msg = gripRiskMessage(g, gp)!;
+    expect(msg).toContain("120 % of the rider's grip ceiling (93 % of the tyre)");
+    // past the rider's margin but inside the tyre: not a crash warning
+    expect(msg.toLowerCase()).not.toContain('let go');
+    expect(msg.toLowerCase()).toContain('risk');
+  });
+
+  it('warns that the front would let go when the tyre itself is over its peak', () => {
+    const g = new Float32Array(100).fill(0.5);
+    const gp = new Float32Array(100).fill(0.4);
+    g[3] = 1.4;
+    gp[3] = 1.12;
+    const msg = gripRiskMessage(g, gp)!;
+    expect(msg).toContain('(112 % of the tyre)');
+    expect(msg.toLowerCase()).toContain('let go');
+  });
+
+  it('stays quiet on the rider channel alone even if the peak channel is high', () => {
+    // the banner fires on the rider's ceiling; gripUsePeak only qualifies it
+    const g = new Float32Array(10).fill(0.9);
+    const gp = new Float32Array(10).fill(1.3);
+    expect(gripRiskMessage(g, gp)).toBeNull();
   });
 
   it('is quiet for an empty, absent or all-NaN channel rather than reporting 0 %', () => {

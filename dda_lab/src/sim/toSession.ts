@@ -78,6 +78,10 @@ export function toSession(
   channels.set('dtc', channel('dtc', '%', onTimeGrid(ch.dtc, srcT, t)));
   // 1.0 = the tyre is exactly at its limit; above that is a fall, not a lap
   channels.set('grip_use', channel('grip_use', '', onTimeGrid(env.gripUse, srcT, t)));
+  // v2 (spec §2.8): grip_use is against the RIDER's allowed-slip ceiling;
+  // this one is against the tyre's peak, so the two together say how much
+  // margin the rider left
+  if (env.gripUsePeak) channels.set('grip_use_peak', channel('grip_use_peak', '', onTimeGrid(env.gripUsePeak, srcT, t)));
   channels.set('gear', channel('gear', '', onTimeGridStep(ch.gear, srcT, t)));
   channels.set(
     'lap_dist',

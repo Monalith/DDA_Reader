@@ -366,3 +366,233 @@ def test_corridor_get_self_heals_a_corrupted_file(corridor_client):
     r = corridor_client.get("/corridors/serres-23518-41073")
     assert r.status_code == 404
     assert not path.exists()
+
+
+# --------------------------------------------------------------------------- #
+# OCP job queue (spec v2 §2.10, plan W5 Task 5.1)                             #
+# --------------------------------------------------------------------------- #
+
+import time  # noqa: E402
+
+from ocp.job_queue import JobQueue  # noqa: E402
+
+# The worker runs the solver in a child process (so a timeout can really kill
+# it and a crash cannot take the bridge down); the fake solver below is
+# imported there by "module:function" reference, which is why it lives at
+# module level here instead of being a monkeypatched lambda.
+FAKE_SOLVER = "test_bridge:fake_ocp_solver"
+FIXED_RESULT = {"offsetsM": [0.0] * 10, "vMs": [20.0] * 10, "lapTimeS": 42.0, "iterations": 7}
+
+
+def fake_ocp_solver(payload, progress=None):
+    """Sleeps `machine.sleepS` (default 0.05 s) and returns a fixed result."""
+    if progress is not None:
+        progress(0.5)
+    time.sleep(float(payload["machine"].get("sleepS", 0.05)))
+    if payload["machine"].get("fail"):
+        raise RuntimeError("solver blew up")
+    return FIXED_RESULT
+
+
+def ocp_body(n=10, key="serres-23518-41073", **machine):
+    return {
+        "key": key,
+        "centerline": [[23.518 + i * 1e-4, 41.073] for i in range(n)],
+        "leftM": [4.0] * n,
+        "rightM": [4.0] * n,
+        "machine": {"powerKw": 147, "massKg": 285, **machine},
+        "tyre": {"mu": 1.33, "maxLeanDeg": 58},
+    }
+
+
+def make_queue(tmp_path, **kw):
+    opts = dict(solver_ref=FAKE_SOLVER, data_dir=tmp_path / "ocp", ttl_s=3600, timeout_s=30)
+    opts.update(kw)
+    return JobQueue(**opts)
+
+
+@pytest.fixture()
+def ocp_client(tmp_path, monkeypatch):
+    q = make_queue(tmp_path)
+    monkeypatch.setattr(dda_lab_bridge, "OCP_QUEUE", q)
+    monkeypatch.setattr(dda_lab_bridge, "CORRIDOR_TOKEN", "s3cret")
+    yield TestClient(dda_lab_bridge.app)
+    q.shutdown()
+
+
+def post_job(client, body, token="s3cret"):
+    headers = {"X-Corridor-Token": token} if token is not None else {}
+    return client.post("/ocp/jobs", json=body, headers=headers)
+
+
+def wait_status(client, job_id, wanted, timeout=20.0):
+    t0 = time.monotonic()
+    r = None
+    while time.monotonic() - t0 < timeout:
+        r = client.get(f"/ocp/jobs/{job_id}")
+        if r.status_code == 200 and r.json()["status"] in wanted:
+            return r.json()
+        time.sleep(0.05)
+    raise AssertionError(f"job {job_id} never reached {wanted}: {r.status_code} {r.text}")
+
+
+def test_ocp_post_returns_202_with_an_id(ocp_client):
+    r = post_job(ocp_client, ocp_body())
+    assert r.status_code == 202, r.text
+    assert isinstance(r.json()["id"], str) and len(r.json()["id"]) >= 16
+
+
+def test_ocp_job_runs_to_done_with_the_result(ocp_client):
+    job_id = post_job(ocp_client, ocp_body()).json()["id"]
+    first = ocp_client.get(f"/ocp/jobs/{job_id}").json()
+    assert first["status"] in ("queued", "running", "done")
+    done = wait_status(ocp_client, job_id, {"done"})
+    assert done["result"] == FIXED_RESULT
+    assert done["key"] == "serres-23518-41073"
+
+
+def test_ocp_result_is_written_to_disk_and_survives_a_restart(ocp_client, tmp_path, monkeypatch):
+    job_id = post_job(ocp_client, ocp_body()).json()["id"]
+    wait_status(ocp_client, job_id, {"done"})
+    assert (tmp_path / "ocp" / f"{job_id}.json").exists()
+    # a fresh queue (bridge restart) still serves the stored result
+    q2 = make_queue(tmp_path)
+    monkeypatch.setattr(dda_lab_bridge, "OCP_QUEUE", q2)
+    try:
+        r = ocp_client.get(f"/ocp/jobs/{job_id}")
+        assert r.status_code == 200
+        assert r.json()["status"] == "done"
+        assert r.json()["result"]["lapTimeS"] == 42.0
+    finally:
+        q2.shutdown()
+
+
+def test_ocp_second_job_waits_behind_the_first(ocp_client):
+    a = post_job(ocp_client, ocp_body(sleepS=1.5)).json()["id"]
+    wait_status(ocp_client, a, {"running"})
+    b = post_job(ocp_client, ocp_body()).json()["id"]
+    assert ocp_client.get(f"/ocp/jobs/{b}").json()["status"] == "queued"
+    wait_status(ocp_client, a, {"done"})
+    wait_status(ocp_client, b, {"done"})
+
+
+def test_ocp_unknown_id_is_404(ocp_client):
+    assert ocp_client.get("/ocp/jobs/0123456789abcdef0123456789abcdef").status_code == 404
+    # ids are a path component too: anything off the allowlist is 404, not a file read
+    assert ocp_client.get("/ocp/jobs/..%2F..%2Fetc").status_code == 404
+
+
+def test_ocp_rejects_mismatched_array_lengths(ocp_client):
+    body = ocp_body()
+    body["rightM"] = body["rightM"][:-1]
+    assert post_job(ocp_client, body).status_code == 422
+
+
+def test_ocp_rejects_too_many_points(ocp_client):
+    assert post_job(ocp_client, ocp_body(n=20_001)).status_code == 422
+
+
+@pytest.mark.parametrize("key", ["../etc", "UPPER", "-lead", "", "x" * 65, "a b"])
+def test_ocp_rejects_keys_outside_the_allowlist(ocp_client, key):
+    assert post_job(ocp_client, ocp_body(key=key)).status_code == 422
+
+
+def test_ocp_post_needs_the_token(ocp_client):
+    assert post_job(ocp_client, ocp_body(), token=None).status_code == 401
+    assert post_job(ocp_client, ocp_body(), token="wrong").status_code == 401
+
+
+def test_ocp_post_refused_when_no_token_is_configured(ocp_client, monkeypatch):
+    monkeypatch.setattr(dda_lab_bridge, "CORRIDOR_TOKEN", "")
+    assert post_job(ocp_client, ocp_body(), token="").status_code == 503
+
+
+def test_ocp_huge_body_without_token_is_401_not_parsed(ocp_client):
+    huge = b"{" + b"x" * (5 * 1024 * 1024) + b"}"
+    r = ocp_client.post("/ocp/jobs", content=huge, headers={"Content-Type": "application/json"})
+    assert r.status_code == 401
+
+
+def test_ocp_oversized_body_with_token_is_413(ocp_client):
+    huge = b"{" + b"x" * (5 * 1024 * 1024) + b"}"
+    r = ocp_client.post(
+        "/ocp/jobs",
+        content=huge,
+        headers={"Content-Type": "application/json", "X-Corridor-Token": "s3cret"},
+    )
+    assert r.status_code == 413
+
+
+def test_ocp_get_is_public(ocp_client):
+    job_id = post_job(ocp_client, ocp_body()).json()["id"]
+    # no token header on the GET
+    assert ocp_client.get(f"/ocp/jobs/{job_id}").status_code == 200
+
+
+def test_ocp_old_jobs_are_purged(tmp_path, monkeypatch):
+    q = make_queue(tmp_path, ttl_s=0.3)
+    monkeypatch.setattr(dda_lab_bridge, "OCP_QUEUE", q)
+    monkeypatch.setattr(dda_lab_bridge, "CORRIDOR_TOKEN", "s3cret")
+    client = TestClient(dda_lab_bridge.app)
+    try:
+        job_id = post_job(client, ocp_body()).json()["id"]
+        wait_status(client, job_id, {"done"})
+        time.sleep(0.5)
+        assert client.get(f"/ocp/jobs/{job_id}").status_code == 404
+        assert not (tmp_path / "ocp" / f"{job_id}.json").exists()
+    finally:
+        q.shutdown()
+
+
+def test_ocp_timeout_kills_a_long_job(tmp_path, monkeypatch):
+    q = make_queue(tmp_path, timeout_s=0.5)
+    monkeypatch.setattr(dda_lab_bridge, "OCP_QUEUE", q)
+    monkeypatch.setattr(dda_lab_bridge, "CORRIDOR_TOKEN", "s3cret")
+    client = TestClient(dda_lab_bridge.app)
+    try:
+        slow = post_job(client, ocp_body(sleepS=60)).json()["id"]
+        t0 = time.monotonic()
+        err = wait_status(client, slow, {"error", "done"}, timeout=15)
+        assert err["status"] == "error"
+        assert "timeout" in err["message"].lower()
+        assert time.monotonic() - t0 < 10
+        # the worker is free again: the next job completes
+        nxt = post_job(client, ocp_body()).json()["id"]
+        assert wait_status(client, nxt, {"done", "error"})["status"] == "done"
+    finally:
+        q.shutdown()
+
+
+def test_ocp_solver_exception_becomes_error(ocp_client):
+    job_id = post_job(ocp_client, ocp_body(fail=True)).json()["id"]
+    err = wait_status(ocp_client, job_id, {"error", "done"})
+    assert err["status"] == "error"
+    assert "blew up" in err["message"]
+
+
+def test_ocp_queue_is_bounded(tmp_path, monkeypatch):
+    q = make_queue(tmp_path, max_pending=2)
+    monkeypatch.setattr(dda_lab_bridge, "OCP_QUEUE", q)
+    monkeypatch.setattr(dda_lab_bridge, "CORRIDOR_TOKEN", "s3cret")
+    client = TestClient(dda_lab_bridge.app)
+    try:
+        codes = [post_job(client, ocp_body(sleepS=2)).status_code for _ in range(4)]
+        assert codes[:2] == [202, 202]
+        assert 429 in codes[2:]
+    finally:
+        q.shutdown()
+
+
+def test_ocp_host_without_the_ocp_package_answers_503(monkeypatch):
+    # deploy_lab.sh without --with-ocp: the bridge must still start and serve
+    monkeypatch.setattr(dda_lab_bridge, "JobQueue", None)
+    monkeypatch.setattr(dda_lab_bridge, "OCP_QUEUE", None)
+    monkeypatch.setattr(dda_lab_bridge, "CORRIDOR_TOKEN", "s3cret")
+    client = TestClient(dda_lab_bridge.app)
+    assert post_job(client, ocp_body()).status_code == 503
+    assert client.get("/ocp/jobs/0123456789abcdef0123456789abcdef").status_code == 503
+    assert client.get("/health").status_code == 200
+
+
+def test_ocp_default_timeout_is_fifteen_minutes():
+    assert dda_lab_bridge.OCP_TIMEOUT_S == 900

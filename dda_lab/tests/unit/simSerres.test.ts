@@ -15,11 +15,14 @@
 // without a corridor `buildLine` falls back to a 5 m half-width and the line
 // is a different line; the SHAPE of the power response is what is asserted.
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { buildCenterline } from '../../src/core/track';
 import { buildLine } from '../../src/sim/line';
-import { solve } from '../../src/sim/solver';
-import { clampParams, DEFAULT_SIM_PARAMS } from '../../src/sim/presets';
+import { G, lossDecelMs2, solve } from '../../src/sim/solver';
+import { clampParams, DEFAULT_SIM_PARAMS, presetById } from '../../src/sim/presets';
+import { cornerMetrics, throttlePickUp } from '../../scripts/lib/cornerMetrics';
+import { readReferenceRows, referenceTrace } from '../../scripts/lib/referenceLap';
 import type { TrackModel } from '../../src/core/types';
 import type { SimParams } from '../../src/sim/types';
 
@@ -98,12 +101,70 @@ describe('the virtual rider on the real Serres geometry', () => {
     // pair to be the difference in.
     const timid = lapAt(P.machine.powerKw, { trailBrakeDepth: 0, trailBrakeProfile: 0 });
     const brave = lapAt(P.machine.powerKw, { trailBrakeDepth: 1, trailBrakeProfile: 1 });
-    expect(timid - brave).toBeGreaterThan(12);
+    // v2 calibration: 12 -> 10. The default rider already carries the brakes
+    // deeper (trail depth 0.8 / profile 0.75 at R 0.5), so the square is
+    // measured from a less timid baseline: 11.7 s.
+    expect(timid - brave).toBeGreaterThan(10);
+    // v2: the rider's best is the slip ceiling on every axis plus the full
+    // roll rate, not a pinned brakingG (which is derived from the same thing)
     const best = lapAt(P.machine.powerKw, {
-      trailBrakeDepth: 1, trailBrakeProfile: 1, tcThreshold: 1, brakingG: 1.33, leanUsage: 1,
+      trailBrakeDepth: 1, trailBrakeProfile: 1, tcThreshold: 1, leanUsage: 1,
+      sBrake: 1, sDrive: 1, sLat: 1, rollRateFrac: 1, throttleDelayS: -0.1, rollOnS: 0.3,
     });
-    expect(best).toBeLessThan(77.5);
+    // v2: 77.5 -> 79.0. The roll-rate constraint and the corner-event
+    // transitions cost ~1 s that no slider removes; 1:17 is now the
+    // free-trajectory/OCP modes' territory (spec v2 §2.10).
+    expect(best).toBeLessThan(79.0);
     // and it is worth more than every kilowatt above stock put together
     expect(best).toBeLessThan(lapAt(400));
+  });
+});
+
+// The REAL side of the validation table (`scripts/sim-validate.ts`, spec v2
+// §4b). These pin how the harness reads the two reference files, NOT the
+// simulator: the sim side moves with every model change and is recorded in
+// docs/superpowers/notes/2026-10-11-validation-baseline.md instead. If one of
+// these goes red the reference reading changed, and every number in that note
+// has to be re-measured.
+describe('the validation harness reading the reference laps', () => {
+  const examples = (f: string): string => fileURLToPath(new URL(`../../public/examples/${f}`, import.meta.url));
+  const measure = (f: string, kind: 'BMW' | 'R6', presetId: string) => {
+    const tr = referenceTrace(readReferenceRows(examples(f)), kind);
+    const m = cornerMetrics(tr.speedKmh, tr.sM, tr.longG, {
+      tS: tr.tS,
+      lossG: (v) => lossDecelMs2(presetById(presetId).machine, v) / G,
+    });
+    return { tr, m };
+  };
+
+  it('BMW: ten corner sections, seven of them braked, a 0.3 s build and the p25 the notes quote', () => {
+    const { tr, m } = measure('serres_BMW_1-19-81.json', 'BMW', '1000');
+    expect(tr.lapTimeS).toBeCloseTo(79.8, 1);
+    expect(m.corners.length).toBe(10);
+    expect(m.brakeEvents).toBe(7);
+    // the spec's 0.3-0.5 s target band comes from these laps
+    const builds = [...m.buildTimesS].sort((a, b) => a - b);
+    expect(builds[Math.floor(builds.length / 2)]).toBeGreaterThan(0.25);
+    expect(builds[Math.floor(builds.length / 2)]).toBeLessThan(0.45);
+    // longitudinal-g note §5: real p25 −0.70 (artefact span bridged)
+    expect(m.longGp25).toBeGreaterThan(-0.75);
+    expect(m.longGp25).toBeLessThan(-0.65);
+    // the hairpins are where the notes put them (K5 70.1, K10 79.2 km/h)
+    const slowest = [...m.minSpeeds].sort((a, b) => a.kmh - b.kmh).slice(0, 2).map((x) => Math.round(x.kmh));
+    expect(slowest).toEqual([70, 79]);
+  });
+
+  it('R6: the throttle channel gives a pick-up near the apex and a slow roll-on', () => {
+    const { tr, m } = measure('serres_R6_1-19-849.json', 'R6', '600');
+    expect(tr.tps).toBeDefined();
+    const picks: number[] = [];
+    m.corners.forEach((c) => {
+      const p = throttlePickUp(tr.tS, tr.tps!, c.iA);
+      if (p) picks.push(p.tPickS);
+    });
+    expect(picks.length).toBeGreaterThanOrEqual(5);
+    picks.sort((a, b) => a - b);
+    const med = picks[Math.floor(picks.length / 2)];
+    expect(Math.abs(med)).toBeLessThan(0.6);
   });
 });

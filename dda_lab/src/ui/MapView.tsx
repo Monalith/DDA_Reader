@@ -21,7 +21,7 @@ import type { Gate, Lap, LngLat, SchemaLayer, Session, TrackModel, TurnMetrics }
 import { lapX, selectedLapEntries } from '../state/selectors';
 import { activeTrack, useLab, lapMetaOf } from '../state/store';
 import { backgroundColorByZoom, inRangeSegments, rasterOpacityByZoom, zoomRadius, zoomWidth } from './focus';
-import { corridorGeoJson, idealLineGeoJson } from './SimLayers';
+import { cornerEventsGeoJson, corridorGeoJson, idealLineGeoJson } from './SimLayers';
 import {
   IMAGE_CORNERS,
   centerlineGeoJson,
@@ -174,6 +174,7 @@ export default function MapView() {
   const activeMarkerId = useLab((s) => s.activeMarkerId);
   const corridor = useLab((s) => s.corridor);
   const simLine = useLab((s) => s.simLine);
+  const simCorners = useLab((s) => s.simCorners);
   const dataMarkerRefs = useRef<Map<string, maplibregl.Marker>>(new Map());
 
   const track = useMemo(() => activeTrack({ tracks, activeTrackId }), [tracks, activeTrackId]);
@@ -410,7 +411,8 @@ export default function MapView() {
     syncSchemaImage(map, schema ?? null);
     setData(map, 'corridor', track && corridor ? corridorGeoJson(track, corridor) : EMPTY);
     setData(map, 'idealLine', simLine ? idealLineGeoJson(simLine) : EMPTY);
-  }, [ready, track, entries, metrics, preview, lapMeta, corridor, simLine]);
+    setData(map, 'cornerEvents', simLine ? cornerEventsGeoJson(simLine, simCorners) : EMPTY);
+  }, [ready, track, entries, metrics, preview, lapMeta, corridor, simLine, simCorners]);
 
   // ---------- layer toggles ----------
   useEffect(() => {
@@ -419,6 +421,9 @@ export default function MapView() {
     setVis(map, 'centerline-line', mapLayers.centerline !== false);
     setVis(map, 'corridor-line', mapLayers.corridor !== false);
     setVis(map, 'ideal-line', mapLayers.idealLine !== false);
+    // the corner-event markers belong to the ideal line: same toggle
+    setVis(map, 'corner-events', mapLayers.idealLine !== false);
+    setVis(map, 'corner-events-label', mapLayers.idealLine !== false);
     setVis(map, 'markers-turn', mapLayers.turns !== false);
     setVis(map, 'markers-apex', mapLayers.apex !== false);
     setVis(map, 'markers-apex-label', mapLayers.apex !== false);
@@ -1010,7 +1015,7 @@ function syncSchemaImage(map: maplibregl.Map, schema: SchemaLayer | null): void 
 
 /** One-time creation of the empty data sources and their layers. */
 function addDataLayers(map: maplibregl.Map): void {
-  for (const id of ['centerline', 'gates', 'markers', 'schema', 'measure', 'turn-deltas', 'corridor', 'idealLine']) {
+  for (const id of ['centerline', 'gates', 'markers', 'schema', 'measure', 'turn-deltas', 'corridor', 'idealLine', 'cornerEvents']) {
     if (!map.getSource(id)) map.addSource(id, { type: 'geojson', data: EMPTY });
   }
 
@@ -1050,6 +1055,39 @@ function addDataLayers(map: maplibregl.Map): void {
     type: 'line',
     source: 'idealLine',
     paint: { 'line-color': '#c77dff', 'line-width': zoomWidth(2, 4), 'line-opacity': 0.95 },
+  });
+  // Corner events of the rider-mode lap (spec v2 §2.9): B brake point (red),
+  // T turn-in (orange), A speed apex (white), P throttle pick-up (green),
+  // E exit (blue). One of each per corner section — the owner's constraint #1
+  // made visible.
+  map.addLayer({
+    id: 'corner-events',
+    type: 'circle',
+    source: 'cornerEvents',
+    paint: {
+      'circle-radius': zoomWidth(3, 6),
+      'circle-color': [
+        'match', ['get', 'kind'],
+        'B', '#ff4d4d', 'T', '#ffa500', 'A', '#ffffff', 'P', '#4caf50', 'E', '#3da5ff',
+        '#cccccc',
+      ],
+      'circle-stroke-color': '#000000',
+      'circle-stroke-width': 1,
+      'circle-opacity': 0.95,
+    },
+  });
+  map.addLayer({
+    id: 'corner-events-label',
+    type: 'symbol',
+    source: 'cornerEvents',
+    minzoom: 15,
+    layout: {
+      'text-field': ['get', 'kind'],
+      'text-size': 11,
+      'text-offset': [0, -1.1],
+      'text-allow-overlap': true,
+    },
+    paint: { 'text-color': '#ffffff', 'text-halo-color': '#000000', 'text-halo-width': 1 },
   });
   map.addLayer({
     id: 'gates-line',

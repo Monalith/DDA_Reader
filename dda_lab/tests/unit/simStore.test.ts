@@ -1,7 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { SIM_SESSION_ID, useLab } from '../../src/state/store';
+import {
+  INITIAL_SIM_PARAMS, SIM_OCP_SESSION_ID, SIM_OPT_SESSION_ID, SIM_SESSION_ID, useLab, type OptimalRunner,
+} from '../../src/state/store';
 import { DEFAULT_SIM_PARAMS } from '../../src/sim/presets';
-import { simulate } from '../../src/sim';
+import { DERIVE_TABLE, deriveRider } from '../../src/sim/derive';
+import { buildLine } from '../../src/sim/line';
+import { idealParams, simulate } from '../../src/sim';
 import { circuitTrack } from './circuitFixture';
 import type { LngLat, TrackModel } from '../../src/core/types';
 
@@ -111,7 +115,7 @@ describe('sim store', () => {
     useLab.getState().setSimEnabled(true);
 
     // the same call the store makes, so the comparison is against the solver
-    const expected = simulate(track, corridor, DEFAULT_SIM_PARAMS, SIM_SESSION_ID, 'Virtual rider', '#c77dff');
+    const expected = simulate(track, corridor, useLab.getState().simParams, SIM_SESSION_ID, 'Virtual rider', '#c77dff');
 
     const worstDiff = (name: string): number => {
       const got = useLab.getState().sessions.find((s) => s.isSim)!.channels.get(name)!.data;
@@ -128,22 +132,25 @@ describe('sim store', () => {
         expect(worstDiff(name)).toBeLessThan(1e-6);
       }
       // and the channels are mutually consistent, which is what the overwrite
-      // destroyed: the app writes lean as -atan(lat_g) (left = negative), so
-      // tan(lean) + lat_g is zero up to resampling error everywhere. The
-      // residual is 1.1e-3, from `toSession` interpolating `lean` and `lat_g`
-      // onto the 10 Hz grid independently (interpolating an angle and
-      // interpolating its tangent do not commute). Before this fix the same
-      // measure was 385.
+      // destroyed. In v1 lean was -atan(lat_g) exactly; since v2 `lean` is the
+      // BIKE roll (crown + hang-off, vehicle.ts), which is larger than the
+      // ideal angle at lean and zero below ~0.15 g, so the check is now sign
+      // agreement (left = negative, opposite to lat_g) wherever the bike is
+      // actually leaning, plus the exact carry-through asserted above. A refit
+      // from GPS (the bug this guards) would break the exact carry-through
+      // long before it broke the sign.
       const sim = useLab.getState().sessions.find((s) => s.isSim)!;
       const lean = sim.channels.get('lean')!.data;
       const latG = sim.channels.get('lat_g')!.data;
-      let worst = 0;
+      let signErrors = 0;
       let leaning = 0;
       for (let i = 0; i < lean.length; i++) {
-        worst = Math.max(worst, Math.abs(Math.tan((lean[i] * Math.PI) / 180) + latG[i]));
-        if (Math.abs(lean[i]) > 10) leaning++;
+        if (Math.abs(lean[i]) > 10) {
+          leaning++;
+          if (Math.sign(lean[i]) !== -Math.sign(latG[i])) signErrors++;
+        }
       }
-      expect(worst).toBeLessThan(0.01);
+      expect(signErrors).toBe(0);
       expect(leaning).toBeGreaterThan(0); // an all-zero lean channel cannot pass
     };
 
@@ -169,5 +176,182 @@ describe('sim store', () => {
     useLab.getState().setSimEnabled(true);
     expect(useLab.getState().sessions).toHaveLength(0);
     expect(useLab.getState().statusMessage).toMatch(/track/i);
+  });
+});
+
+// ---- v2: derived rider, overrides, solver modes (plan W6 Task 6.4) --------
+
+/** A runner that returns the kappa line's own offsets, like a 0-iteration optimiser. */
+function kappaRunner(withSpeed = false): OptimalRunner & { calls: number } {
+  const fn = (async (track, corridor, params, onProgress) => {
+    fn.calls++;
+    onProgress(0.5, 99);
+    const line = buildLine(track, corridor, idealParams(params));
+    const vMs = withSpeed ? new Float32Array(line.points.length).fill(25) : undefined;
+    onProgress(1, 98);
+    return { offsetsM: Float32Array.from(line.offsetM), vMs, lapTimeS: 98 };
+  }) as OptimalRunner & { calls: number };
+  fn.calls = 0;
+  return fn;
+}
+
+describe('sim store v2', () => {
+  beforeEach(() => {
+    useLab.setState({
+      sessions: [], tracks: [], activeTrackId: undefined, selectedLaps: [],
+      simEnabled: false, simParams: INITIAL_SIM_PARAMS, simLine: undefined, simLapTimeS: undefined,
+      corridor: undefined, solverMode: 'rider', statusMessage: null,
+      simOptBusy: { freeTrajectory: false, ocp: false },
+      simOptProgress: { freeTrajectory: 0, ocp: 0 },
+      simOptLapTimeS: {}, simOptLines: {}, simOptStale: { freeTrajectory: false, ocp: false },
+    });
+  });
+
+  it('starts from a rider already derived from aggressiveness and risk', () => {
+    const p = INITIAL_SIM_PARAMS;
+    expect(deriveRider(p.rider, p.tyre)).toEqual(p.rider);
+  });
+
+  it('re-derives the rider on every patch', () => {
+    useLab.getState().setSimParams({ rider: { risk: 1 } });
+    let r = useLab.getState().simParams.rider;
+    expect(r.sBrake).toBeCloseTo(DERIVE_TABLE.sBrake.a + DERIVE_TABLE.sBrake.b, 12);
+    expect(r.trailBrakeProfile).toBeCloseTo(1, 12);
+    useLab.getState().setSimParams({ rider: { aggressiveness: 0 } });
+    r = useLab.getState().simParams.rider;
+    expect(r.throttleDelayS).toBeCloseTo(DERIVE_TABLE.throttleDelayS.a, 12);
+    // a tyre patch moves the tyre-curve fields too
+    const before = r.brakingG;
+    useLab.getState().setSimParams({ tyre: { gripScale: 0.8 } });
+    expect(useLab.getState().simParams.rider.brakingG).toBeLessThan(before);
+  });
+
+  it('patching a derived key pins it, and clearOverride lets it follow the sliders again', () => {
+    useLab.getState().setSimParams({ rider: { sBrake: 0.4 } });
+    expect(useLab.getState().simParams.rider.overrides).toContain('sBrake');
+    useLab.getState().setSimParams({ rider: { risk: 1 } });
+    expect(useLab.getState().simParams.rider.sBrake).toBe(0.4);
+    // brakingG is not pinned, so it follows the pinned sBrake
+    const pinnedBraking = useLab.getState().simParams.rider.brakingG;
+    useLab.getState().clearOverride('sBrake');
+    const r = useLab.getState().simParams.rider;
+    expect(r.overrides).not.toContain('sBrake');
+    expect(r.sBrake).toBeCloseTo(DERIVE_TABLE.sBrake.a + DERIVE_TABLE.sBrake.b, 12);
+    expect(r.brakingG).toBeGreaterThan(pinnedBraking);
+  });
+
+  it('a non-derived rider key (kappa, line deviation) is never pinned', () => {
+    useLab.getState().setSimParams({ rider: { kappa: 0.3, lineDeviationM: 1 } });
+    expect(useLab.getState().simParams.rider.overrides).toEqual([]);
+  });
+
+  it('switching the solver mode computes nothing', () => {
+    useLab.getState().setTrack(circleTrack());
+    useLab.getState().setSimEnabled(true);
+    const sessions = useLab.getState().sessions;
+    useLab.getState().setSolverMode('ocp');
+    expect(useLab.getState().solverMode).toBe('ocp');
+    expect(useLab.getState().sessions).toBe(sessions);
+  });
+
+  it('runs an optimal solver only on runOptimal — never on a slider patch', async () => {
+    useLab.getState().setTrack(circleTrack());
+    useLab.getState().setSimEnabled(true);
+    const runner = kappaRunner();
+    await useLab.getState().runOptimal('freeTrajectory', runner);
+    expect(runner.calls).toBe(1);
+    const opt = useLab.getState().sessions.find((s) => s.id === SIM_OPT_SESSION_ID)!;
+    expect(opt).toBeTruthy();
+    const optLap = useLab.getState().simOptLapTimeS.freeTrajectory;
+    expect(optLap).toBeGreaterThan(0);
+    for (let k = 0; k < 10; k++) {
+      useLab.getState().setSimParams({ rider: { risk: k / 10 } });
+      useLab.getState().setSimParams({ tyre: { mu: 1 + k / 50 } });
+    }
+    useLab.getState().setSolverMode('freeTrajectory');
+    useLab.getState().applyMachinePreset('600');
+    expect(runner.calls).toBe(1);
+    // the optimal lap is not recomputed by the patches
+    expect(useLab.getState().simOptLapTimeS.freeTrajectory).toBe(optLap);
+    expect(useLab.getState().sessions.filter((s) => s.id === SIM_OPT_SESSION_ID)).toHaveLength(1);
+    // but it is flagged as out of date once machine or tyre moved
+    expect(useLab.getState().simOptStale.freeTrajectory).toBe(true);
+  });
+
+  it('keeps the three sim sessions side by side, all selected, and removes all three on disable', async () => {
+    useLab.getState().setTrack(circleTrack());
+    useLab.getState().setSimEnabled(true);
+    await useLab.getState().runOptimal('freeTrajectory', kappaRunner());
+    await useLab.getState().runOptimal('ocp', kappaRunner(true));
+    const st = useLab.getState();
+    const ids = st.sessions.filter((s) => s.isSim).map((s) => s.id).sort();
+    expect(ids).toEqual([SIM_SESSION_ID, SIM_OCP_SESSION_ID, SIM_OPT_SESSION_ID].sort());
+    for (const id of ids) expect(st.selectedLaps.some((l) => l.sessionId === id)).toBe(true);
+    // the OCP's own speed drives its lap: line length / 25 m/s
+    expect(st.simOptLapTimeS.ocp).toBeCloseTo(st.simOptLines.ocp!.lengthM / 25, 3);
+    expect(st.simOptLines.freeTrajectory).toBeTruthy();
+    // a rider re-solve leaves the optimal sessions in place
+    useLab.getState().setSimParams({ rider: { risk: 0.1 } });
+    expect(useLab.getState().sessions.filter((s) => s.isSim)).toHaveLength(3);
+
+    useLab.getState().setSimEnabled(false);
+    const after = useLab.getState();
+    expect(after.sessions.some((s) => s.isSim)).toBe(false);
+    expect(after.selectedLaps.some((l) => ids.includes(l.sessionId))).toBe(false);
+    expect(after.simOptLapTimeS).toEqual({});
+  });
+
+  it('reports progress and busy state while an optimal run is in flight', async () => {
+    useLab.getState().setTrack(circleTrack());
+    useLab.getState().setSimEnabled(true);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const runner: OptimalRunner = async (track, corridor, params, onProgress) => {
+      onProgress(0.4, 90);
+      await gate;
+      const line = buildLine(track, corridor, idealParams(params));
+      return { offsetsM: Float32Array.from(line.offsetM), lapTimeS: 90 };
+    };
+    const p = useLab.getState().runOptimal('freeTrajectory', runner);
+    expect(useLab.getState().simOptBusy.freeTrajectory).toBe(true);
+    expect(useLab.getState().simOptProgress.freeTrajectory).toBeCloseTo(0.4, 9);
+    // a second click while busy does not start a second run
+    const second = kappaRunner();
+    await useLab.getState().runOptimal('freeTrajectory', second);
+    expect(second.calls).toBe(0);
+    release();
+    await p;
+    expect(useLab.getState().simOptBusy.freeTrajectory).toBe(false);
+    expect(useLab.getState().simOptProgress.freeTrajectory).toBe(1);
+  });
+
+  it('a failing runner leaves a status message and no session', async () => {
+    useLab.getState().setTrack(circleTrack());
+    useLab.getState().setSimEnabled(true);
+    await useLab.getState().runOptimal('ocp', async () => { throw new Error('bridge unreachable'); });
+    const st = useLab.getState();
+    expect(st.simOptBusy.ocp).toBe(false);
+    expect(st.sessions.some((s) => s.id === SIM_OCP_SESSION_ID)).toBe(false);
+    expect(st.statusMessage).toMatch(/bridge unreachable/);
+  });
+
+  it('drops a result that arrives after the simulator was switched off', async () => {
+    useLab.getState().setTrack(circleTrack());
+    useLab.getState().setSimEnabled(true);
+    const runner: OptimalRunner = async (track, corridor, params) => {
+      useLab.getState().setSimEnabled(false);
+      const line = buildLine(track, corridor, idealParams(params));
+      return { offsetsM: Float32Array.from(line.offsetM), lapTimeS: 1 };
+    };
+    await useLab.getState().runOptimal('freeTrajectory', runner);
+    expect(useLab.getState().sessions.some((s) => s.isSim)).toBe(false);
+  });
+
+  it('records the corner count and the rider risk message with the rider lap', () => {
+    useLab.getState().setTrack(circleTrack());
+    useLab.getState().setSimEnabled(true);
+    const st = useLab.getState();
+    expect(Array.isArray(st.simCorners)).toBe(true);
+    expect(st.simRisk).toBeNull();
   });
 });

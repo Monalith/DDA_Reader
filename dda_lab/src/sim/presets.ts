@@ -16,6 +16,7 @@
 //   Production machinery on road-legal race rubber sits well below that.
 // - Lean limits ~50-55 deg (street race tyre) to ~63 deg (MotoGP tyre) are
 //   practitioner figures, not measured here: treat them as starting points.
+import { deriveRider } from './derive';
 import type { MachineParams, RiderParams, SimParams, TyreTrackParams } from './types';
 
 export interface MachinePreset {
@@ -26,40 +27,79 @@ export interface MachinePreset {
   kappa: number;
 }
 
+// Peak μ (lateral) per class, re-calibrated for v2 on 2026-10-11: with the
+// rider below the slip peak (gripFraction(s) < 1) the SAME lap times need a
+// higher tyre peak — 1.33 -> 1.40 on the 1000 (R2 §5 risk 2; +5.3 % on every
+// class). These are peak values the rider never fully uses.
 export const MACHINE_PRESETS: MachinePreset[] = [
   {
     id: '250',
     label: '250 cc (Ninja 400 / RC390 class)',
-    machine: { powerKw: 33, massKg: 235, cdA: 0.36, wheelbaseM: 1.37, riderMassKg: 75, cgRearM: 0.671, tyreCrownM: 0.08, hangOffM: 0.15, cgHeightM: 0.58, finalDrive: 3.07, gearRatios: [2.92, 2.06, 1.6, 1.33, 1.15, 1.0] },
-    tyre: { mu: 1.25, maxLeanDeg: 52, kerbMarginM: 0.3, gripScale: 1 },
+    machine: {
+      powerKw: 33, massKg: 235, cdA: 0.36, wheelbaseM: 1.37,
+      riderMassKg: 75, // source: R1 §3.2 hang-off table, m_r 75 kg (rider in leathers), öneri
+      cgRearM: 0.671, // source: R1 §3.1 S1000RR+rider b/p = 0.70/1.44 = 0.486; here 0.49, öneri
+      tyreCrownM: 0.06, // source: R1 §3.2 t = 0.06 column; 140-150 section rear on this class, öneri
+      hangOffM: 0.2, // source: R1 §3.2 d_r range 0-0.3 m; less seat to move across on a small bike, öneri
+      cgHeightM: 0.58, finalDrive: 3.07, gearRatios: [2.92, 2.06, 1.6, 1.33, 1.15, 1.0],
+    },
+    tyre: { mu: 1.32, maxLeanDeg: 52, kerbMarginM: 0.3, gripScale: 1 },
     kappa: 0.1,
   },
   {
     id: '600',
     label: '600 cc supersport (R6 / ZX-6R class)',
-    machine: { powerKw: 88, massKg: 265, cdA: 0.33, wheelbaseM: 1.38, riderMassKg: 75, cgRearM: 0.676, tyreCrownM: 0.08, hangOffM: 0.15, cgHeightM: 0.56, finalDrive: 2.81, gearRatios: [2.58, 2.0, 1.67, 1.44, 1.29, 1.15] },
-    tyre: { mu: 1.3, maxLeanDeg: 56, kerbMarginM: 0.4, gripScale: 1 },
+    machine: {
+      powerKw: 88, massKg: 265, cdA: 0.33, wheelbaseM: 1.38,
+      riderMassKg: 75, // source: R1 §3.2 hang-off table, m_r 75 kg, öneri
+      cgRearM: 0.676, // source: R1 §3.1 S1000RR+rider b/p = 0.486; here 0.49, öneri
+      tyreCrownM: 0.07, // source: R1 §3.2 t 0.06-0.09; 180/55 rear, between the 250 and 1000 classes, öneri
+      hangOffM: 0.25, // source: R1 §3.2 table, d_r 0.25 m track hang-off, öneri
+      cgHeightM: 0.56, finalDrive: 2.81, gearRatios: [2.58, 2.0, 1.67, 1.44, 1.29, 1.15],
+    },
+    tyre: { mu: 1.37, maxLeanDeg: 56, kerbMarginM: 0.4, gripScale: 1 },
     kappa: 0.45,
   },
   {
     id: '1000',
     label: '1000 cc superbike (R1 / ZX-10R class)',
-    machine: { powerKw: 147, massKg: 285, cdA: 0.34, wheelbaseM: 1.41, riderMassKg: 75, cgRearM: 0.691, tyreCrownM: 0.08, hangOffM: 0.15, cgHeightM: 0.55, finalDrive: 2.56, gearRatios: [2.6, 2.0, 1.67, 1.44, 1.29, 1.15] },
-    tyre: { mu: 1.33, maxLeanDeg: 58, kerbMarginM: 0.5, gripScale: 1 },
+    machine: {
+      powerKw: 147, massKg: 285, cdA: 0.34, wheelbaseM: 1.41,
+      riderMassKg: 75, // source: R1 §3.2 hang-off table, m_r 75 kg, öneri
+      cgRearM: 0.691, // source: R1 §3.1 S1000RR+rider b/p = 0.486; here 0.49, öneri
+      tyreCrownM: 0.08, // source: R1 §3.2 worked example t = 0.08 (190/55-17 race rear), öneri
+      hangOffM: 0.25, // source: R1 §3.2 table, d_r 0.25 m track hang-off, öneri
+      cgHeightM: 0.55, finalDrive: 2.56, gearRatios: [2.6, 2.0, 1.67, 1.44, 1.29, 1.15],
+    },
+    tyre: { mu: 1.4, maxLeanDeg: 58, kerbMarginM: 0.5, gripScale: 1 },
     kappa: 0.85,
   },
   {
     id: 'panigale-v4',
     label: 'Ducati Panigale V4',
-    machine: { powerKw: 158, massKg: 290, cdA: 0.34, wheelbaseM: 1.47, riderMassKg: 75, cgRearM: 0.72, tyreCrownM: 0.08, hangOffM: 0.15, cgHeightM: 0.55, finalDrive: 2.5, gearRatios: [2.46, 1.94, 1.64, 1.45, 1.32, 1.21] },
-    tyre: { mu: 1.35, maxLeanDeg: 59, kerbMarginM: 0.5, gripScale: 1 },
+    machine: {
+      powerKw: 158, massKg: 290, cdA: 0.34, wheelbaseM: 1.47,
+      riderMassKg: 75, // source: R1 §3.2 hang-off table, m_r 75 kg, öneri (W4 replaces with the owner's mass)
+      cgRearM: 0.72, // source: R1 §3.1 S1000RR+rider b/p = 0.486; here 0.49, öneri
+      tyreCrownM: 0.08, // source: R1 §3.2 worked example t = 0.08 (200/60-17 race rear), öneri
+      hangOffM: 0.25, // source: R1 §3.2 table, d_r 0.25 m track hang-off, öneri (W4 fits the owner laps)
+      cgHeightM: 0.55, finalDrive: 2.5, gearRatios: [2.46, 1.94, 1.64, 1.45, 1.32, 1.21],
+    },
+    tyre: { mu: 1.42, maxLeanDeg: 59, kerbMarginM: 0.5, gripScale: 1 },
     kappa: 0.85,
   },
   {
     id: 'custom',
     label: 'Custom',
-    machine: { powerKw: 100, massKg: 270, cdA: 0.34, wheelbaseM: 1.4, riderMassKg: 75, cgRearM: 0.686, tyreCrownM: 0.08, hangOffM: 0.15, cgHeightM: 0.56, finalDrive: 2.7, gearRatios: [2.6, 2.0, 1.67, 1.44, 1.29, 1.15] },
-    tyre: { mu: 1.3, maxLeanDeg: 56, kerbMarginM: 0.4, gripScale: 1 },
+    machine: {
+      powerKw: 100, massKg: 270, cdA: 0.34, wheelbaseM: 1.4,
+      riderMassKg: 75, // source: R1 §3.2 hang-off table, m_r 75 kg, öneri
+      cgRearM: 0.686, // source: R1 §3.1 S1000RR+rider b/p = 0.486; here 0.49, öneri
+      tyreCrownM: 0.08, // source: R1 §3.2 worked example t = 0.08, öneri
+      hangOffM: 0.2, // source: R1 §3.2 d_r range 0-0.3 m, mid-range, öneri
+      cgHeightM: 0.56, finalDrive: 2.7, gearRatios: [2.6, 2.0, 1.67, 1.44, 1.29, 1.15],
+    },
+    tyre: { mu: 1.37, maxLeanDeg: 56, kerbMarginM: 0.4, gripScale: 1 },
     kappa: 0.5,
   },
 ];
@@ -68,67 +108,27 @@ export function presetById(id: string): MachinePreset {
   return MACHINE_PRESETS.find((p) => p.id === id) ?? MACHINE_PRESETS[MACHINE_PRESETS.length - 1];
 }
 
-const DEFAULT_RIDER: RiderParams = {
-  // Spec v2 §2.6 top-level parameters. Until W6 wires `deriveRider()` into
-  // the store these two are carried but NOT yet applied: the explicit fields
-  // below are the v1 calibration and still drive the solver.
-  aggressiveness: 0.7,
+/**
+ * The default rider: everything but the line parameters is DERIVED from the
+ * two top-level sliders (spec v2 §2.6, `deriveRider`). Calibrated on the BMW
+ * Serres reference on 2026-10-11 (notes/2026-10-11-v2-calibration.md):
+ * A 0.9 / R 0.5 on the 1000 preset gives 80.07 s against the real 79.81, a
+ * 0.36 s brake build (real 0.32), 9 corner sections and 10 brake applications
+ * (real 7-14). The owner's own Ducati laps sit near A 0.25 / R 0.0 with a
+ * gripScale of ~0.9 (93 s against 95.8).
+ */
+const DEFAULT_RIDER_BASE: RiderParams = {
+  aggressiveness: 0.9,
   risk: 0.5,
   overrides: [],
-  // Allowed slip (spec v2 §2.2). 1.0 = the v1 friction ceiling, so the v1
-  // calibration is unchanged until W1 scales the ellipse by gripFraction(s).
-  sBrake: 1,
-  sDrive: 1,
-  sLat: 1,
-  rollOnS: 0.6,
-  rollRateFrac: 0.85,
   lineDeviationM: 0.4,
-  // How hard the rider brakes with the TYRE, which is not the same as the
-  // deceleration the data shows: aero and rolling losses are now a separate
-  // term in the solver's backward pass, so this is only the contact patch's
-  // share. It was 1.1 while the model had no loss term at all and that 1.1
-  // stood in for both.
-  //
-  // 0.85 is measured, on both reference laps, by taking each braking zone's
-  // peak `boylamsal_g` and subtracting the aero and rolling deceleration at
-  // the speed it happened at (`docs/.../2026-10-11-longitudinal-g.md` has the
-  // table). The hardest zone on the lap comes out at 0.80-0.92 g of tyre on
-  // the BMW and 0.72 g on the R6; the slow corners are 0.41-0.70, which is the
-  // rider choosing not to use everything, not the tyre running out. So 0.85 is
-  // the top of what the real riders asked the front tyre for, and the solver
-  // being quasi-steady-state will then use it at every zone — see the report.
-  brakingG: 0.85,
-  // Measured off the leading edge of the hardest braking zone on each
-  // reference lap, which is the one place on the lap where the brake goes on
-  // from a settled straight and the build is not entangled with a corner:
-  //   BMW  -0.08 g at 272 km/h -> -1.10 g 30 m later, 0.40 s: 2.7 g/s
-  //   R6   -0.04 g at 249 km/h -> -1.07 g 25 m later, 0.37 s: 2.8 g/s
-  // Two different bikes and two different riders agreeing to 4 % is a good
-  // sign this is the machine (fork travel and damping) rather than taste.
-  brakeRiseGps: 2.8,
-  throttleDelayS: 0.25,
-  tcThreshold: 0.5,
-  leanUsage: 0.95,
   kappa: presetById('1000').kappa,
-  // A quick road-racer: carries the brakes most of the way to the apex and
-  // uses most of the grip the tyre has left while doing it.
-  //
-  // These two were 0.6 / 0.6 while `trailBrakeDepth` scaled the remaining
-  // longitudinal share at every lean (and `trailBrakeProfile` did nothing at
-  // all). Both now mean what the names say — see `brakeShare` in `solver.ts`:
-  // depth is the lateral-grip-use fraction at which braking has CEASED, and
-  // profile is how much of the remaining grip is used on the way there.
-  //
-  // 0.85 / 0.80 is where the default has to sit to keep reproducing the
-  // reference BMW Serres lap (1:19.81): 79.34 s on the offline harness against
-  // the 79.29 s the old default gave on the same harness, so the calibration of
-  // docs/superpowers/notes/2026-10-10-virtual-vs-real.md survives to 0.05 s.
-  // 0.6 / 0.6 in the new units — a rider off the brakes by 68 % of the tyre's
-  // lateral capacity, and only evenly hard before that — is 81.71 s, i.e. 2.4 s
-  // a lap slower, which is a plausible club rider rather than a fast one.
-  trailBrakeDepth: 0.85,
-  trailBrakeProfile: 0.8,
+  // derived below; zeros here only so the object is complete before deriveRider()
+  sBrake: 0, sDrive: 0, sLat: 0, rollOnS: 0, rollRateFrac: 0,
+  brakingG: 0, brakeRiseGps: 0, throttleDelayS: 0, tcThreshold: 0, leanUsage: 0,
+  trailBrakeDepth: 0, trailBrakeProfile: 0,
 };
+const DEFAULT_RIDER: RiderParams = deriveRider(DEFAULT_RIDER_BASE, presetById('1000').tyre);
 
 export const DEFAULT_SIM_PARAMS: SimParams = {
   machine: { presetId: '1000', ...presetById('1000').machine },

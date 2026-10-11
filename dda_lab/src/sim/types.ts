@@ -83,6 +83,20 @@ export interface RiderParams {
   lineDeviationM: number;
   /** Peak braking deceleration the rider will use, g. */
   brakingG: number;
+  /**
+   * How fast the TYRE's share of braking deceleration can build once the
+   * brake goes on, g per second.
+   *
+   * Peak retardation is not available the instant the lever moves: the front
+   * tyre can only carry 1.1 g once the machine's mass has pitched forward onto
+   * it, and that rotation takes fork travel and damping time, on top of the
+   * rider's own progressive squeeze. Without this the velocity profile's
+   * leading edge is a step — one sample from zero to the full ceiling — which
+   * is what made `long_g` read as a square plateau rather than a braking
+   * trace. Aero and rolling losses are NOT rate-limited by it; they do not
+   * wait for the fork. See the backward pass in `solver.ts`.
+   */
+  brakeRiseGps: number;
   /** Delay between the apex and the throttle coming back, seconds. */
   throttleDelayS: number;
   /** Slip the traction control allows before cutting torque, 0..1. */

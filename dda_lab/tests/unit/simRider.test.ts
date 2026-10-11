@@ -383,13 +383,24 @@ describe('riderChannels', () => {
   it('never drives and brakes meaningfully at once, except during the trail-brake release', () => {
     // The other half of the oscillation the user described: not just
     // repeated brake applications, but throttle and brake both reading a
-    // real value at the same sample. A little overlap is correct — the
-    // trail-brake release, where the brake is bleeding off a corner's peak
-    // while the throttle is already rising for the exit — so this does not
-    // assert zero overlap, which a dead channel would also satisfy. It
-    // asserts the overlap stays rare and small on a full solved lap with
-    // scatter, where the un-suppressed channel overlapped on 68 of 1600
-    // samples (4.25 %).
+    // real value at the same sample. The un-suppressed channel overlapped on
+    // 68 of 1600 samples (4.25 %); the bound is what matters.
+    //
+    // This used to assert the overlap was NON-ZERO as well, on the grounds
+    // that the trail-brake release genuinely overlaps the throttle rise. At
+    // the shipped defaults it is now exactly zero, and for a reason rather
+    // than because a channel died: the release used to be paced by
+    // `BRAKE_OFF_PCT_S`, so the limiter lagged a steeply falling demand and
+    // held the lever past the end of the event, and since the solver's
+    // backward pass gained its loss term the demand tapers gently enough that
+    // the limiter tracks it exactly and the brake is already under the
+    // dead-band's 4 % when the event releases the throttle. The overlap is
+    // still REACHABLE — a rider with `trailBrakeDepth` and
+    // `trailBrakeProfile` at 0, who releases abruptly, still has one
+    // overlapping sample at 23.4 % summed — so the clamp below is not
+    // unreachable code. What replaces the non-zero assertion is a direct
+    // check that both channels are alive, which is what it was standing in
+    // for.
     const { track, corridor } = circuitTrack(6, 2, 0.25);
     const line = buildLine(track, corridor, P);
     const env = solve(line, P);
@@ -403,8 +414,19 @@ describe('riderChannels', () => {
         maxSum = Math.max(maxSum, ch.tps[i] + ch.brake[i]);
       }
     }
-    expect(overlapSamples).toBeGreaterThan(0);
+    // neither channel is dead — the thing the old `> 0` was guarding against
+    expect(Math.max(...Array.from(ch.tps))).toBeGreaterThan(90);
+    expect(Math.max(...Array.from(ch.brake))).toBeGreaterThan(90);
     expect(overlapSamples).toBeLessThanOrEqual(10);
+    // and an abrupt releaser still reaches the overlap the clamp bounds
+    const abruptP = clampParams({ ...P, rider: { ...P.rider, trailBrakeDepth: 0, trailBrakeProfile: 0 } });
+    const abrupt = riderChannels(line, solve(line, abruptP), abruptP);
+    let abruptOverlap = 0;
+    for (let i = 0; i < abrupt.tps.length; i++) {
+      if (abrupt.tps[i] > TRICKLE && abrupt.brake[i] > TRICKLE) abruptOverlap++;
+    }
+    expect(abruptOverlap).toBeGreaterThan(0);
+    expect(abruptOverlap).toBeLessThanOrEqual(10);
     // and even during that overlap the throttle never exceeds what the brake
     // leaves it — the OVERLAP clamp's actual bound, not the `< 101` on the raw
     // sum, which the clamp makes unreachable on its own (see T4)

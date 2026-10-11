@@ -70,7 +70,29 @@ export function presetById(id: string): MachinePreset {
 
 const DEFAULT_RIDER: RiderParams = {
   lineDeviationM: 0.4,
-  brakingG: 1.1,
+  // How hard the rider brakes with the TYRE, which is not the same as the
+  // deceleration the data shows: aero and rolling losses are now a separate
+  // term in the solver's backward pass, so this is only the contact patch's
+  // share. It was 1.1 while the model had no loss term at all and that 1.1
+  // stood in for both.
+  //
+  // 0.85 is measured, on both reference laps, by taking each braking zone's
+  // peak `boylamsal_g` and subtracting the aero and rolling deceleration at
+  // the speed it happened at (`docs/.../2026-10-11-longitudinal-g.md` has the
+  // table). The hardest zone on the lap comes out at 0.80-0.92 g of tyre on
+  // the BMW and 0.72 g on the R6; the slow corners are 0.41-0.70, which is the
+  // rider choosing not to use everything, not the tyre running out. So 0.85 is
+  // the top of what the real riders asked the front tyre for, and the solver
+  // being quasi-steady-state will then use it at every zone — see the report.
+  brakingG: 0.85,
+  // Measured off the leading edge of the hardest braking zone on each
+  // reference lap, which is the one place on the lap where the brake goes on
+  // from a settled straight and the build is not entangled with a corner:
+  //   BMW  -0.08 g at 272 km/h -> -1.10 g 30 m later, 0.40 s: 2.7 g/s
+  //   R6   -0.04 g at 249 km/h -> -1.07 g 25 m later, 0.37 s: 2.8 g/s
+  // Two different bikes and two different riders agreeing to 4 % is a good
+  // sign this is the machine (fork travel and damping) rather than taste.
+  brakeRiseGps: 2.8,
   throttleDelayS: 0.25,
   tcThreshold: 0.5,
   leanUsage: 0.95,
@@ -137,6 +159,10 @@ export function clampParams(p: SimParams): SimParams {
     rider: {
       lineDeviationM: clamp(p.rider.lineDeviationM, 0, 5),
       brakingG: clamp(p.rider.brakingG, 0.2, 1.8),
+      // A zero would mean the brake never develops any force at all and the
+      // bike never slows; the ceiling is an instant application, i.e. the
+      // unlimited pass this replaced.
+      brakeRiseGps: clamp(p.rider.brakeRiseGps, 0.5, 20),
       throttleDelayS: clamp(p.rider.throttleDelayS, 0, 2),
       tcThreshold: clamp(p.rider.tcThreshold, 0, 1),
       leanUsage: clamp(p.rider.leanUsage, 0, 1),

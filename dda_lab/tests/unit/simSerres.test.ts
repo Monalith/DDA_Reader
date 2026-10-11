@@ -58,7 +58,9 @@ describe('the virtual rider on the real Serres geometry', () => {
 
   it('still reproduces the reference lap at the shipped defaults', () => {
     // Calibration guard, not a fit: the reference is 79.81 s and the browser
-    // path reports 80.47 s on the extracted corridor. 79.34 s here. A band
+    // path reports 80.47 s on the extracted corridor. 79.53 s here — it was
+    // 79.34 before the braking model gained its loss term and its build rate
+    // (`simLongG.test.ts`), which between them are worth +0.19 s. A band
     // wide enough to survive an honest model change and narrow enough that
     // re-parameterising a rider slider without re-checking the default — which
     // is exactly what moved it by 5 s while this was being written — goes red.
@@ -74,7 +76,7 @@ describe('the virtual rider on the real Serres geometry', () => {
   });
 
   it('cannot reach 1:17 on power alone, however much is fitted', () => {
-    // THE finding. 147 kW -> 79.34 s; 400 kW (the clamp's ceiling) -> 78.92 s.
+    // THE finding. 147 kW -> 79.53 s; 400 kW (the clamp's ceiling) -> 79.11 s.
     // Past ~200 kW the forward pass is grip-limited essentially everywhere, so
     // the curve is flat: power buys 0.4 s and 1:17 is 2 s away.
     const stock = lapAt(P.machine.powerKw);
@@ -84,13 +86,19 @@ describe('the virtual rider on the real Serres geometry', () => {
   });
 
   it('answers the rider and the tyre instead — which is where 1:17 comes from', () => {
-    // Same circuit, same 147 kW: the trail-brake pair alone is worth 18 s
-    // across its square, and the rider's own choices at their best reach
-    // 1:17.1. That is the honest answer to "raise the power to see 1:17": the
-    // power slider is not the one that gets there.
+    // Same circuit, same 147 kW: the trail-brake pair alone is worth 12.8 s
+    // across its square (91.66 timid, 78.86 brave), and the rider's own
+    // choices at their best reach 1:16.7. That is the honest answer to "raise
+    // the power to see 1:17": the power slider is not the one that gets there.
+    //
+    // It was 18 s before the braking model learned about aero losses and a
+    // build rate, and the default `brakingG` came down from 1.1 to the 0.85
+    // the reference laps actually show at the tyre. Less of the lap is on the
+    // brakes with the losses helping, so there is less for the trail-brake
+    // pair to be the difference in.
     const timid = lapAt(P.machine.powerKw, { trailBrakeDepth: 0, trailBrakeProfile: 0 });
     const brave = lapAt(P.machine.powerKw, { trailBrakeDepth: 1, trailBrakeProfile: 1 });
-    expect(timid - brave).toBeGreaterThan(15);
+    expect(timid - brave).toBeGreaterThan(12);
     const best = lapAt(P.machine.powerKw, {
       trailBrakeDepth: 1, trailBrakeProfile: 1, tcThreshold: 1, brakingG: 1.33, leanUsage: 1,
     });

@@ -196,7 +196,11 @@ export default function SimPanel() {
           <Slider label="Line deviation" value={params.rider.lineDeviationM} min={0} max={3} step={0.05} unit="m" decimals={2}
             testId="sim-deviation" onChange={(v) => debouncedSetSimParams({ rider: { lineDeviationM: v } })} />
           <Slider label="Braking" value={params.rider.brakingG} min={0.4} max={1.6} step={0.01} unit="g"
+            help="Peak braking the rider asks of the FRONT TYRE. The deceleration the charts show is more than this, because aero drag and rolling losses add to it: 0.85 g of tyre is about 1.25 g on the brakes at 250 km/h and 0.95 g at 100 km/h. Both reference Serres laps work out at 0.72-0.92 g of tyre at their hardest zone."
             testId="sim-braking" onChange={(v) => debouncedSetSimParams({ rider: { brakingG: v } })} />
+          <Slider label="Brake build rate" value={params.rider.brakeRiseGps} min={0.5} max={8} step={0.1} unit="g/s" decimals={1}
+            help="How fast braking deceleration builds once the brake goes on. Peak retardation needs the mass pitched onto the front tyre, which takes fork travel and damping time on top of the rider's squeeze. Both reference Serres laps build at about 2.8 g/s; the top of the slider is a grab of the lever."
+            testId="sim-brake-rise" onChange={(v) => debouncedSetSimParams({ rider: { brakeRiseGps: v } })} />
           <Slider label="Throttle delay" value={params.rider.throttleDelayS} min={0} max={1.5} step={0.01} unit="s"
             testId="sim-throttle" onChange={(v) => debouncedSetSimParams({ rider: { throttleDelayS: v } })} />
           <Slider label="Traction control" value={params.rider.tcThreshold} min={0} max={1} step={0.01}

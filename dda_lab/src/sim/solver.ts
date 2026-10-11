@@ -5,6 +5,10 @@
 //   (3) forward pass    acceleration out of it
 //   v(s) = min of the three;  t = integral ds / v
 //
+// (2) and (3) run as a short fixed-point loop rather than once each, because
+// the braking rate limit is anchored at the moment the brake goes on and that
+// is where the two curves meet. See `BRAKE_RATE_ITERS`.
+//
 // Combined grip is the friction ellipse: longitudinal capacity falls as lateral
 // use rises, which is what makes trail braking and progressive throttle come out
 // of the model rather than being scripted.
@@ -40,6 +44,32 @@ const TB_MIN_REACH = 0.2;
  */
 const TB_TIMID_EXP = 3;
 const TB_BRAVE_POW = 8;
+
+/**
+ * How many times the jerk-limited backward pass is re-run. See
+ * `brakeRiseGps` in `types.ts` and the pass itself below.
+ *
+ * The rate limit is anchored at the moment the brake goes on, and nothing
+ * knows where that is until the profile is solved, so the solve runs, the
+ * brake onsets are re-read off what it produced, and it runs again.
+ *
+ * Measured on the real Serres geometry at the shipped defaults, the lap time
+ * is 79.5082 s with one iteration (which is the unlimited solve: there is no
+ * clock yet), 79.5345 with two, 79.5338 with three, and bit-identical to that
+ * from four on. So three is already converged to 0.7 ms and four is the first
+ * iteration that changes nothing at all. Anything less than two leaves the
+ * rate limit entirely inert, which is the failure to guard against — see
+ * `simLongG.test.ts`.
+ */
+const BRAKE_RATE_ITERS = 4;
+/**
+ * How much deceleration past drag and rolling losses counts as the brake being
+ * on, m/s^2. Not a tuning constant: it only has to be above the arithmetic
+ * noise in a `Float32Array` velocity difference (about 1e-3 m/s^2 here), and
+ * below any deceleration a rider would reach for the lever for. 0.05 m/s^2 is
+ * 0.005 g.
+ */
+const BRAKE_ON_MARGIN = 0.05;
 
 /**
  * Longitudinal share available for BRAKING, which is not the same as the raw
@@ -96,6 +126,21 @@ export function brakeShare(latUse: number, depth: number, profile: number): numb
   return full * taper;
 }
 
+/**
+ * Deceleration from aerodynamic drag and rolling/driveline losses at speed
+ * `vMs`, m/s^2.
+ *
+ * It does NOT pass through the tyre contact patches, so it ADDS to whatever
+ * the brakes can do rather than competing with cornering grip for it. That is
+ * why the backward pass puts it outside the friction ellipse, and why
+ * `gripUse` adds it back before judging the tyre. Exported so a test can
+ * assert the solver's braking against the figure rather than against a
+ * number copied out of it.
+ */
+export function lossDecelMs2(machine: { cdA: number; massKg: number }, vMs: number): number {
+  return (0.5 * RHO * machine.cdA * vMs * vMs) / machine.massKg + ROLLING;
+}
+
 /** Drag-limited top speed: where engine power equals drag plus rolling losses. */
 export function topSpeedMs(params: SimParams): number {
   const p = clampParams(params);
@@ -128,7 +173,10 @@ export function solve(line: Line, params: SimParams): Envelope {
   // the lean angle and the tyre both cap lateral acceleration; the lower wins
   const aLatMax = Math.max(0.1, Math.min(mu, Math.tan((leanLimitDeg * Math.PI) / 180)) * G);
   // Braking is friction-limited too. `brakingG` is how hard the rider is
-  // WILLING to brake; it cannot exceed what the tyre has. Without the min, a
+  // WILLING to brake WITH THE TYRE — the net deceleration the channels report
+  // is more than this, because the backward pass adds the aero and rolling
+  // losses on top of it (they are not carried by a contact patch). It cannot
+  // exceed what the tyre has. Without the min, a
   // mu*gripScale of 0.24 still braked at 1.54 g — 6.4x the available friction —
   // and that spare deceleration is most of what let gripUse reach 1.65-1.80.
   // The remaining friction ellipse is applied per sample in the pass below.
@@ -165,63 +213,144 @@ export function solve(line: Line, params: SimParams): Envelope {
   const brakeEllipse = (vv: number, k: number): number =>
     brakeShare(latUse(vv, k), p.rider.trailBrakeDepth, p.rider.trailBrakeProfile);
 
-  // ---- pass 2: backward (braking) --------------------------------------
-  // two laps of the loop so braking carries across the start line
-  for (let pass = 0; pass < 2; pass++) {
-    for (let step = n - 1; step >= 0; step--) {
-      const i = step;
+  /** `lossDecelMs2` for this machine. */
+  const aLoss = (vv: number): number => lossDecelMs2(p.machine, vv);
+
+  // ---- pass 3: forward (acceleration) ----------------------------------
+  //
+  // A function rather than a straight-line pass because the braking rate
+  // limit above needs the finished profile to find its own starting point,
+  // so passes 2 and 3 iterate together.
+  const forward = (): void => {
+    for (let pass = 0; pass < 2; pass++) {
+      for (let step = 0; step < n; step++) {
+        const i = step;
+        const j = (i - 1 + n) % n;
+        const ds = dsAt(i);
+        const vv = Math.max(V_MIN, v[j]);
+        const aPower = power / (p.machine.massKg * vv);
+        const aGrip = mu * G * ellipse(vv, line.curvature[j]);
+        const aDrag = aLoss(vv);
+        // Traction control shaves drive torque when the SLIP DEMAND is high — not
+        // always.
+        //
+        // This used to be `tcFactor = 0.6 + 0.4 * tcThreshold`, a constant
+        // multiplier on the grip term with no reference to what the tyre is doing.
+        // At the shipped `tcThreshold` = 0.5 that threw away 20 % of the
+        // longitudinal grip EVERYWHERE, including bolt upright on a straight
+        // where there is no lateral load to make the rear slip and no traction
+        // control on earth intervenes: the drive out of every corner up to about
+        // 150 km/h was capped at 10.4 m/s^2 instead of the 12.6 m/s^2 the front
+        // wheel allows.
+        //
+        // Measured. On the real Serres geometry it is worth 0.28 s (79.60 ->
+        // 79.32), because that lap is short of straight. The important cost is
+        // the other one: it made the forward pass GRIP-limited where it should
+        // have been POWER-limited, so adding power bought nothing. On the
+        // synthetic circuit (`circuitFixture.ts`), which has the straights for
+        // power to work on, going 147 -> 250 kW was worth 1.04 s with the
+        // constant and is worth 2.11 s without it, and 400 kW was wholly
+        // saturated (60.55 -> 60.54) where it now still gains.
+        //
+        // Slip is provoked by asking for drive while the tyre is already spending
+        // its grip sideways, so the intervention scales with the lateral use: no
+        // cut at all upright, and at full lean the drive is held to
+        // `0.55 + 0.45 * tcThreshold` of what is left on the ellipse — the same
+        // allowance the `dtc` channel in `rider.ts` reports, so the two agree.
+        const slip = latUse(vv, line.curvature[j]);
+        const tcFloor = 0.55 + 0.45 * p.rider.tcThreshold;
+        const tcFactor = 1 - (1 - tcFloor) * slip;
+        const a = Math.min(aPower, aGrip * tcFactor, aWheelie) - aDrag;
+        const vMax = Math.sqrt(Math.max(V_MIN * V_MIN, vv * vv + 2 * a * ds));
+        if (v[i] > vMax) v[i] = Math.max(V_MIN, vMax);
+      }
+    }
+  };
+
+  // ---- pass 2: backward (braking), rate-limited -------------------------
+  //
+  // Two things here that a textbook quasi-steady-state pass leaves out, both
+  // of which are the difference between a square -1.10 g plateau and a real
+  // braking trace. See `docs/.../2026-10-11-longitudinal-g.md`.
+  //
+  //   AERO AND ROLLING LOSSES ASSIST BRAKING. The forward pass has always
+  //   subtracted `aDrag`; the backward pass ignored it, so the model threw
+  //   away free retardation exactly where there is most of it. On the 1000 at
+  //   272 km/h it is 0.41 g — a third again on top of the tyre — and at
+  //   130 km/h it is 0.10 g. That ratio is the physical reason a real lap's
+  //   braking peak is deepest at the end of the fastest straight and shallow
+  //   at the slow corners, and the model could not reproduce it while the
+  //   only term was a constant.
+  //
+  //   PEAK RETARDATION IS NOT AVAILABLE INSTANTLY. The front tyre can only
+  //   deliver 1.1 g once the mass has pitched forward onto it, and that
+  //   rotation takes real time (fork travel, damping) on top of the rider's
+  //   own squeeze of the lever. So the TYRE's share of the deceleration is
+  //   rate-limited to `brakeRiseGps` g/s from the moment the brake goes on.
+  //   Losses are not rate-limited: drag does not wait for the fork.
+  //
+  // The rate limit is anchored at brake-on, and NOTHING KNOWS WHERE THAT IS
+  // until the whole profile is solved: the brake goes on where the braking
+  // curve meets the drive curve, so it is a property of passes 2 and 3
+  // together. (Reading it off the backward pass alone does not work, and
+  // fails quietly: that pass's own zone runs back up the straight to wherever
+  // it would meet the drag-limited top speed, 80 m earlier than the bike ever
+  // gets, and a clock started there is already 0.66 s old by the real braking
+  // point — enough to make the rate limit inert at every rate above 1 g/s
+  // while still looking like it was applied.)
+  //
+  // So both passes are inside the iteration. `tOn[i]` is how long the brake
+  // has been applied by the time the bike reaches i, measured on the PREVIOUS
+  // iteration's finished profile, and infinite on the first — iteration 0 is
+  // exactly the old unlimited solve, which is what bootstraps it.
+  const vFree = Float32Array.from(v);
+  const tOn = new Float64Array(n).fill(Number.POSITIVE_INFINITY);
+  const onBrake = new Uint8Array(n);
+  const jerk = p.rider.brakeRiseGps * G;
+  for (let iter = 0; iter < BRAKE_RATE_ITERS; iter++) {
+    v.set(vFree);
+    // ---- pass 2: backward (braking) ------------------------------------
+    // two laps of the loop so braking carries across the start line
+    for (let pass = 0; pass < 2; pass++) {
+      for (let step = n - 1; step >= 0; step--) {
+        const i = step;
+        const j = (i + 1) % n;
+        const ds = dsAt(j);
+        const aTyre = Math.min(aBrakeMax * brakeEllipse(v[j], line.curvature[j]), jerk * tOn[i]);
+        const vMax = Math.sqrt(v[j] * v[j] + 2 * (aTyre + aLoss(v[j])) * ds);
+        if (v[i] > vMax) v[i] = Math.max(V_MIN, vMax);
+      }
+    }
+    forward();
+    if (iter === BRAKE_RATE_ITERS - 1) break;
+    // ---- re-read the brake-on clock off the finished profile ------------
+    //
+    // The brake is on where the deceleration the profile actually realises is
+    // more than drag and rolling losses supply on their own. That is the
+    // physical definition — a closed throttle is not a brake application —
+    // and it is the one that puts the clock's zero at the lever, because a
+    // coasting approach fails it.
+    for (let i = 0; i < n; i++) {
       const j = (i + 1) % n;
       const ds = dsAt(j);
-      const a = aBrakeMax * brakeEllipse(v[j], line.curvature[j]);
-      const vMax = Math.sqrt(v[j] * v[j] + 2 * a * ds);
-      if (v[i] > vMax) v[i] = Math.max(V_MIN, vMax);
+      const need = (v[i] * v[i] - v[j] * v[j]) / (2 * ds);
+      onBrake[i] = need > aLoss(v[i]) + BRAKE_ON_MARGIN ? 1 : 0;
+    }
+    // Twice round, so a zone that straddles the start line gets its clock from
+    // before it rather than from zero.
+    for (let pass = 0; pass < 2; pass++) {
+      for (let i = 0; i < n; i++) {
+        if (!onBrake[i]) {
+          tOn[i] = 0;
+          continue;
+        }
+        const prev = (i - 1 + n) % n;
+        const vAvg = Math.max(V_MIN, (v[prev] + v[i]) / 2);
+        tOn[i] = (onBrake[prev] ? tOn[prev] : 0) + dsAt(i) / vAvg;
+      }
     }
   }
 
-  // ---- pass 3: forward (acceleration) ----------------------------------
-  for (let pass = 0; pass < 2; pass++) {
-    for (let step = 0; step < n; step++) {
-      const i = step;
-      const j = (i - 1 + n) % n;
-      const ds = dsAt(i);
-      const vv = Math.max(V_MIN, v[j]);
-      const aPower = power / (p.machine.massKg * vv);
-      const aGrip = mu * G * ellipse(vv, line.curvature[j]);
-      const aDrag = (0.5 * RHO * p.machine.cdA * vv * vv) / p.machine.massKg + ROLLING;
-      // Traction control shaves drive torque when the SLIP DEMAND is high — not
-      // always.
-      //
-      // This used to be `tcFactor = 0.6 + 0.4 * tcThreshold`, a constant
-      // multiplier on the grip term with no reference to what the tyre is doing.
-      // At the shipped `tcThreshold` = 0.5 that threw away 20 % of the
-      // longitudinal grip EVERYWHERE, including bolt upright on a straight
-      // where there is no lateral load to make the rear slip and no traction
-      // control on earth intervenes: the drive out of every corner up to about
-      // 150 km/h was capped at 10.4 m/s^2 instead of the 12.6 m/s^2 the front
-      // wheel allows.
-      //
-      // Measured. On the real Serres geometry it is worth 0.28 s (79.60 ->
-      // 79.32), because that lap is short of straight. The important cost is
-      // the other one: it made the forward pass GRIP-limited where it should
-      // have been POWER-limited, so adding power bought nothing. On the
-      // synthetic circuit (`circuitFixture.ts`), which has the straights for
-      // power to work on, going 147 -> 250 kW was worth 1.04 s with the
-      // constant and is worth 2.11 s without it, and 400 kW was wholly
-      // saturated (60.55 -> 60.54) where it now still gains.
-      //
-      // Slip is provoked by asking for drive while the tyre is already spending
-      // its grip sideways, so the intervention scales with the lateral use: no
-      // cut at all upright, and at full lean the drive is held to
-      // `0.55 + 0.45 * tcThreshold` of what is left on the ellipse — the same
-      // allowance the `dtc` channel in `rider.ts` reports, so the two agree.
-      const slip = latUse(vv, line.curvature[j]);
-      const tcFloor = 0.55 + 0.45 * p.rider.tcThreshold;
-      const tcFactor = 1 - (1 - tcFloor) * slip;
-      const a = Math.min(aPower, aGrip * tcFactor, aWheelie) - aDrag;
-      const vMax = Math.sqrt(Math.max(V_MIN * V_MIN, vv * vv + 2 * a * ds));
-      if (v[i] > vMax) v[i] = Math.max(V_MIN, vMax);
-    }
-  }
 
   // ---- integrate and fill the g channels -------------------------------
   //
@@ -268,7 +397,15 @@ export function solve(line: Line, params: SimParams): Envelope {
     // separate constraint with its own channel (`leanDeg`); it is not a tyre
     // overload and must not be reported as one.
     const lu = Math.min(1.5, Math.abs(aLat) / mu);
-    const lo = Math.min(1.5, Math.abs(longG[i]) / mu);
+    // The TYRE's longitudinal share, which is not the net longitudinal g:
+    // aero and rolling losses decelerate the bike without being carried by a
+    // contact patch, so they are added back before the tyre is judged. Driving
+    // at +0.5 g through 0.1 g of drag asks the rear for 0.6 g; braking at
+    // -1.5 g with 0.4 g of drag helping asks the front for 1.1 g. Without this
+    // the backward pass's own output would read over the friction circle at
+    // the end of a fast straight and trip the UI's over-the-limit banner on a
+    // lap that is perfectly within the tyre.
+    const lo = Math.min(1.5, Math.abs(longG[i] + aLoss(v[i]) / G) / mu);
     gripUse[i] = Math.hypot(lu, lo);
   }
 

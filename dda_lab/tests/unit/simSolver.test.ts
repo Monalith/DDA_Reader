@@ -1,10 +1,26 @@
 import { describe, expect, it } from 'vitest';
-import { G, brakeShare, solve, topSpeedMs } from '../../src/sim/solver';
+import { G, brakeShare, lossDecelMs2, solve, topSpeedMs } from '../../src/sim/solver';
 import { clampParams, DEFAULT_SIM_PARAMS, presetById } from '../../src/sim/presets';
 import type { Line, SimParams } from '../../src/sim/types';
 import type { LngLat } from '../../src/core/types';
 import { buildLine } from '../../src/sim/line';
 import { circuitTrack } from './circuitFixture';
+
+/**
+ * The TYRE's longitudinal demand at every sample, g, which is what every
+ * friction assertion in this file is about.
+ *
+ * `Envelope.longG` is the NET longitudinal acceleration, and since the
+ * backward pass learned that aero and rolling losses assist braking it
+ * contains a term the contact patch never carries: a -1.25 g braking peak at
+ * 250 km/h is 0.85 g of front tyre and 0.40 g of air. These tests were written
+ * when the two were the same number.
+ */
+function tyreLongG(env: { longG: Float32Array; v: Float32Array }, machine: { cdA: number; massKg: number }): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < env.longG.length; i++) out.push(env.longG[i] + lossDecelMs2(machine, env.v[i]) / G);
+  return out;
+}
 
 /** A perfectly circular line of constant radius, as the solver sees it. */
 function circleLine(radiusM: number, n = 400): Line {
@@ -237,10 +253,13 @@ describe('solve', () => {
     const mu = p.tyre.mu * p.tyre.gripScale;
     expect(mu).toBeCloseTo(0.24, 6);
     const env = solve(line, p);
-    const hardest = Math.min(...Array.from(env.longG));
+    const hardest = Math.min(...tyreLongG(env, p.machine));
     expect(hardest).toBeGreaterThan(-(mu + 0.01));
     // and it really does brake, so a dead longG channel cannot pass
     expect(hardest).toBeLessThan(-0.1);
+    // the NET deceleration is allowed past mu, and is, because drag and
+    // rolling losses are not carried by the tyre
+    expect(Math.min(...Array.from(env.longG))).toBeLessThan(-(mu + 0.05));
     // the willing-but-unavailable case is the whole point: asking for 1.6 g on
     // this tyre must give the same profile as asking for exactly mu
     const atMu = solve(line, clampParams({ ...p, rider: { ...p.rider, brakingG: mu } }));
@@ -258,7 +277,7 @@ describe('solve', () => {
     const broken = clampParams({
       machine: { ...P.machine, powerKw: 0, massKg: 0, cdA: 0, cgHeightM: 0, wheelbaseM: 0 },
       tyre: { mu: 0, maxLeanDeg: 0, kerbMarginM: 0, gripScale: 0 },
-      rider: { lineDeviationM: 0, brakingG: 0, throttleDelayS: 0, tcThreshold: 0, leanUsage: 0, kappa: 0, trailBrakeDepth: 0, trailBrakeProfile: 0 },
+      rider: { lineDeviationM: 0, brakingG: 0, brakeRiseGps: 0, throttleDelayS: 0, tcThreshold: 0, leanUsage: 0, kappa: 0, trailBrakeDepth: 0, trailBrakeProfile: 0 },
     });
     const env = solve(circleLine(60), broken);
     expect(Number.isFinite(env.lapTimeS)).toBe(true);
@@ -385,16 +404,27 @@ describe('solve', () => {
       for (const d of [0, 0.5, 1]) {
         for (const q of [0, 0.5, 1]) {
           const env = solve(line, clampParams({ ...P, rider: { ...P.rider, trailBrakeDepth: d, trailBrakeProfile: q } }));
+          const tyre = tyreLongG(env, P.machine);
           let peak = 0;
-          for (let i = 0; i < 500; i++) peak = Math.min(peak, env.longG[i]);
+          for (let i = 0; i < 500; i++) peak = Math.min(peak, tyre[i]);
           peaks.push(peak);
         }
       }
-      // the rider's own brakingG, and the same to 1e-6 across all nine
+      // the rider's own brakingG, and the same to 5e-5 g across all nine
       // combinations — the residual is the braking point landing on a
       // different sample, not a different deceleration
-      expect(peaks[0]).toBeCloseTo(-Math.min(P.rider.brakingG, P.tyre.mu * P.tyre.gripScale), 4);
-      for (const peak of peaks) expect(Math.abs(peak - peaks[0])).toBeLessThan(1e-5);
+      //
+      // The 2e-3 g tolerance (0.2 % of brakingG) is a half-sample offset, not
+      // slack: the backward pass reads the loss term at `v[j]`, the segment's
+      // far end, while `tyreLongG` adds it back at `v[i]`, and `longG[i]` is
+      // itself the mean of two segments. It was an exact equality while there
+      // was no loss term to be half a sample out of step with.
+      expect(Math.abs(peaks[0] + Math.min(P.rider.brakingG, P.tyre.mu * P.tyre.gripScale))).toBeLessThan(2e-3);
+      // 5e-5 rather than the old 1e-5 for the same reason as the tolerance
+      // above: the nine combinations put the braking point on slightly
+      // different samples, and the loss term they are each read at differs
+      // with the speed at that sample. Measured spread: 1.1e-5 g.
+      for (const peak of peaks) expect(Math.abs(peak - peaks[0])).toBeLessThan(5e-5);
     });
 
     it('carries the brakes to a higher lean the deeper and braver the rider is', () => {
@@ -405,9 +435,13 @@ describe('solve', () => {
       const aLatMaxG = Math.min(mu, Math.tan((P.tyre.maxLeanDeg * P.rider.leanUsage * Math.PI) / 180));
       const deepestLatUse = (d: number, q: number): number => {
         const env = solve(line, clampParams({ ...P, rider: { ...P.rider, trailBrakeDepth: d, trailBrakeProfile: q } }));
+        // the TYRE braking, not the net g: at full lean the bike still sheds
+        // speed to drag with the brakes fully released, so reading the net
+        // channel reports every setting as carrying the brakes to the limit
+        const tyre = tyreLongG(env, P.machine);
         let worst = 0;
-        for (let i = 0; i < env.longG.length; i++) {
-          if (env.longG[i] < -0.05) worst = Math.max(worst, Math.abs(env.latG[i]) / aLatMaxG);
+        for (let i = 0; i < tyre.length; i++) {
+          if (tyre[i] < -0.05) worst = Math.max(worst, Math.abs(env.latG[i]) / aLatMaxG);
         }
         return worst;
       };

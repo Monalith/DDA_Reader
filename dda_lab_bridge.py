@@ -21,12 +21,14 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional
 
 from fastapi import FastAPI, File, Header, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+
+from ocp.job_queue import JobQueue, QueueFull
 
 import os
 import sys
@@ -56,6 +58,18 @@ CORRIDOR_MAX_POINTS = 20000
 # unauthenticated caller (any third-party page, given allow_origins=["*"])
 # cannot spend our CPU or bandwidth on an oversized body.
 CORRIDOR_MAX_BODY_BYTES = 2 * 1024 * 1024
+
+# Full minimum-time OCP jobs (spec v2 §2.10). Single worker, one child process
+# per solve; finished jobs are kept as DATA_DIR/ocp/<id>.json for OCP_TTL_S.
+OCP_DIR = DATA_DIR / "ocp"
+OCP_TIMEOUT_S = int(os.environ.get("OCP_TIMEOUT_S", "900"))
+OCP_TTL_S = int(os.environ.get("OCP_TTL_S", str(7 * 24 * 3600)))
+OCP_MAX_PENDING = 8
+OCP_SOLVER = "ocp.ocp_motorcycle:solve_request"
+# 20000 [lng, lat] pairs plus two width arrays serialise to ~1.5 MB.
+OCP_MAX_BODY_BYTES = 4 * 1024 * 1024
+# Created on first use (see _ocp_queue); tests replace it.
+OCP_QUEUE = None
 
 CLAUDE_TIMEOUT_S = 180
 ALLOWED_IMAGE_EXT = {".png", ".jpg", ".jpeg"}
@@ -136,6 +150,53 @@ class CorridorPayload(BaseModel):
             raise ValueError("leftEdge and rightEdge must have the same length")
         if not (8 <= n <= CORRIDOR_MAX_POINTS):
             raise ValueError(f"between 8 and {CORRIDOR_MAX_POINTS} points")
+        return self
+
+
+FiniteFloat = Annotated[float, Field(allow_inf_nan=False)]
+
+
+class OcpMachine(BaseModel):
+    """`MachineParams` subset the OCP reads. Unknown keys pass through untouched."""
+    model_config = ConfigDict(extra="allow")
+
+    powerKw: FiniteFloat = Field(..., gt=0, le=1000)
+    massKg: FiniteFloat = Field(..., gt=20, le=2000)
+    riderMassKg: FiniteFloat = Field(75.0, ge=0, le=300)
+    cdA: FiniteFloat = Field(0.34, ge=0, le=5)
+    wheelbaseM: FiniteFloat = Field(1.4, gt=0.5, le=3)
+    cgHeightM: FiniteFloat = Field(0.56, gt=0.1, le=2)
+    cgRearM: Optional[FiniteFloat] = Field(None, gt=0, le=3)
+    tyreCrownM: FiniteFloat = Field(0.08, ge=0, le=0.3)
+    hangOffM: FiniteFloat = Field(0.0, ge=0, le=1)
+
+
+class OcpTyre(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    mu: FiniteFloat = Field(..., gt=0.1, le=3)
+    muX: Optional[FiniteFloat] = Field(None, gt=0.1, le=3)
+    maxLeanDeg: FiniteFloat = Field(..., gt=5, le=75)
+    gripScale: FiniteFloat = Field(1.0, gt=0.1, le=3)
+
+
+class OcpJobPayload(BaseModel):
+    key: str = Field(..., pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")
+    centerline: list[tuple[FiniteFloat, FiniteFloat]]
+    leftM: list[FiniteFloat]
+    rightM: list[FiniteFloat]
+    machine: OcpMachine
+    tyre: OcpTyre
+
+    @model_validator(mode="after")
+    def _shape(self):
+        n = len(self.centerline)
+        if not (8 <= n <= CORRIDOR_MAX_POINTS):
+            raise ValueError(f"between 8 and {CORRIDOR_MAX_POINTS} points")
+        if len(self.leftM) != n or len(self.rightM) != n:
+            raise ValueError("leftM and rightM must match the centerline length")
+        if any(w < 0 or w > 100 for w in self.leftM) or any(w < 0 or w > 100 for w in self.rightM):
+            raise ValueError("half-widths must be within 0..100 m")
         return self
 
 
@@ -395,6 +456,75 @@ async def put_corridor(key: str, request: Request, x_corridor_token: str = Heade
         # failure in between.
         tmp.unlink(missing_ok=True)
     return {"ok": True, "key": key, "nPoints": len(payload.leftEdge)}
+
+
+# --------------------------------------------------------------------------- #
+# Full OCP jobs (spec v2 §2.10)                                               #
+# --------------------------------------------------------------------------- #
+
+def _ocp_queue() -> JobQueue:
+    global OCP_QUEUE
+    if OCP_QUEUE is None:
+        OCP_QUEUE = JobQueue(
+            solver_ref=OCP_SOLVER,
+            data_dir=OCP_DIR,
+            ttl_s=OCP_TTL_S,
+            timeout_s=OCP_TIMEOUT_S,
+            max_pending=OCP_MAX_PENDING,
+        )
+    return OCP_QUEUE
+
+
+@app.post("/ocp/jobs")
+async def post_ocp_job(request: Request, x_corridor_token: str = Header("")):
+    # Same order as PUT /corridors: token before the body is even read, so an
+    # unauthenticated caller cannot make the server parse or solve anything.
+    if not CORRIDOR_TOKEN:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "read_only", "detail": "DDA_CORRIDOR_TOKEN is not set on this host"},
+        )
+    if x_corridor_token != CORRIDOR_TOKEN:
+        return JSONResponse(status_code=401, content={"error": "unauthorized"})
+
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            too_big = int(content_length) > OCP_MAX_BODY_BYTES
+        except ValueError:
+            too_big = False
+        if too_big:
+            return JSONResponse(status_code=413, content={"error": "payload_too_large"})
+    body = await request.body()
+    if len(body) > OCP_MAX_BODY_BYTES:
+        return JSONResponse(status_code=413, content={"error": "payload_too_large"})
+    try:
+        payload = OcpJobPayload.model_validate_json(body)
+    except ValidationError:
+        return JSONResponse(status_code=422, content={"error": "invalid_payload"})
+
+    try:
+        job_id = _ocp_queue().submit(payload.model_dump())
+    except QueueFull:
+        return JSONResponse(status_code=429, content={"error": "queue_full"})
+    return JSONResponse(status_code=202, content={"id": job_id})
+
+
+@app.get("/ocp/jobs/{job_id}")
+def get_ocp_job(job_id: str):
+    # Public, like GET /corridors: the id is an unguessable uuid4 and the
+    # queue only ever reads `<data_dir>/<32 hex>.json` (allowlisted).
+    job = _ocp_queue().get(job_id)
+    if job is None:
+        return JSONResponse(status_code=404, content={"error": "not_found"})
+    out = {"id": job["id"], "key": job.get("key"), "status": job["status"]}
+    if job.get("progress") is not None:
+        out["progress"] = job["progress"]
+    if job.get("result") is not None:
+        out["result"] = job["result"]
+    if job.get("message"):
+        out["message"] = job["message"]
+    return JSONResponse(content=out)
 
 
 # Serve the built DDA Lab web app (ES modules need http://, not file://).

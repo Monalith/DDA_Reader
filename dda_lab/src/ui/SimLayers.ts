@@ -1,9 +1,9 @@
 // Map sources for the simulator: the extracted corridor and the generated line.
-import type { Feature, FeatureCollection, LineString } from 'geojson';
+import type { Feature, FeatureCollection, LineString, Point } from 'geojson';
 import { fromLocalM } from '../core/geo';
 import type { LngLat, TrackModel } from '../core/types';
 import { stencilK, stencilLeftNormal } from '../sim/corridor';
-import type { Corridor, Line } from '../sim/types';
+import type { Corner, Corridor, Line } from '../sim/types';
 
 export type CorridorProps = { side: 'left' | 'right' };
 
@@ -52,6 +52,47 @@ export function corridorGeoJson(track: TrackModel, c: Corridor): FeatureCollecti
     }
     flush();
   }
+  return { type: 'FeatureCollection', features };
+}
+
+export type CornerEventKind = 'B' | 'T' | 'A' | 'P' | 'E';
+export type CornerEventProps = {
+  kind: CornerEventKind;
+  /** 1-based corner number along the lap. */
+  corner: number;
+  /** +1 left, -1 right. */
+  dir: 1 | -1;
+};
+
+/**
+ * Corner events of the rider-mode lap as map points (spec v2 §2.9): brake
+ * point, turn-in, speed apex, throttle pick-up and exit. A corner taken
+ * without braking has no B (its `iB` is only a copy of `iT`). Indices outside
+ * the line are skipped rather than drawn at a wrong place.
+ */
+export function cornerEventsGeoJson(
+  line: Line,
+  corners: readonly Corner[] | undefined,
+): FeatureCollection<Point, CornerEventProps> {
+  const features: Array<Feature<Point, CornerEventProps>> = [];
+  const n = line.points.length;
+  (corners ?? []).forEach((c, k) => {
+    const events: Array<[CornerEventKind, number]> = [
+      ...(c.hasBrake ? [['B', c.iB] as [CornerEventKind, number]] : []),
+      ['T', c.iT],
+      ['A', c.iA],
+      ['P', c.iP],
+      ['E', c.iE],
+    ];
+    for (const [kind, i] of events) {
+      if (!Number.isInteger(i) || i < 0 || i >= n) continue;
+      features.push({
+        type: 'Feature',
+        properties: { kind, corner: k + 1, dir: c.dir },
+        geometry: { type: 'Point', coordinates: line.points[i] },
+      });
+    }
+  });
   return { type: 'FeatureCollection', features };
 }
 

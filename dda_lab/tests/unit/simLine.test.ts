@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { buildLine, effectiveHalfWidths, smoothClosed, strideSchedule } from '../../src/sim/line';
+import { buildLine, effectiveHalfWidths, lineFromOffsets, smoothClosed } from '../../src/sim/line';
 import { DEFAULT_SIM_PARAMS } from '../../src/sim/presets';
 import type { Corridor } from '../../src/sim/types';
 import type { LngLat, TrackModel } from '../../src/core/types';
-import { CIRCUIT_SEGMENTS, circuitTrack, segmentIndices } from './circuitFixture';
+import { CIRCUIT_SEGMENTS, circuitTrack, segmentIndices, trackFromSegments, type Seg } from './circuitFixture';
+
+/**
+ * How far past a MEASURED corridor edge the line may run with the default
+ * params: the rider's kerb margin plus the kerb allowance `kerbM` (1.0 m by
+ * default), less nothing — the 0.4 m bike half-width only ever tightens.
+ */
+const BOX_MARGIN = DEFAULT_SIM_PARAMS.tyre.kerbMarginM + (DEFAULT_SIM_PARAMS.tyre.kerbM ?? 1);
 
 /** A circular track of `radiusM`, sampled every ~2 m, with a uniform corridor. */
 function circleTrack(radiusM: number, halfWidthM: number): { track: TrackModel; corridor: Corridor } {
@@ -134,7 +141,7 @@ describe('buildLine', () => {
     const { track, corridor } = circleTrack(100, 6);
     const line = buildLine(track, corridor, DEFAULT_SIM_PARAMS);
     expect(line.points).toHaveLength(track.centerline.length);
-    const margin = DEFAULT_SIM_PARAMS.tyre.kerbMarginM + 1e-6;
+    const margin = BOX_MARGIN + 1e-6;
     for (let i = 0; i < line.offsetM.length; i++) {
       expect(line.offsetM[i]).toBeLessThanOrEqual(corridor.leftM[i] + margin);
       expect(line.offsetM[i]).toBeGreaterThanOrEqual(-(corridor.rightM[i] + margin));
@@ -149,7 +156,7 @@ describe('buildLine', () => {
     // which would let a "corridor ignored" bug slip through unnoticed.
     const { track, corridor } = circleTrack(100, 3);
     const line = buildLine(track, corridor, DEFAULT_SIM_PARAMS);
-    const margin = DEFAULT_SIM_PARAMS.tyre.kerbMarginM + 1e-6;
+    const margin = BOX_MARGIN + 1e-6;
     for (let i = 0; i < line.offsetM.length; i++) {
       expect(line.offsetM[i]).toBeLessThanOrEqual(corridor.leftM[i] + margin);
       expect(line.offsetM[i]).toBeGreaterThanOrEqual(-(corridor.rightM[i] + margin));
@@ -220,7 +227,7 @@ describe('buildLine', () => {
         ...DEFAULT_SIM_PARAMS,
         rider: { ...DEFAULT_SIM_PARAMS.rider, kappa, lineDeviationM: 0 },
       });
-      const margin = DEFAULT_SIM_PARAMS.tyre.kerbMarginM + 1e-6;
+      const margin = BOX_MARGIN + 1e-6;
       for (let i = 0; i < line.offsetM.length; i++) {
         expect(line.offsetM[i]).toBeLessThanOrEqual(corridor.leftM[i] + margin);
         expect(line.offsetM[i]).toBeGreaterThanOrEqual(-(corridor.rightM[i] + margin));
@@ -265,7 +272,7 @@ describe('buildLine', () => {
       ...DEFAULT_SIM_PARAMS,
       rider: { ...DEFAULT_SIM_PARAMS.rider, lineDeviationM: 50 },
     });
-    const margin = DEFAULT_SIM_PARAMS.tyre.kerbMarginM + 1e-6;
+    const margin = BOX_MARGIN + 1e-6;
     for (let i = 0; i < line.offsetM.length; i++) {
       expect(line.offsetM[i]).toBeLessThanOrEqual(corridor.leftM[i] + margin);
       expect(line.offsetM[i]).toBeGreaterThanOrEqual(-(corridor.rightM[i] + margin));
@@ -289,7 +296,7 @@ describe('buildLine', () => {
       ...DEFAULT_SIM_PARAMS,
       rider: { ...DEFAULT_SIM_PARAMS.rider, kappa: 0, lineDeviationM: 0 },
     });
-    const bound = 1 + DEFAULT_SIM_PARAMS.tyre.kerbMarginM + 1e-6;
+    const bound = 1 + BOX_MARGIN + 1e-6;
     for (let i = 0; i < line.offsetM.length; i++) {
       expect(Math.abs(line.offsetM[i])).toBeLessThanOrEqual(bound);
     }
@@ -373,7 +380,13 @@ describe('buildLine', () => {
     // 110 m at a 10 m scale, 178 m at 20 m, 213 m at 30 m. The threshold
     // below is between the 10 m and 20 m readings, so a return to a 10 m
     // scale fails it.
-    const P = { ...DEFAULT_SIM_PARAMS, rider: { ...DEFAULT_SIM_PARAMS.rider, lineDeviationM: 0 } };
+    // kerbM 0: this pins the curvature SCALE, so the line must be held to the
+    // fixture's own corridor rather than a kerb's width either side of it
+    const P = {
+      ...DEFAULT_SIM_PARAMS,
+      tyre: { ...DEFAULT_SIM_PARAMS.tyre, kerbM: 0 },
+      rider: { ...DEFAULT_SIM_PARAMS.rider, lineDeviationM: 0 },
+    };
     const { track, corridor } = wobbledCircle(250, 1, 50, 0.01);
     const line = buildLine(track, corridor, P);
     let minR = Infinity;
@@ -388,8 +401,13 @@ describe('buildLine', () => {
     // either side and the corner's radius inflates — which would report a lap
     // the bike cannot ride. The 25 m hairpin reads 25.0 m at a 20 m scale,
     // 30.2 m at 45 m and 38.0 m at 60 m, so the bound below fails at 45 m.
-    const { track: ct, corridor: cc, segIdx } = circuitTrack(6, 2, 0.25);
-    const cl = buildLine(ct, cc, P);
+    //
+    // The corridor is PINNED to the centreline here (and the kerb margins are
+    // zero) so the reading is the smoothing's alone: with a 12 m corridor the
+    // exact minimum-curvature solve legitimately runs the hairpin wider than
+    // 25 m (28.6 m measured), which is the optimiser, not the smoothing.
+    const { track: ct, corridor: cc, segIdx } = circuitTrack(0.01, 2, 0.25);
+    const cl = buildLine(ct, cc, { ...P, tyre: { ...P.tyre, kerbMarginM: 0, kerbM: 0 } });
     const hair = segmentIndices(segIdx, CIRCUIT_SEGMENTS.hairpin).map((i) => 1 / Math.abs(cl.curvature[i]));
     expect(Math.min(...hair)).toBeLessThan(28);
     expect(Math.min(...hair)).toBeGreaterThan(20);
@@ -491,22 +509,73 @@ describe('smoothClosed', () => {
   });
 });
 
-describe('strideSchedule', () => {
-  it('coarsens to about two dozen vertices and comes back to the full grid', () => {
-    const s = strideSchedule(1521);
-    expect(s[s.length - 1]).toBe(1);
-    expect(s[0]).toBeGreaterThan(1);
-    // strictly coarse-to-fine, halving
-    for (let i = 1; i < s.length; i++) expect(s[i]).toBe(s[i - 1] / 2);
-    // the coarsest level is small enough to be solved outright, and still has
-    // enough vertices to carry the lap's shape
-    const coarsest = Math.ceil(1521 / s[0]);
-    expect(coarsest).toBeGreaterThanOrEqual(24);
-    expect(coarsest).toBeLessThan(48);
+describe('minimum-curvature line (exact bounded QP)', () => {
+  // kappa 0, no wander, no kerb margins: the box is exactly the corridor less
+  // the 0.4 m bike half-width, 12 m corridor -> +-5.6 m
+  const P = {
+    ...DEFAULT_SIM_PARAMS,
+    tyre: { ...DEFAULT_SIM_PARAMS.tyre, kerbMarginM: 0, kerbM: 0 },
+    rider: { ...DEFAULT_SIM_PARAMS.rider, kappa: 0, lineDeviationM: 0 },
+  };
+  const BOX = 6 - 0.4;
+  const maxAbs = (a: Float32Array, idx?: number[]): number =>
+    (idx ?? Array.from(a.keys())).reduce((m, i) => Math.max(m, Math.abs(a[i])), 0);
+
+  it('runs outside-inside-outside through a 90° corner and cuts its peak curvature by more than a quarter', () => {
+    // A rounded square: four 90° left corners of 30 m centreline radius
+    // joined by 300 m straights, 12 m wide. The max-radius arc through a 90°
+    // corner touches the outer edge on both straights and the inner edge at
+    // the apex: r = R_in + w/(1 - cos 45°) = 24.4 + 11.2/0.293 = 62.6 m against
+    // 30 m on the centreline (-52 % curvature). Minimum sum-of-squares
+    // curvature is not minimum peak curvature, and the 20 m curvature scale
+    // softens both, so the bound asserted is the brief's 25 %.
+    const segs: Seg[] = [];
+    for (let k = 0; k < 4; k++) segs.push({ kind: 'straight', lengthM: 300 }, { kind: 'arc', radiusM: 30, turnDeg: 90 });
+    const t = trackFromSegments(segs, 6, 2);
+    const line = buildLine(t.track, t.corridor, P, 6);
+    const centreK = lineFromOffsets(t.track, new Float32Array(t.track.centerline.length)).curvature;
+    const kC = maxAbs(centreK);
+    const kL = maxAbs(line.curvature);
+    expect(kL).toBeLessThanOrEqual(0.75 * kC);
+    for (let k = 0; k < 4; k++) {
+      const arc = segmentIndices(t.segIdx, 2 * k + 1);
+      const before = segmentIndices(t.segIdx, 2 * k);
+      const after = segmentIndices(t.segIdx, (2 * k + 2) % 8);
+      // the apex: the line reaches the INNER bound (left turn: +BOX)
+      const inner = Math.max(...arc.map((i) => line.offsetM[i]));
+      expect(inner).toBeGreaterThan(BOX - 0.2);
+      // entry and exit: the OUTER bound on the straights either side
+      expect(Math.min(...before.slice(-80).map((i) => line.offsetM[i]))).toBeLessThan(-BOX + 0.2);
+      expect(Math.min(...after.slice(0, 80).map((i) => line.offsetM[i]))).toBeLessThan(-BOX + 0.2);
+    }
   });
 
-  it('does not coarsen a grid that is already small', () => {
-    expect(strideSchedule(20)).toEqual([1]);
-    expect(strideSchedule(3)).toEqual([1]);
+  it('takes the full outer radius through a 180° oval end, the geometric optimum there', () => {
+    // A 180° turn between PARALLEL straights cannot be ridden on a radius
+    // larger than the outer edge's: the two outer edges are 2(R + w/2) apart
+    // and a curve turning 180° with curvature <= k spans at least 2/k. So on
+    // an oval the bound is R + 5.6 = 35.6 m (-16 % curvature), not the 25 %
+    // a sub-180° corner allows; the line has to reach it.
+    const segs: Seg[] = [
+      { kind: 'straight', lengthM: 300 },
+      { kind: 'arc', radiusM: 30, turnDeg: 180 },
+      { kind: 'straight', lengthM: 300 },
+      { kind: 'arc', radiusM: 30, turnDeg: 180 },
+    ];
+    const t = trackFromSegments(segs, 6, 2);
+    const line = buildLine(t.track, t.corridor, P, 6);
+    const kL = maxAbs(line.curvature);
+    expect(1 / kL).toBeGreaterThan(30 + 0.9 * BOX);
+  });
+
+  it('solves a 3200-station lap well inside the UI budget', () => {
+    const segs: Seg[] = [];
+    for (let k = 0; k < 4; k++) segs.push({ kind: 'straight', lengthM: 300 }, { kind: 'arc', radiusM: 30, turnDeg: 90 });
+    const t = trackFromSegments(segs, 6, 0.4); // ~3200 stations
+    expect(t.track.centerline.length).toBeGreaterThan(3000);
+    buildLine(t.track, t.corridor, P, 6); // warm-up
+    const t0 = performance.now();
+    buildLine(t.track, t.corridor, P, 6);
+    expect(performance.now() - t0).toBeLessThan(200);
   });
 });

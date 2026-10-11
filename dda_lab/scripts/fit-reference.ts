@@ -2,15 +2,21 @@
 // to the BMW and R6 Serres laps and print one Markdown table per lap.
 //
 //   cd dda_lab && npx vite-node scripts/fit-reference.ts [reference.json ...]
-//        [--track serres.pist.json] [--line map|centre|race] [--kappa 0..1] [--compare]
+//        [--track serres.pist.json] [--line map|centre|race] [--kappa 0..1] [--kerb m] [--compare]
 //
 // Default (no --track): the Serres track from the file's own lat/lon, no
 // corridor, `DEFAULT_SIM_PARAMS` (1000 preset, μ 1.40) — the map line. With
 // --track the default line is `race` (the rider's line inside the track
 // model's corridor, the preset's κ); `--line centre` rides the track model's
-// centreline itself. `--compare` fits every line (map, centre, race at the
-// preset's κ, κ = 0 minimum curvature, κ = 1 minimum distance) and prints a
-// compact comparison. Env: FIT_ITER overrides the iteration cap.
+// centreline itself. `--kerb` sets the kerb allowance past the corridor edge
+// (`tyre.kerbM`, default 1.0 m). `--compare` fits map, centre, and the race
+// line at the preset's κ and at κ = 0 (minimum curvature), each with kerbM 0
+// and 1.0, and prints a compact comparison. Env: FIT_ITER overrides the
+// iteration cap.
+//
+// Note: since 2026-10-11 (pist-line note §6) the race line is the exact
+// bounded minimum-curvature solve; earlier tables were made on the old
+// Gauss-Seidel line.
 import { readFileSync } from 'node:fs';
 import { fitRider, type RiderFit } from '../src/sim/fitRider';
 import { G } from '../src/sim/solver';
@@ -59,12 +65,14 @@ export function shiftedApexG(run: FitRun, tolM = REF_POS_TOL_M): number[] {
   });
 }
 
-export function fitFile(path: string, maxIter?: number, kind: LineKind = 'map', model?: PistModel, kappa?: number): FitRun {
+export function fitFile(path: string, maxIter?: number, kind: LineKind = 'map', model?: PistModel, kappa?: number, kerbM?: number): FitRun {
   const ref = parseReference(JSON.parse(readFileSync(path, 'utf8')));
-  const P = clampParams(DEFAULT_SIM_PARAMS);
+  const P0 = clampParams(DEFAULT_SIM_PARAMS);
+  const P = kerbM === undefined ? P0 : { ...P0, tyre: { ...P0.tyre, kerbM } };
   const line = fitLine(kind, P, readReferenceRows(path), model, kappa);
   const k = kappa ?? P.rider.kappa;
-  const label = kind === 'race' ? `race κ ${k.toFixed(2)}` : kind === 'map' ? `map (κ ${k.toFixed(2)}, 5 m)` : 'pist centreline';
+  const label =
+    kind === 'race' ? `race κ ${k.toFixed(2)} kerb ${(P.tyre.kerbM ?? 1).toFixed(1)}` : kind === 'map' ? `map (κ ${k.toFixed(2)}, 5 m)` : 'pist centreline';
   return { fit: fitRider(line, P, ref, maxIter === undefined ? {} : { maxIter }), line, lineLengthM: line.lengthM, label };
 }
 
@@ -177,8 +185,9 @@ export function compareTable(runs: FitRun[]): string {
   const trackPath = opt('--track');
   const lineArg = opt('--line');
   const kappaArg = opt('--kappa');
+  const kerbArg = opt('--kerb');
   const compare = argv.includes('--compare');
-  const optVals = new Set([trackPath, lineArg, kappaArg].filter(Boolean));
+  const optVals = new Set([trackPath, lineArg, kappaArg, kerbArg].filter(Boolean));
   const files = argv.filter((a) => a.endsWith('.json') && !a.endsWith('.pist.json') && !optVals.has(a));
   if (!files.length) files.push(...DEFAULT_FILES);
   const it = process.env.FIT_ITER ? Number(process.env.FIT_ITER) : undefined;
@@ -186,6 +195,7 @@ export function compareTable(runs: FitRun[]): string {
   if (lineArg && !['map', 'centre', 'center', 'race'].includes(lineArg)) throw new Error(`--line ${lineArg}: map | centre | race`);
   const kind: LineKind = lineArg === 'center' ? 'centre' : ((lineArg as LineKind | undefined) ?? (model ? 'race' : 'map'));
   const kappa = kappaArg === undefined ? undefined : Number(kappaArg);
+  const kerbM = kerbArg === undefined ? undefined : Number(kerbArg);
   if (model) {
     const pct = model.corridor ? Math.round((100 * model.corridor.known.filter(Boolean).length) / model.corridor.known.length) : 0;
     console.log(`Track model "${model.pkg.name}": ${(model.track.lengthM / 1000).toFixed(3)} km, ${model.pkg.corners.length} corners, corridor ${pct} % resolved, gate ${model.pkg.startFinish ? model.pkg.startFinish.at.map((x) => x.toFixed(6)).join(', ') : '—'}`);
@@ -196,9 +206,10 @@ export function compareTable(runs: FitRun[]): string {
       const runs = [
         fitFile(path, it, 'map'),
         fitFile(path, it, 'centre', model),
-        fitFile(path, it, 'race', model),
-        fitFile(path, it, 'race', model, 0),
-        fitFile(path, it, 'race', model, 1),
+        fitFile(path, it, 'race', model, undefined, 0),
+        fitFile(path, it, 'race', model, undefined, 1),
+        fitFile(path, it, 'race', model, 0, 0),
+        fitFile(path, it, 'race', model, 0, 1),
       ];
       console.log(`\n## Compare: ${runs[0].fit.reference} (${path.split('/').pop()})\n`);
       console.log(compareTable(runs));
@@ -210,7 +221,7 @@ export function compareTable(runs: FitRun[]): string {
       }
       continue;
     }
-    const r = fitFile(path, it, kind, model, kappa);
+    const r = fitFile(path, it, kind, model, kappa, kerbM);
     console.log(`\n## Fit: ${r.fit.reference} (${path.split('/').pop()}) on ${r.label}, line ${r.lineLengthM.toFixed(0)} m\n`);
     console.log(fitTable(r.fit));
   }

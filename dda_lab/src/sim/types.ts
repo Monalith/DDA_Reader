@@ -184,6 +184,14 @@ export interface TyreTrackParams {
   maxLeanDeg: number;
   /** How far past the extracted asphalt edge the line may run, metres. */
   kerbMarginM: number;
+  /**
+   * Kerb allowance, metres: how far the line-generator's box extends past a
+   * MEASURED corridor edge (a pist `.pist.json` edge sits at the asphalt/kerb
+   * line, and a rider uses the kerb). Added on top of `kerbMarginM`; not
+   * applied to the flat fallback half-width when there is no corridor.
+   * Undefined means `DEFAULT_KERB_M` (1.0 m).
+   */
+  kerbM?: number;
   /** One multiplier on mu standing in for surface and temperature. */
   gripScale: number;
 }

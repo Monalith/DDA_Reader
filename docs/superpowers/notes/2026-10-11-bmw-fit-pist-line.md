@@ -177,3 +177,127 @@ was made.
 - **Suite status.** 672/674 pass. The 2 failures are the two literal BMW assertions in
   `simFitRider.test.ts` (lap within 0.3 s, zone times within 0.3 s), which the previous note keeps red
   on purpose. Typecheck is clean.
+
+## 6. Full-width minimum-curvature line (2026-10-11, follow-up)
+
+§4 left one suspect: the line generator. It has now been replaced, and the comparison re-run.
+
+### 6.1 Diagnosis: why the κ = 0 line stopped short of the edges
+
+Measured on the pist Serres corridor (1578 lab stations, box = edge − 0.4 m bike half-width + 0.5 m
+`kerbMarginM`, p50 6.8 m per side), κ = 0:
+
+- **Width use overall was not the problem.** |offset| / available side, histogram in tenths 0.0 … 1.0:
+  old line `4.5 6.3 4.9 5.3 7.8 6.5 8.5 9.8 14.5 31.8` % — 32 % of stations already within 10 % of a
+  bound. The line was against an edge on most straights and many corners; it was short at
+  specific apexes: K9 0.4 of 7.7 m inside at the pist apex (1.4 m best within ±60 m), K16 1.8 of 7.8 m,
+  K12 never reached the inside (still 3.1 m on the outside side), K3 3.7 of 7.1 m at the pist apex
+  (6.9 m at its own apex 30-40 m away).
+- **Not the safety margin.** 0.4 m half-width minus 0.5 m kerb margin = the box was already 0.1 m
+  *outside* the pist edge.
+- **Not the smoothing window.** Shrinking the curvature scale of the centreline input from 20 m to
+  10 / 6 / 4 m moved the synthetic apex the wrong way (2.4 → 1.9 → 1.7 → 1.7 m inside).
+- **Non-convergence: a minor part.** Solving the old functional exactly (new QP solver) lowered its
+  objective by only 1.6 % and moved the Serres apexes by tenths of a metre to ~1.5 m (K3 3.7 → 5.1 m,
+  K9 0.4 → 3.6 m).
+- **The functional itself: the main cause.** The old line minimised Σκ² with the *small-slope*
+  curvature `κ ≈ k0 + k0²·d + d''`. That drops the d′² terms of the exact offset-curve curvature
+  `κ = [(1−k0 d)(k0(1−k0 d) + d″) + d′(k0′ d + 2 k0 d′)] / ((1−k0 d)² + d′²)^{3/2}`. They are not small
+  where a line crosses the track into a corner: at a 25–30 % crossing slope the linearisation
+  overstates the curvature by 20–30 %, so even the *exact* optimum refuses to cross far enough.
+  Synthetic 90° corner (R 30 m, 12 m corridor, box ±5.6 m): apex 1.64 m inside on the old solve,
+  2.02 m on the exact small-slope optimum, **5.60 m (on the bound)** with the exact curvature.
+
+### 6.2 Method
+
+`src/sim/line.ts` + new `src/sim/lineQp.ts`. The Heilmeier et al. 2019 / TUMFTM "mincurv" formulation:
+
+- **Variables and bounds.** One offset per station along its normal, bounded by
+  `[−(wR − 0.4 + kerbMarginM + kerbM), wL − 0.4 + kerbMarginM + kerbM]`.
+- **Objective.** Minimise ½(1−κ)·Σ k²·|p′| − κ·G·Σ k0·d. This is the same κ blend with minimum
+  distance as before, same `DIST_GAIN`. k is the exact curvature above, and |p′| is the line's own
+  arc-length element.
+- **Solve.** Gauss–Newton re-linearisation ("mincurv_iqp"), ≤ 8 passes, stopping once no station moves
+  more than 1 cm; in practice 2–3 passes. Each pass is a bounded QP with a periodic pentadiagonal
+  Hessian. It is solved to optimality by Bertsekas' projected Newton: an ε-active set, one banded
+  LDLᵀ plus a rank-4 Woodbury wrap correction per iteration, and projected Armijo backtracking.
+- **Why not primal-dual active-set.** A primal-dual active-set method was tried first and cycles on
+  this Hessian (60 iterations, unconverged).
+- **Speed.** 12–30 ms on Serres (1578 stations), 1.5–47 ms on a 3472-station fixture, well inside the
+  200 ms budget.
+- **Kerb allowance.** New `tyre.kerbM` (default **1.0 m**, `DEFAULT_KERB_M`, clamped 0–3). It is added on
+  top of the existing per-preset `kerbMarginM` and applies **only past a measured corridor edge**, not
+  to the 5 m fallback when there is no corridor, so `kerbM 0` reproduces the old box exactly. The sim
+  panel has a "Kerb allowance" slider under the line-style κ slider.
+- **Synthetic checks** (`tests/unit/simLine.test.ts`, kerb margins 0, box ±5.6 m):
+  - **90° rounded square.** Peak |κ| is 0.0217 against the centreline's 0.0300, −28 %. The apex sits
+    on the inner bound and the line touches the outer bound on both straights, within 0.2 m.
+  - **180° oval end.** A 25 % cut is geometrically impossible here: a 180° turn between parallel
+    straights cannot beat the outer radius R + w/2 = 35.6 m, which is −16 %. The test asserts a line
+    radius > R + 0.9·5.6.
+  - **Speed.** A 3200-station solve runs in < 200 ms.
+
+### 6.3 Re-run (BMW 1:19.81, `fit-reference.ts --track ../_inbox/serres.pist.json --compare --full`)
+
+Apex lateral g (fitted cap at the matched apex); in brackets the old Gauss–Seidel line of §2.
+
+| | race κ .85 kerb 0 | race κ .85 kerb 1.0 | race κ 0 kerb 0 | race κ 0 kerb 1.0 |
+|---|---|---|---|---|
+| line length, m | 3049 (3050) | 3032 | 3190 (3203) | 3197 |
+| lap fit / ref, s | 79.67 / 79.81 | 79.08 / 79.81 | 84.87 / 79.81 | 84.57 / 79.81 |
+| reference speed ridden on this line, s | 80.14 (80.23) | 79.61 | 84.32 (85.01) | 84.68 |
+| apexes over 1.40 g (apex / zone) | 10 / 10 (11 / 12) | 10 / 10 | 5 / 5 (9 / 9) | 6 / 7 |
+| apexes over 1.47 g | 9 / 9 (10 / 11) | 9 / 9 | 4 / 4 (7 / 7) | 4 / 4 |
+| over 1.40 / 1.47 g, reference shifted ≤ 20 m | 9 / 7 (10 / 8) | 9 / 6 | 3 / 3 (7 / 6) | 3 / 3 |
+| K3 | **1.69** (1.72) | **1.70** | 1.35 (1.63) | 1.34 |
+| K4 | **2.00** (1.93) | **1.99** | **1.82** (1.80) | **1.84** |
+| K6 | 1.33 (1.44) | 1.25 | **1.53** (1.58) | **1.50** |
+| K8 | **1.79** (1.76) | **1.71** | **1.60** (1.75) | **1.48** |
+| K9 | **1.57** (1.75) | **1.55** | 1.31 (1.76) | 1.32 |
+| K12 | **1.97** (1.89) | **1.95** | **1.69** (1.78) | **1.66** |
+
+On race κ 0 / kerb 1.0, the apexes over 1.40 g are K2 1.46, K4 1.84, K6 1.50, K8 1.48, K12 1.66 and
+K16 1.43. With the ±20 m reference shift: K4 1.64, K6 1.48 and K12 1.48. The R6 needs 1.6–2.0 g at
+K3, K4, K6, K8 and K12 even on κ 0 / kerb 1.0, so the §4 point stands.
+
+**Verdict: no, the BMW still does not fit under 1.40 g, but what is left is now three corners, not nine.**
+
+- **What the line fixed.** The full-width minimum-curvature line (κ 0) clears **K3** (1.63 → 1.34 g)
+  and **K9** (1.76 → 1.32 g). It brings K8 to 1.48 g with the kerb, and with the ±20 m shift to
+  1.26 g.
+  - **Count over 1.40 g:** 9 → 5–6 at the reference apexes, and 7 → 3 with the shift.
+- **What is left, with the shift allowed:**
+  - **K4: 1.64 g,** +0.24 g. With no shift, 1.84 g, +0.44 g. This is the worst.
+  - **K12: 1.48 g,** +0.08 g. With no shift, 1.66 g.
+  - **K6: 1.48 g,** +0.08 g. With no shift, 1.50 g.
+- **The kerb buys little.** It is worth ≈ 0.1 g at K8 and nothing measurable elsewhere.
+- **K4 and K12 look geometric, not line choice.**
+  - **The test.** An experimental near-minimax line (iteratively reweighted Σ|κ|^p, p = 4 / 8, not
+    committed) still gives K4 1.78 / 1.83 g and K12 1.83 / 1.76 g.
+  - **What it means.** No line in this corridor gets K4 below ~1.75 g at the reference apex
+    position.
+  - **Where the answer lies.** The remaining gap at K4 is in the reference's speed or its position
+    there, or in the tyre, not in the line.
+- **κ .85 got slightly worse.** The preset's κ .85 is a little worse at K4/K12 (+0.07 g) than on the
+  old line, because the exact solve commits harder to the minimum-distance pull there.
+
+### 6.4 Test changes
+
+- **`simLine.test.ts`.**
+  - **Containment bounds.** The containment tests now include `kerbM`, because the box legitimately
+    widened.
+  - **Hairpin-smoothing test.** It now runs on a pinned corridor. It had encoded the old line hugging
+    the centreline radius; the exact solve legitimately rides the 25 m hairpin at 28.6 m.
+  - **`strideSchedule`.** The test is deleted along with the multigrid it described.
+  - **New tests:** the three synthetic checks in §6.2.
+- **`simSolver.test.ts`.** The envelope pin was re-pinned, 59.492084 → 59.285918 s: the fixture's line
+  changed, the solver did not.
+- **`simFitRider.test.ts`** (map line, still κ .85). The new line has no left |κ| peak at K14, so the
+  K14 apex is set by the brake cap on its 0.10 g floor (+7.2 km/h). Thresholds changed:
+  - K14 apex: tolerance 8 km/h;
+  - lap against reference-on-line: 0.3 → 0.6 s, now −0.54 s;
+  - zone times: 0.25 → 0.30 s (K5 reads 0.250).
+- **`simFitPist.test.ts`.** The race-line lap against reference-on-line went 0.5 → 0.6 s, now −0.53 s,
+  mostly K1.
+- **Still red, unchanged.** The two literal BMW assertions (lap and zone times against the reference
+  clock) are still red as intended. The lap is now −1.0 s.

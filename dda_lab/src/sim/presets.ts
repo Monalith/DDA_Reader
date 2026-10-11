@@ -136,6 +136,9 @@ export const DEFAULT_SIM_PARAMS: SimParams = {
   rider: { ...DEFAULT_RIDER },
 };
 
+/** Default kerb allowance past a measured corridor edge, metres (`TyreTrackParams.kerbM`). */
+export const DEFAULT_KERB_M = 1.0;
+
 const clamp = (v: number, lo: number, hi: number): number =>
   Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : lo;
 
@@ -174,6 +177,7 @@ export function clampParams(p: SimParams): SimParams {
       muX: p.tyre.muX === undefined ? undefined : clamp(p.tyre.muX, 0.3, 1.8),
       maxLeanDeg: clamp(p.tyre.maxLeanDeg, 15, 70),
       kerbMarginM: clamp(p.tyre.kerbMarginM, 0, 3),
+      kerbM: clamp(p.tyre.kerbM ?? DEFAULT_KERB_M, 0, 3),
       gripScale: clamp(p.tyre.gripScale, 0.3, 1.2),
     },
     rider: {

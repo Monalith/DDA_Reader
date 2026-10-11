@@ -10,13 +10,14 @@
 // either side of it — what a powerful bike wants, because it can recover the
 // lost apex speed on the exit.
 //
-// kappa weights the two objectives in ONE quadratic (see `relax`), which is
-// minimised by projected Gauss-Seidel on a coarse-to-fine grid hierarchy (see
-// `solveOffsets`). The corridor clamp bounds the line because the corridor is a
-// real constraint, not because the iteration would otherwise blow up: the
-// functional is positive definite at every kappa.
+// kappa weights the two objectives in ONE quadratic (see `solveOffsets`),
+// which is minimised EXACTLY as a box-constrained QP (src/sim/lineQp.ts): the
+// corridor, widened by the kerb allowance `tyre.kerbM`, is a hard bound.
 //
-// Two earlier revisions are worth knowing about, both in task-6-report.md: one
+// Three earlier revisions are worth knowing about. The last minimised the same
+// functional by projected Gauss-Seidel on a coarse-to-fine grid hierarchy and
+// never converged it — the line stopped metres short of the edges (see
+// `solveOffsets`). Two more are worth knowing about, both in task-6-report.md: one
 // used an "anti-diffusion sharpening" term for the V end which diverged above
 // kappa ~ 0.70, and one linearised the offset line's curvature as `k0 + d''`,
 // which makes a constant offset free and so has an unconstrained zero mode —
@@ -25,18 +26,9 @@
 import { fromLocalM, toLocalM } from '../core/geo';
 import type { LngLat, TrackModel } from '../core/types';
 import { stencilK, stencilLeftNormal } from './corridor';
+import { applyAt, normalPenta, solveBoxQp } from './lineQp';
+import { DEFAULT_KERB_M } from './presets';
 import type { Corridor, Line, SimParams } from './types';
-
-/** Gauss-Seidel smoothing sweeps per multigrid level. */
-const SWEEPS = 60;
-/** Relaxation factor; over-relaxation above 1 converges faster but oscillates. */
-const OMEGA = 0.6;
-/**
- * Coarsen until the grid is no bigger than this. 24 vertices is small enough
- * that a direct-ish relaxation (m^2 sweeps, ~600, over 24 points) is free, and
- * that level is where the lap-wide shape of the line is actually decided.
- */
-const COARSEST_N = 24;
 
 /** Deterministic smooth pseudo-noise in [-1,1]: the same params give the same line. */
 function wander(i: number, n: number, seed: number): number {
@@ -45,92 +37,6 @@ function wander(i: number, n: number, seed: number): number {
     s += Math.sin((2 * Math.PI * h * i) / n + seed * h * 1.7) / h;
   }
   return s / 1.833; // normalise 1 + 1/2 + 1/3
-}
-
-/**
- * Projected Gauss-Seidel on the normal equations of
- *
- *   J(d) = (1 - kappa) * sum_i k_eff[i]^2  -  kappa * DIST_GAIN * sum_i k0[i]*d[i]
- *   k_eff[i] = k0[i] + d''[i] + k0[i]^2 * d[i]
- *
- * clamped into `[lo, hi]` after every update, so the corridor is a hard
- * constraint rather than a post-hoc trim.
- *
- * THE `k0^2 * d` TERM IS THE WHOLE POINT. The linearisation an earlier
- * revision used stopped at `k_eff = k0 + d''`, under which a CONSTANT offset
- * costs nothing — that is the unconstrained zero mode the previous report
- * identified, and it is why the iteration had to be stopped after 60 sweeps.
- * Pinning the mean offset (a gauge) removes the zero mode but leaves the
- * operator saying that running 6 m inside a 25 m hairpin is free, so a
- * converged solve then pins the line to the inside wall through every corner
- * (measured: hairpin radius 25 m -> 18.9 m, i.e. exactly `r - halfWidth`).
- * The `k0^2 * d` term is the missing physics: it says a given offset changes
- * the radius in proportion to how tight the bend already is, which is what
- * makes hugging the inside of a slow corner expensive and leaves the corridor
- * free to be spent on the fast one. With it in, the functional has no null
- * space and needs no gauge.
- *
- * The second difference term makes this a fourth-order (biharmonic-like)
- * problem, so pointwise Gauss-Seidel alone would need O(m^4) sweeps. The
- * coarse-to-fine schedule in `solveOffsets` is what makes it affordable.
- *
- * `distPull` is the minimum-distance gradient, already multiplied by kappa.
- */
-function relax(
-  d: Float32Array,
-  m: number,
-  spacingM: number,
-  k0: Float32Array,
-  distPull: Float32Array,
-  wCurv: number,
-  lo: Float32Array,
-  hi: Float32Array,
-  sweeps: number,
-): void {
-  const h2 = spacingM * spacingM;
-  const invh2 = 1 / h2;
-  const K = new Float32Array(m);
-  const A = new Float32Array(m);
-  for (let i = 0; i < m; i++) A[i] = k0[i] * k0[i] - 2 * invh2;
-  const recompute = (): void => {
-    for (let i = 0; i < m; i++) {
-      K[i] = k0[i] + (d[(i - 1 + m) % m] - 2 * d[i] + d[(i + 1) % m]) * invh2 + k0[i] * k0[i] * d[i];
-    }
-  };
-  recompute();
-  for (let s = 0; s < sweeps; s++) {
-    for (let i = 0; i < m; i++) {
-      const im = (i - 1 + m) % m;
-      const ip = (i + 1) % m;
-      // half the gradient of J with respect to d[i]
-      const grad = wCurv * ((K[im] + K[ip]) * invh2 + K[i] * A[i]) - distPull[i];
-      // the diagonal of the normal matrix: d(grad)/d(d[i])
-      const diag = wCurv * (2 * invh2 * invh2 + A[i] * A[i]) + 1e-9;
-      const want = d[i] - OMEGA * (grad / diag);
-      const next = Math.min(hi[i], Math.max(lo[i], want));
-      const delta = next - d[i];
-      if (delta !== 0) {
-        d[i] = next;
-        K[im] += delta * invh2;
-        K[ip] += delta * invh2;
-        K[i] += delta * A[i];
-      }
-    }
-  }
-}
-
-/**
- * Decimation strides, coarsest first, ending at 1 (the full grid). Each level
- * halves the vertex count until the grid is at most `COARSEST_N` across.
- */
-export function strideSchedule(n: number): number[] {
-  const out = [1];
-  let s = 1;
-  while (Math.ceil(n / (s * 2)) >= COARSEST_N) {
-    s *= 2;
-    out.push(s);
-  }
-  return out.reverse();
 }
 
 /**
@@ -144,20 +50,66 @@ export function strideSchedule(n: number): number[] {
 const DIST_GAIN = 2e-4;
 
 /**
- * Lateral offsets that blend the minimum-curvature and minimum-distance
- * objectives by `kappa`, subject to the corridor as a hard box constraint.
+ * Gauss-Newton passes on the EXACT offset-curve curvature (see `offsetCurv`).
+ * The first pass uses the small-slope linearisation `k0 + k0^2 d + d''`;
+ * every later one re-linearises the exact curvature about the previous line.
+ * Stops early once no station moves by more than `GN_TOL_M`.
+ */
+const GN_PASSES = 8;
+const GN_TOL_M = 0.01;
+
+/**
+ * Exact curvature of the offset curve p = c + d n off a centreline of
+ * curvature k0 (derivative k0p), parameterised by centreline arc length s,
+ * with d, d' = d1, d'' = d2 — and the line's arc-length element |p'|:
  *
- * `relax` explains the functional. What makes this a LAP-WIDE solve rather
- * than the ~16 m boundary layer an earlier revision produced is the
- * coarse-to-fine (cascadic multigrid) schedule: a fourth-order problem solved
- * by pointwise Gauss-Seidel propagates information about one vertex per sweep,
- * so a lap-wide answer on a 1500-vertex grid is unreachable at any sweep count
- * that keeps the UI live. Instead the problem is restricted onto a
- * ~24-vertex grid and solved there — where "lap-wide" is 24 points away — and
- * the solution is interpolated down level by level with `SWEEPS` smoothing
- * sweeps at each. The cost is about twice one full-grid sweep block, and it is
- * what lets the line set up for a corner from hundreds of metres out instead
- * of arriving at it on the centreline.
+ *   k = [(1 - k0 d)(k0 (1 - k0 d) + d'') + d' (k0' d + 2 k0 d')] / D^(3/2),
+ *   D = (1 - k0 d)^2 + d'^2,  |p'| = sqrt(D).
+ *
+ * The small-slope linearisation `k0 + k0^2 d + d''` drops the d'^2 terms,
+ * which are NOT small where a line crosses the track into a corner: at the
+ * 25-30 % slope of a full-width entry they overstate the crossing's curvature
+ * by 20-30 % and the line then refuses to cross far enough to reach the apex.
+ */
+function offsetCurv(k0: number, k0p: number, d: number, d1: number, d2: number): number {
+  const u = 1 - k0 * d;
+  const D = u * u + d1 * d1;
+  return (u * (k0 * u + d2) + d1 * (k0p * d + 2 * k0 * d1)) / (D * Math.sqrt(D));
+}
+
+/**
+ * Lateral offsets that blend the minimum-curvature and minimum-distance
+ * objectives by `kappa`, subject to the corridor as a hard box constraint:
+ *
+ *   minimise  (1 - kappa)/2 * sum_i k[i]^2 |p'[i]|  -  kappa * DIST_GAIN * sum_i k0[i] d[i]
+ *   k[i] = exact curvature of the offset line (`offsetCurv`), |p'| its arc-length element
+ *   lo[i] <= d[i] <= hi[i]
+ *
+ * — the "mincurv" formulation (Heilmeier et al. 2019, TUMFTM
+ * global_racetrajectory_optimization): offsets along each station's normal,
+ * curvature linearised in the offsets, a bounded QP per linearisation, and
+ * re-linearisation about the new line (their "mincurv_iqp"). Each QP is solved
+ * to optimality (projected Newton with a periodic banded direct solve,
+ * src/sim/lineQp.ts); the passes are Gauss-Newton steps on the exact
+ * objective, damped if one would raise it.
+ *
+ * The `k0^2 d` part of the curvature is what says a given offset changes the
+ * radius in proportion to how tight the bend already is (without it a
+ * constant offset is free and the solve pins the line to the inside of every
+ * corner). The `d''` part makes the problem fourth order.
+ *
+ * WHY THIS REPLACED THE GAUSS-SEIDEL LINE (notes/2026-10-11-bmw-fit-pist-line.md
+ * §6). The previous revision minimised the SMALL-SLOPE functional
+ * `k = k0 + k0^2 d + d''` by projected Gauss-Seidel on a coarse-to-fine grid.
+ * Two things kept it off the apexes, and the second is the big one:
+ *   - the iteration was not converged (its objective 1.6 % above the exact
+ *     optimum of the same functional on the pist Serres corridor);
+ *   - the small-slope functional itself is wrong where the line crosses the
+ *     track: dropping the d'^2 terms overstates a full-width entry's curvature
+ *     by 20-30 %, so even its EXACT optimum refuses to cross. On a 12 m
+ *     corridor with a 90° corner it stops 2.0 m inside the centreline at the
+ *     apex (of 5.6 m available; the old solve 1.6 m); the exact-curvature
+ *     solve touches the inside edge and the outside on both straights.
  */
 function solveOffsets(
   n: number,
@@ -168,62 +120,104 @@ function solveOffsets(
   kappa: number,
 ): Float32Array {
   const wCurv = Math.max(1e-3, 1 - kappa);
-  const pull = new Float32Array(n);
+  const invh2 = 1 / (stepM * stepM);
+  const lo = Float64Array.from(loM);
+  const hi = Float64Array.from(hiM);
+  for (let i = 0; i < n; i++) {
+    // a box that excludes the centreline (a pinch narrower than the bike) is
+    // widened to include it, as before: never infeasible
+    lo[i] = Math.min(0, lo[i]);
+    hi[i] = Math.max(0, hi[i]);
+  }
+  const h = stepM;
+  const k0p = new Float64Array(n);
+  for (let i = 0; i < n; i++) k0p[i] = (baseCurv[(i + 1) % n] - baseCurv[(i - 1 + n) % n]) / (2 * h);
+  const a = new Float64Array(n);
+  const b = new Float64Array(n);
+  const e = new Float64Array(n);
+  const beta = new Float64Array(n);
+  const c = new Float64Array(n);
+  const pull = new Float64Array(n);
   // d is positive to the LEFT of travel, so for a left-hand bend (k0 > 0) a
   // positive offset is the INSIDE: the shortest path's gradient is +k0.
   for (let i = 0; i < n; i++) pull[i] = kappa * DIST_GAIN * baseCurv[i];
-
-  let d = new Float32Array(0);
-  let prevStride = 0;
-  for (const stride of strideSchedule(n)) {
-    const m = Math.ceil(n / stride);
-    // spacing of THIS level, so the h^2 in the stencil scales with the grid
-    const spacingM = (stepM * n) / m;
-    const k0c = new Float32Array(m);
-    const pullc = new Float32Array(m);
-    const lo = new Float32Array(m);
-    const hi = new Float32Array(m);
-    for (let j = 0; j < m; j++) {
-      const from = j * stride;
-      const to = Math.min(n, from + stride);
-      let kAcc = 0;
-      let pAcc = 0;
-      let l = loM[from];
-      let h = hiM[from];
-      for (let t = from; t < to; t++) {
-        kAcc += baseCurv[t];
-        pAcc += pull[t];
-        // the tightest box in the group, so a coarse level can never commit to
-        // an offset that a pinch point inside it does not allow
-        l = Math.max(l, loM[t]);
-        h = Math.min(h, hiM[t]);
-      }
-      const cnt = Math.max(1, to - from);
-      k0c[j] = kAcc / cnt;
-      pullc[j] = pAcc / cnt;
-      lo[j] = Math.min(0, l);
-      hi[j] = Math.max(0, h);
+  const derivs = (d: Float64Array, i: number): [number, number] => {
+    const dm = d[(i - 1 + n) % n];
+    const dp = d[(i + 1) % n];
+    return [(dp - dm) / (2 * h), (dp - 2 * d[i] + dm) * invh2];
+  };
+  // the exact objective the passes descend: sum of k^2 over the LINE's arc
+  // length (centreline step times |p'|), minus the distance pull
+  const objective = (d: Float64Array): number => {
+    let f = 0;
+    for (let i = 0; i < n; i++) {
+      const [d1, d2] = derivs(d, i);
+      const u = 1 - baseCurv[i] * d[i];
+      const k = offsetCurv(baseCurv[i], k0p[i], d[i], d1, d2);
+      f += 0.5 * wCurv * k * k * Math.sqrt(u * u + d1 * d1) - pull[i] * d[i];
     }
-    const dc = new Float32Array(m);
-    if (prevStride > 0) {
-      // prolongation: linear interpolation of the coarser solution, wrapping
-      const pm = d.length;
-      for (let j = 0; j < m; j++) {
-        const t = (j * stride) / prevStride;
-        const a = Math.floor(t) % pm;
-        const w = t - Math.floor(t);
-        dc[j] = d[a] * (1 - w) + d[(a + 1) % pm] * w;
+    return f;
+  };
+  let d: Float64Array = new Float64Array(n);
+  let fPrev = Infinity;
+  for (let pass = 0; pass < GN_PASSES; pass++) {
+    for (let i = 0; i < n; i++) {
+      const k0 = baseCurv[i];
+      if (pass === 0) {
+        // small-slope linearisation about the centreline: k = k0 + A d
+        a[i] = invh2;
+        e[i] = invh2;
+        b[i] = k0 * k0 - 2 * invh2;
+        beta[i] = k0;
+        continue;
+      }
+      // Gauss-Newton: k(d) ~ k(d_c) + J (d - d_c), J tridiagonal through
+      // (d, d', d''); each row weighted by sqrt(|p'|) so the squares sum
+      // over the line's own arc length
+      const [d1, d2] = derivs(d, i);
+      const x = d[i];
+      const kc = offsetCurv(k0, k0p[i], x, d1, d2);
+      const eps = 1e-4;
+      const kd = (offsetCurv(k0, k0p[i], x + eps, d1, d2) - offsetCurv(k0, k0p[i], x - eps, d1, d2)) / (2 * eps);
+      const k1 = (offsetCurv(k0, k0p[i], x, d1 + eps, d2) - offsetCurv(k0, k0p[i], x, d1 - eps, d2)) / (2 * eps);
+      const k2 = (offsetCurv(k0, k0p[i], x, d1, d2 + eps) - offsetCurv(k0, k0p[i], x, d1, d2 - eps)) / (2 * eps);
+      const u = 1 - k0 * x;
+      const wr = Math.sqrt(Math.sqrt(u * u + d1 * d1));
+      a[i] = wr * (-k1 / (2 * h) + k2 * invh2);
+      b[i] = wr * (kd - 2 * k2 * invh2);
+      e[i] = wr * (k1 / (2 * h) + k2 * invh2);
+      const dm = d[(i - 1 + n) % n];
+      const dp = d[(i + 1) % n];
+      beta[i] = wr * kc - (a[i] * dm + b[i] * x + e[i] * dp);
+    }
+    const Q = normalPenta(a, b, e, wCurv, 0);
+    let meanDiag = 0;
+    for (let i = 0; i < n; i++) meanDiag += Q.d0[i];
+    meanDiag /= n;
+    for (let i = 0; i < n; i++) Q.d0[i] += 1e-9 * meanDiag;
+    applyAt(a, b, e, beta, c);
+    for (let i = 0; i < n; i++) c[i] = wCurv * c[i] - pull[i];
+    const res = solveBoxQp(Q, c, lo, hi, d);
+    // damped step on the exact objective: the box is convex, so any point
+    // between the old and the new solution is feasible
+    let step = 1;
+    let next = res.x;
+    let f = objective(next);
+    if (pass > 0) {
+      while (f > fPrev && step > 1 / 16) {
+        step *= 0.5;
+        next = d.map((v, i) => v + step * (res.x[i] - v));
+        f = objective(next);
       }
     }
-    // The coarsest level has no better initial guess than zero, so it is the
-    // one level that has to be solved rather than smoothed: m^2 sweeps is what
-    // periodic Gauss-Seidel needs for the longest mode, and over ~24 points
-    // that is a few hundred updates.
-    relax(dc, m, spacingM, k0c, pullc, wCurv, lo, hi, prevStride === 0 ? m * m : SWEEPS);
-    d = dc;
-    prevStride = stride;
+    let moved = 0;
+    for (let i = 0; i < n; i++) moved = Math.max(moved, Math.abs(next[i] - d[i]));
+    if (pass > 0 && f > fPrev) break;
+    d = next;
+    fPrev = f;
+    if (pass > 0 && moved < GN_TOL_M) break;
   }
-  return d;
+  return Float32Array.from(d);
 }
 
 /**
@@ -444,8 +438,10 @@ export function buildLine(
 
 /**
  * Lateral offset bounds the line may use at every centerline vertex, metres
- * (left positive, right negative), after the bike's half width and the kerb
- * margin. Exported for the free-trajectory optimiser (spec v2 §2.10), which
+ * (left positive, right negative): the corridor edge, less half a bike's
+ * width (0.4 m), plus the rider's kerb margin `tyre.kerbMarginM`, plus — past
+ * a measured corridor edge only — the kerb allowance `tyre.kerbM` (default
+ * 1.0 m). Exported for the free-trajectory optimiser (spec v2 §2.10), which
  * treats the offsets as decision variables inside exactly this box.
  */
 export function offsetBounds(
@@ -455,7 +451,10 @@ export function offsetBounds(
   fallbackHalfWidthM = 5,
 ): { loM: Float32Array; hiM: Float32Array } {
   const n = track.centerline.length;
-  const margin = params.tyre.kerbMarginM;
+  // the kerb allowance applies past a MEASURED edge only, never past the flat
+  // fallback half-width (which is a guess, not an edge)
+  const measured = !!corridor && corridor.known.some(Boolean);
+  const margin = params.tyre.kerbMarginM + (measured ? (params.tyre.kerbM ?? DEFAULT_KERB_M) : 0);
   const { leftM: effLeft, rightM: effRight } = effectiveHalfWidths(n, corridor, fallbackHalfWidthM);
   const hiM = new Float32Array(n);
   const loM = new Float32Array(n);

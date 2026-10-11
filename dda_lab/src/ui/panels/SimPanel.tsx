@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLab, type OptimalMode } from '../../state/store';
 import { DERIVED_KEYS } from '../../sim/derive';
-import { MACHINE_PRESETS } from '../../sim/presets';
+import { DEFAULT_KERB_M, MACHINE_PRESETS } from '../../sim/presets';
 import type { DerivedRiderKey, SimParams, SolverMode } from '../../sim/types';
 import { fmtDelta, fmtLapTime } from '../../state/selectors';
 import { optimalAvailability, optimalRunner, type Availability } from './simRunners';
@@ -446,6 +446,9 @@ export default function SimPanel() {
           {optimal && <p className="sim-ideal-note">Ideal rider: the optimal modes ignore Aggressiveness and Risk.</p>}
           <Slider label="Line style (C↔V)" value={params.rider.kappa} min={0} max={1} step={0.01}
             testId="sim-kappa" onChange={(v) => debouncedSetSimParams({ rider: { kappa: v } })} />
+          <Slider label="Kerb allowance" value={params.tyre.kerbM ?? DEFAULT_KERB_M} min={0} max={2} step={0.1} unit="m" decimals={1}
+            help="How far past the track model's edge the line may run (the kerb). Applies only with a measured corridor."
+            testId="sim-kerb-allowance" onChange={(v) => debouncedSetSimParams({ tyre: { kerbM: v } })} />
           <Slider label="Line deviation" value={params.rider.lineDeviationM} min={0} max={3} step={0.05} unit="m" decimals={2}
             testId="sim-deviation" onChange={(v) => debouncedSetSimParams({ rider: { lineDeviationM: v } })} />
           <details className="sim-advanced" data-testid="sim-advanced">

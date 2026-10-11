@@ -28,7 +28,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from ocp.job_queue import JobQueue, QueueFull
+try:
+    from ocp.job_queue import JobQueue, QueueFull
+except ImportError:  # pragma: no cover - host deployed without ocp/ (deploy_lab.sh without --with-ocp)
+    JobQueue = None  # type: ignore[assignment,misc]
+
+    class QueueFull(RuntimeError):  # type: ignore[no-redef]
+        pass
 
 import os
 import sys
@@ -462,9 +468,10 @@ async def put_corridor(key: str, request: Request, x_corridor_token: str = Heade
 # Full OCP jobs (spec v2 §2.10)                                               #
 # --------------------------------------------------------------------------- #
 
-def _ocp_queue() -> JobQueue:
+def _ocp_queue():
+    """The job queue, or None when this host has no `ocp/` package."""
     global OCP_QUEUE
-    if OCP_QUEUE is None:
+    if OCP_QUEUE is None and JobQueue is not None:
         OCP_QUEUE = JobQueue(
             solver_ref=OCP_SOLVER,
             data_dir=OCP_DIR,
@@ -503,8 +510,11 @@ async def post_ocp_job(request: Request, x_corridor_token: str = Header("")):
     except ValidationError:
         return JSONResponse(status_code=422, content={"error": "invalid_payload"})
 
+    q = _ocp_queue()
+    if q is None:
+        return JSONResponse(status_code=503, content={"error": "ocp_unavailable"})
     try:
-        job_id = _ocp_queue().submit(payload.model_dump())
+        job_id = q.submit(payload.model_dump())
     except QueueFull:
         return JSONResponse(status_code=429, content={"error": "queue_full"})
     return JSONResponse(status_code=202, content={"id": job_id})
@@ -514,7 +524,10 @@ async def post_ocp_job(request: Request, x_corridor_token: str = Header("")):
 def get_ocp_job(job_id: str):
     # Public, like GET /corridors: the id is an unguessable uuid4 and the
     # queue only ever reads `<data_dir>/<32 hex>.json` (allowlisted).
-    job = _ocp_queue().get(job_id)
+    q = _ocp_queue()
+    if q is None:
+        return JSONResponse(status_code=503, content={"error": "ocp_unavailable"})
+    job = q.get(job_id)
     if job is None:
         return JSONResponse(status_code=404, content={"error": "not_found"})
     out = {"id": job["id"], "key": job.get("key"), "status": job["status"]}

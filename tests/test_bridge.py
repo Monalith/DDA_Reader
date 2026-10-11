@@ -583,5 +583,16 @@ def test_ocp_queue_is_bounded(tmp_path, monkeypatch):
         q.shutdown()
 
 
+def test_ocp_host_without_the_ocp_package_answers_503(monkeypatch):
+    # deploy_lab.sh without --with-ocp: the bridge must still start and serve
+    monkeypatch.setattr(dda_lab_bridge, "JobQueue", None)
+    monkeypatch.setattr(dda_lab_bridge, "OCP_QUEUE", None)
+    monkeypatch.setattr(dda_lab_bridge, "CORRIDOR_TOKEN", "s3cret")
+    client = TestClient(dda_lab_bridge.app)
+    assert post_job(client, ocp_body()).status_code == 503
+    assert client.get("/ocp/jobs/0123456789abcdef0123456789abcdef").status_code == 503
+    assert client.get("/health").status_code == 200
+
+
 def test_ocp_default_timeout_is_fifteen_minutes():
     assert dda_lab_bridge.OCP_TIMEOUT_S == 900

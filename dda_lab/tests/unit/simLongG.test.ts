@@ -219,7 +219,10 @@ describe('the simulated brake builds over a real interval (mechanism 2)', () => 
       // with drag) is further away: measured 1.017 s on the 1000, 0.919 s on
       // the 600. Still inside the BMW reference's own 1.044 s, so the bound
       // still rejects a rate limit that never arrives.
-      expect(d.onsetS).toBeLessThan(1.1);
+      // Min-time line (pist-line note §7) 1.1 -> 1.15: the deepest zone's
+      // entry moved with the line, 1.104 s on the 600; the build rate is the
+      // same.
+      expect(d.onsetS).toBeLessThan(1.15);
       // v2: 1.5 -> 1.15. The metric is peak/onset time over a longer, deeper
       // build: 1.47 g/s on the 1000, 1.63 on the 600 (were 2.54 / 2.10). The
       // floor is now the BMW reference's own 1.19 g/s, less a margin; the

@@ -183,6 +183,75 @@ function objective(Q: PentaPeriodic, c: Float64Array, x: Float64Array, tmp: Floa
 }
 
 /**
+ * ADMM for the same box QP (Boyd et al. 2011 §5.2, with residual balancing
+ * §3.4.1): x = (Q + ρI)⁻¹(ρ(z − u) − c), z = P(x + u), u += x − z. Q + ρI is
+ * periodic pentadiagonal, so each iteration is one O(n) banded solve and a
+ * refactorisation (on a ρ change) is O(n) too. It identifies the active set
+ * of this badly conditioned fourth-order problem in tens to a few hundred
+ * cheap iterations where the projected Newton method crawls; its result
+ * warm-starts that method, which then polishes to optimality in a few steps.
+ * Returns z (feasible) once max|x − z| and max|Δz| both fall below `tolM`.
+ */
+export function admmBoxQp(
+  Q: PentaPeriodic,
+  c: Float64Array,
+  lo: Float64Array,
+  hi: Float64Array,
+  x0?: Float64Array,
+  maxIter = 600,
+  tolM = 1e-3,
+): { z: Float64Array; iterations: number } {
+  const n = Q.n;
+  const z = new Float64Array(n);
+  if (x0) for (let i = 0; i < n; i++) z[i] = Math.min(hi[i], Math.max(lo[i], x0[i]));
+  const u = new Float64Array(n);
+  const x = new Float64Array(n);
+  const r = new Float64Array(n);
+  let meanDiag = 0;
+  for (let i = 0; i < n; i++) meanDiag += Q.d0[i];
+  meanDiag /= n;
+  // starting ρ: 1e-5 of the mean diagonal (best of 1e-2 … 1e-6 measured on
+  // 0.9 m and 2 m station spacing), then balanced
+  let rho = Math.max(1e-12, meanDiag * 1e-5);
+  const M: PentaPeriodic = { n, d0: new Float64Array(n), d1: Q.d1, d2: Q.d2 };
+  const factor = (): ((r: Float64Array, out: Float64Array) => void) | null => {
+    for (let i = 0; i < n; i++) M.d0[i] = Q.d0[i] + rho;
+    return periodicPentaSolver(M);
+  };
+  let solveM = factor();
+  if (!solveM) return { z, iterations: 0 };
+  let it = 0;
+  for (; it < maxIter; it++) {
+    for (let i = 0; i < n; i++) r[i] = rho * (z[i] - u[i]) - c[i];
+    solveM(r, x);
+    let prim = 0;
+    let dz = 0;
+    for (let i = 0; i < n; i++) {
+      const zi = Math.min(hi[i], Math.max(lo[i], x[i] + u[i]));
+      dz = Math.max(dz, Math.abs(zi - z[i]));
+      z[i] = zi;
+      u[i] += x[i] - zi;
+      prim = Math.max(prim, Math.abs(x[i] - zi));
+    }
+    if (prim < tolM && dz < tolM && it > 0) break;
+    // residual balancing: primal and dual residuals (both in metres here)
+    if (it % 10 === 9) {
+      let scale = 1;
+      if (prim > 10 * dz) scale = 4;
+      else if (dz > 10 * prim) scale = 0.25;
+      if (scale !== 1) {
+        rho *= scale;
+        for (let i = 0; i < n; i++) u[i] /= scale;
+        const s2 = factor();
+        if (!s2) break;
+        solveM = s2;
+      }
+    }
+  }
+  return { z, iterations: it };
+}
+
+/**
  * min ½xᵀQx + cᵀx  s.t.  lo ≤ x ≤ hi, with Q periodic pentadiagonal SPD.
  *
  * Bertsekas' projected Newton method (1982) with an ε-active set: stations on
@@ -218,20 +287,28 @@ export function solveBoxQp(
   let f = objective(Q, c, x, tmp);
   let converged = false;
   let it = 0;
+  // Optimality is measured on the projected REDUCED Newton step, in metres:
+  // |P(x + p) − x| with p the Newton step on the free stations (the held ones
+  // are pushed against their bound and project to zero). At a KKT point it is
+  // zero. The diagonally scaled gradient g/diag Q this replaced
+  // underestimates the step of this fourth-order Hessian by ~(λ/h)⁴: at 0.9 m
+  // station spacing it read < 1e-5 m at the centreline and declared it
+  // optimal, and it kept the ε of the active set so small that the set was
+  // never identified (pist-line note §7).
+  let epsPrev = Infinity;
   for (; it < maxIter; it++) {
     pentaMul(Q, x, g);
-    let opt = 0;
+    let optD = 0;
     for (let i = 0; i < n; i++) {
       g[i] += c[i];
-      const step = x[i] - Math.min(hi[i], Math.max(lo[i], x[i] - g[i] / Q.d0[i]));
-      opt = Math.max(opt, Math.abs(step));
+      optD = Math.max(optD, Math.abs(x[i] - Math.min(hi[i], Math.max(lo[i], x[i] - g[i] / Q.d0[i]))));
     }
-    if (opt < tolM) {
+    if (optD === 0) {
       converged = true;
       break;
     }
     // ε-active set (Bertsekas): near a bound AND pushed outward
-    const eps = Math.min(0.05, opt);
+    const eps = Math.min(0.05, epsPrev === Infinity ? Math.max(optD, 0.05) : epsPrev);
     for (let i = 0; i < n; i++) {
       held[i] = (x[i] <= lo[i] + eps && g[i] > 0) || (x[i] >= hi[i] - eps && g[i] < 0) ? 1 : 0;
     }
@@ -249,6 +326,13 @@ export function solveBoxQp(
     } else {
       for (let i = 0; i < n; i++) p[i] = -g[i] / Q.d0[i];
     }
+    let opt = 0;
+    for (let i = 0; i < n; i++) opt = Math.max(opt, Math.abs(Math.min(hi[i], Math.max(lo[i], x[i] + p[i])) - x[i]));
+    if (opt < tolM) {
+      converged = true;
+      break;
+    }
+    epsPrev = opt;
     // projected Armijo backtracking
     let alpha = 1;
     let accepted = false;

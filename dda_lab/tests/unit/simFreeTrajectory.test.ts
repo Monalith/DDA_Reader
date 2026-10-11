@@ -11,7 +11,10 @@ const P = clampParams({
   rider: { ...DEFAULT_SIM_PARAMS.rider, sBrake: 1, sDrive: 1, sLat: 1, rollRateFrac: 1 },
 });
 
-describe('optimiseOffsets', () => {
+// 15 s: the optimiser runs several laps per test; at the 5 s default the box
+// test already sat at 4.7 s, and the min-time line (pist-line note §7) adds
+// ~0.1 s per κ-line it starts from.
+describe('optimiseOffsets', { timeout: 15_000 }, () => {
   it('is never slower than the kappa line it starts from, and its lap time is reproducible', () => {
     const { track } = circuitTrack();
     const start = solve(buildLine(track, undefined, P), P).lapTimeS;

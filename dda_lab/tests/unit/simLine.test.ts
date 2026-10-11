@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { buildLine, chooseCurvatureScaleM, CURV_SCALE_M, CURV_SCALE_SURVEYED_M, effectiveHalfWidths, lineFromOffsets, polylineCurvature, smoothClosed } from '../../src/sim/line';
-import { DEFAULT_SIM_PARAMS } from '../../src/sim/presets';
+import { buildLine, chooseCurvatureScaleM, CURV_SCALE_M, CURV_SCALE_SURVEYED_M, effectiveHalfWidths, lineFromOffsets, minTimeTrace, MT_ITERS, offsetBounds, polylineCurvature, smoothClosed } from '../../src/sim/line';
+import { clampParams, DEFAULT_SIM_PARAMS } from '../../src/sim/presets';
+import { solve } from '../../src/sim/solver';
 import type { Corridor } from '../../src/sim/types';
 import type { LngLat, TrackModel } from '../../src/core/types';
 import { CIRCUIT_SEGMENTS, circuitTrack, segmentIndices, trackFromSegments, type Seg } from './circuitFixture';
@@ -515,7 +516,7 @@ describe('minimum-curvature line (exact bounded QP)', () => {
   const P = {
     ...DEFAULT_SIM_PARAMS,
     tyre: { ...DEFAULT_SIM_PARAMS.tyre, kerbMarginM: 0, kerbM: 0 },
-    rider: { ...DEFAULT_SIM_PARAMS.rider, kappa: 0, lineDeviationM: 0 },
+    rider: { ...DEFAULT_SIM_PARAMS.rider, kappa: 0, lineDeviationM: 0, lineMode: 'min-curvature' as const },
   };
   const BOX = 6 - 0.4;
   const maxAbs = (a: Float32Array, idx?: number[]): number =>
@@ -575,8 +576,121 @@ describe('minimum-curvature line (exact bounded QP)', () => {
     expect(t.track.centerline.length).toBeGreaterThan(3000);
     buildLine(t.track, t.corridor, P, 6); // warm-up
     const t0 = performance.now();
-    buildLine(t.track, t.corridor, P, 6);
+    const line = buildLine(t.track, t.corridor, P, 6);
     expect(performance.now() - t0).toBeLessThan(200);
+    // and actually solved at this spacing: the QP's old diagonally scaled
+    // stopping test read the centreline as optimal at 0.4-0.9 m spacing
+    // (pist-line note §7); the apex reaches the inner bound
+    expect(Math.max(...line.offsetM)).toBeGreaterThan(BOX - 0.2);
+  });
+});
+
+/**
+ * A fast sweeper followed by a slow hairpin the other way (pist-line note §7):
+ * a 600 m straight, a LEFT 90° 150 m-radius sweeper, a 60 m link, a RIGHT 90°
+ * 15 m hairpin, then a rounded rectangle (30 m corners) closing the loop. 12 m
+ * wide, 2 m stations. Minimum curvature compromises the sweeper's exit to set
+ * up the hairpin; minimum time should not.
+ */
+function sweeperHairpin(dsM = 2): ReturnType<typeof trackFromSegments> {
+  const R1 = 150;
+  const R2 = 15;
+  const link = 60;
+  const dx = R1 + R2; // sweeper and hairpin are both 90°
+  const dy = R1 + link + R2;
+  return trackFromSegments(
+    [
+      { kind: 'straight', lengthM: 600 },
+      { kind: 'arc', radiusM: R1, turnDeg: 90 },
+      { kind: 'straight', lengthM: link },
+      { kind: 'arc', radiusM: R2, turnDeg: -90 },
+      { kind: 'straight', lengthM: 300 },
+      { kind: 'arc', radiusM: 30, turnDeg: 90 },
+      { kind: 'straight', lengthM: 100 },
+      { kind: 'arc', radiusM: 30, turnDeg: 90 },
+      { kind: 'straight', lengthM: 600 + dx + 300 },
+      { kind: 'arc', radiusM: 30, turnDeg: 90 },
+      { kind: 'straight', lengthM: dy + 100 },
+      { kind: 'arc', radiusM: 30, turnDeg: 90 },
+    ],
+    6,
+    dsM,
+  );
+}
+
+describe('min-time line (speed-weighted curvature, iterated against the QSS)', () => {
+  const base = clampParams(DEFAULT_SIM_PARAMS);
+  const at = (kappa: number, lineMode: 'min-curvature' | 'min-time') =>
+    clampParams({ ...base, rider: { ...base.rider, kappa, lineDeviationM: 0, lineMode } });
+  const t = sweeperHairpin();
+
+  it('is the default and survives clampParams', () => {
+    expect(DEFAULT_SIM_PARAMS.rider.lineMode).toBe('min-time');
+    expect(clampParams({ ...base, rider: { ...base.rider, lineMode: undefined } }).rider.lineMode).toBe('min-time');
+    expect(clampParams(at(0, 'min-curvature')).rider.lineMode).toBe('min-curvature');
+  });
+
+  it('opens the fast sweeper at the hairpin\'s expense, and laps ≥ 0.1 s quicker than minimum curvature', () => {
+    const mc = buildLine(t.track, t.corridor, at(0, 'min-curvature'), 6);
+    const mt = buildLine(t.track, t.corridor, at(0, 'min-time'), 6);
+    const sweeper = segmentIndices(t.segIdx, 1);
+    const hairpin = segmentIndices(t.segIdx, 3);
+    const meanK = (l: typeof mc, idx: number[]): number => idx.reduce((a, i) => a + Math.abs(l.curvature[i]), 0) / idx.length;
+    const peakK = (l: typeof mc, idx: number[]): number => Math.max(...idx.map((i) => Math.abs(l.curvature[i])));
+    // measured: sweeper mean radius 175 -> 182 m, hairpin peak radius 36 -> 32 m
+    expect(1 / meanK(mt, sweeper)).toBeGreaterThan(1 / meanK(mc, sweeper) + 3);
+    expect(1 / peakK(mt, hairpin)).toBeLessThan(1 / peakK(mc, hairpin) - 2);
+    const vMc = solve(mc, at(0, 'min-curvature'));
+    const vMt = solve(mt, at(0, 'min-time'));
+    const vMin = (env: typeof vMc, idx: number[]): number => Math.min(...idx.map((i) => env.v[i]));
+    expect(vMin(vMt, sweeper)).toBeGreaterThan(vMin(vMc, sweeper)); // 139 -> 150 km/h measured
+    expect(vMin(vMt, hairpin)).toBeLessThan(vMin(vMc, hairpin));
+    // the lap, on the same QSS rider: 59.782 -> 59.607 s measured
+    expect(vMt.lapTimeS).toBeLessThanOrEqual(vMc.lapTimeS - 0.1);
+  });
+
+  it('never leaves the box, at either κ', () => {
+    const { loM, hiM } = offsetBounds(t.track, t.corridor, at(0, 'min-time'), 6);
+    for (const kappa of [0, 0.5, 0.85, 1]) {
+      const mt = buildLine(t.track, t.corridor, at(kappa, 'min-time'), 6);
+      for (let i = 0; i < mt.offsetM.length; i++) {
+        expect(mt.offsetM[i]).toBeLessThanOrEqual(hiM[i] + 1e-6);
+        expect(mt.offsetM[i]).toBeGreaterThanOrEqual(loM[i] - 1e-6);
+      }
+    }
+  });
+
+  it('is never slower than the minimum-curvature line on its own QSS rider (it keeps the best iterate)', () => {
+    for (const kappa of [0, 0.3, 0.85]) {
+      const tr = minTimeTrace(t.track, t.corridor, at(kappa, 'min-time'), 6);
+      expect(tr.lapTimesS.length).toBeGreaterThanOrEqual(2);
+      expect(tr.iterations).toBeLessThanOrEqual(MT_ITERS);
+      const best = Math.min(...tr.lapTimesS);
+      expect(tr.lapTimesS[tr.bestIteration]).toBe(best);
+      expect(best).toBeLessThanOrEqual(tr.lapTimesS[0]); // iterate 0 = minimum curvature
+    }
+  });
+
+  it('keeps κ = 1 the minimum-distance line', () => {
+    const mc = buildLine(t.track, t.corridor, at(1, 'min-curvature'), 6);
+    const mt = buildLine(t.track, t.corridor, at(1, 'min-time'), 6);
+    expect(Math.abs(mt.lengthM - mc.lengthM)).toBeLessThan(1);
+  });
+
+  it('solves a 3200-station lap (4 iterations × QP + QSS) inside 300 ms', () => {
+    const t2 = sweeperHairpin(0.9);
+    expect(t2.track.centerline.length).toBeGreaterThan(3200);
+    const P = at(0.85, 'min-time');
+    buildLine(t2.track, t2.corridor, P, 6); // warm-up
+    // best of three: the full suite runs files in parallel, and one run can
+    // be descheduled (150-220 ms measured alone)
+    let best = Infinity;
+    for (let k = 0; k < 3; k++) {
+      const t0 = performance.now();
+      buildLine(t2.track, t2.corridor, P, 6);
+      best = Math.min(best, performance.now() - t0);
+    }
+    expect(best).toBeLessThan(300);
   });
 });
 

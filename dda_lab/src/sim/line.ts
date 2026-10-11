@@ -26,8 +26,9 @@
 import { fromLocalM, toLocalM } from '../core/geo';
 import type { LngLat, TrackModel } from '../core/types';
 import { stencilK, stencilLeftNormal } from './corridor';
-import { applyAt, normalPenta, solveBoxQp } from './lineQp';
-import { DEFAULT_KERB_M } from './presets';
+import { admmBoxQp, applyAt, normalPenta, solveBoxQp } from './lineQp';
+import { clampParams, DEFAULT_KERB_M } from './presets';
+import { solve } from './solver';
 import type { Corridor, Line, SimParams } from './types';
 
 /** Deterministic smooth pseudo-noise in [-1,1]: the same params give the same line. */
@@ -57,6 +58,11 @@ const DIST_GAIN = 2e-4;
  */
 const GN_PASSES = 8;
 const GN_TOL_M = 0.01;
+/** Gauss-Newton passes of a warm-started (min-time re-weighting) solve. */
+const GN_PASSES_WARM = 3;
+/** ADMM hand-over and projected-Newton optimality tolerances of each QP, metres. */
+const QP_ADMM_TOL_M = 1e-2;
+const QP_TOL_M = 1e-3;
 
 /**
  * Exact curvature of the offset curve p = c + d n off a centreline of
@@ -111,6 +117,18 @@ function offsetCurv(k0: number, k0p: number, d: number, d1: number, d2: number):
  *     apex (of 5.6 m available; the old solve 1.6 m); the exact-curvature
  *     solve touches the inside edge and the outside on both straights.
  */
+interface OffsetOpts {
+  /**
+   * Per-station weight on the curvature term (the min-time line's
+   * (v/v_ref)²); absent = 1 everywhere, the plain minimum-curvature line.
+   */
+  weight?: Float64Array;
+  /** Warm start: Gauss-Newton begins about this line instead of the centreline. */
+  warm?: Float64Array;
+  /** Extra minimum-distance pull, in units of `DIST_GAIN` (added to κ's). */
+  extraPull?: number;
+}
+
 function solveOffsets(
   n: number,
   stepM: number,
@@ -118,8 +136,12 @@ function solveOffsets(
   loM: Float32Array,
   hiM: Float32Array,
   kappa: number,
-): Float32Array {
+  opts: OffsetOpts = {},
+): Float64Array {
   const wCurv = Math.max(1e-3, 1 - kappa);
+  const wt = opts.weight;
+  const sw = new Float64Array(n);
+  for (let i = 0; i < n; i++) sw[i] = wt ? Math.sqrt(Math.max(0, wt[i])) : 1;
   const invh2 = 1 / (stepM * stepM);
   const lo = Float64Array.from(loM);
   const hi = Float64Array.from(hiM);
@@ -140,7 +162,8 @@ function solveOffsets(
   const pull = new Float64Array(n);
   // d is positive to the LEFT of travel, so for a left-hand bend (k0 > 0) a
   // positive offset is the INSIDE: the shortest path's gradient is +k0.
-  for (let i = 0; i < n; i++) pull[i] = kappa * DIST_GAIN * baseCurv[i];
+  const pullGain = (kappa + (opts.extraPull ?? 0)) * DIST_GAIN;
+  for (let i = 0; i < n; i++) pull[i] = pullGain * baseCurv[i];
   const derivs = (d: Float64Array, i: number): [number, number] => {
     const dm = d[(i - 1 + n) % n];
     const dp = d[(i + 1) % n];
@@ -154,21 +177,29 @@ function solveOffsets(
       const [d1, d2] = derivs(d, i);
       const u = 1 - baseCurv[i] * d[i];
       const k = offsetCurv(baseCurv[i], k0p[i], d[i], d1, d2);
-      f += 0.5 * wCurv * k * k * Math.sqrt(u * u + d1 * d1) - pull[i] * d[i];
+      f += 0.5 * wCurv * sw[i] * sw[i] * k * k * Math.sqrt(u * u + d1 * d1) - pull[i] * d[i];
     }
     return f;
   };
   let d: Float64Array = new Float64Array(n);
   let fPrev = Infinity;
-  for (let pass = 0; pass < GN_PASSES; pass++) {
+  // a warm start skips the small-slope pass: Gauss-Newton about the given line
+  const first = opts.warm ? 1 : 0;
+  if (opts.warm) {
+    for (let i = 0; i < n; i++) d[i] = Math.min(hi[i], Math.max(lo[i], opts.warm[i]));
+    fPrev = objective(d);
+  }
+  // warm (min-time re-weighting): the line is already near the optimum
+  const passes = opts.warm ? GN_PASSES_WARM : GN_PASSES;
+  for (let pass = first; pass < passes + first; pass++) {
     for (let i = 0; i < n; i++) {
       const k0 = baseCurv[i];
       if (pass === 0) {
         // small-slope linearisation about the centreline: k = k0 + A d
-        a[i] = invh2;
-        e[i] = invh2;
-        b[i] = k0 * k0 - 2 * invh2;
-        beta[i] = k0;
+        a[i] = sw[i] * invh2;
+        e[i] = sw[i] * invh2;
+        b[i] = sw[i] * (k0 * k0 - 2 * invh2);
+        beta[i] = sw[i] * k0;
         continue;
       }
       // Gauss-Newton: k(d) ~ k(d_c) + J (d - d_c), J tridiagonal through
@@ -182,7 +213,7 @@ function solveOffsets(
       const k1 = (offsetCurv(k0, k0p[i], x, d1 + eps, d2) - offsetCurv(k0, k0p[i], x, d1 - eps, d2)) / (2 * eps);
       const k2 = (offsetCurv(k0, k0p[i], x, d1, d2 + eps) - offsetCurv(k0, k0p[i], x, d1, d2 - eps)) / (2 * eps);
       const u = 1 - k0 * x;
-      const wr = Math.sqrt(Math.sqrt(u * u + d1 * d1));
+      const wr = sw[i] * Math.sqrt(Math.sqrt(u * u + d1 * d1));
       a[i] = wr * (-k1 / (2 * h) + k2 * invh2);
       b[i] = wr * (kd - 2 * k2 * invh2);
       e[i] = wr * (k1 / (2 * h) + k2 * invh2);
@@ -197,7 +228,9 @@ function solveOffsets(
     for (let i = 0; i < n; i++) Q.d0[i] += 1e-9 * meanDiag;
     applyAt(a, b, e, beta, c);
     for (let i = 0; i < n; i++) c[i] = wCurv * c[i] - pull[i];
-    const res = solveBoxQp(Q, c, lo, hi, d);
+    // ADMM finds the active set cheaply, projected Newton polishes it
+    // (lineQp.ts); both to the millimetre, which is all a line needs
+    const res = solveBoxQp(Q, c, lo, hi, admmBoxQp(Q, c, lo, hi, d, 600, QP_ADMM_TOL_M).z, 200, QP_TOL_M);
     // damped step on the exact objective: the box is convex, so any point
     // between the old and the new solution is feasible
     let step = 1;
@@ -217,7 +250,7 @@ function solveOffsets(
     fPrev = f;
     if (pass > 0 && moved < GN_TOL_M) break;
   }
-  return Float32Array.from(d);
+  return d;
 }
 
 /**
@@ -468,6 +501,122 @@ export function effectiveHalfWidths(
   return { leftM, rightM };
 }
 
+/** Line ↔ speed iterations of the min-time line (each one QSS solve and one warm QP solve). */
+export const MT_ITERS = 4;
+/** Stop once the line moves less than this at the 95th percentile, metres. */
+export const MT_TOL_P95_M = 0.1;
+/** Damping on the speed weights: w ← (1 − MT_DAMP)·w_old + MT_DAMP·w_new. */
+const MT_DAMP = 0.6;
+/** The min-time line's small minimum-distance term, in units of `DIST_GAIN`. */
+const MT_DIST = 0.1;
+/** Weight floor, (v/v_ref)²: a hairpin's curvature never becomes free. */
+const MT_W_MIN = 0.02;
+
+export interface MinTimeTrace {
+  offsets: Float64Array;
+  /** Line ↔ speed iterations run (re-weighted QP solves). */
+  iterations: number;
+  /** Which iterate was returned (0 = the plain minimum-curvature line). */
+  bestIteration: number;
+  /** p95 of |Δoffset| on each iteration, metres. */
+  movedP95M: number[];
+  /** QSS lap time (the rider's params) of every iterate, the min-curvature line first, s. */
+  lapTimesS: number[];
+}
+
+function p95Abs(a: Float64Array, b: Float64Array): number {
+  const x = Array.from(a, (v, i) => Math.abs(v - b[i])).sort((p, q) => p - q);
+  return x[Math.floor(0.95 * (x.length - 1))] ?? 0;
+}
+
+/**
+ * The MINIMUM-TIME APPROXIMATION behind `lineMode: 'min-time'`: iterate line ↔
+ * speed profile.
+ *
+ *   1. solve the κ-blended minimum-curvature line (`solveOffsets`, weight 1);
+ *   2. run the QSS speed profile (`solve`, the rider's own params) on it;
+ *   3. re-solve with the curvature term weighted per station by
+ *      w_i = (v_i / v_ref)² — lateral demand is v²κ, so curvature where the
+ *      bike is fast costs time and curvature in a slow corner costs little —
+ *      with v_ref² = Σκ²v²/Σκ² on the current line (the curvature-weighted
+ *      mean), which moves curvature cost between corners without changing
+ *      its total against the distance pull, so κ keeps its meaning; plus a
+ *      small minimum-distance term (`MT_DIST`·(1 − κ)), warm-started on the
+ *      previous line;
+ *   4. repeat (≤ `MT_ITERS`), the weights damped by `MT_DAMP`, until the line
+ *      moves < `MT_TOL_P95_M` at the 95th percentile.
+ *
+ * The speed is smoothed over the curvature scale before weighting, so a
+ * braking ramp does not put a weight step into the fourth-order problem. The
+ * κ blend is unchanged: κ = 1 is still minimum distance (the weighted
+ * curvature term is scaled by 1 − κ as before).
+ *
+ * Tuning (pist-line note §7): a stronger weight, (v/v_ref)⁴ or ⁶, opens the
+ * sweeper further but sacrifices the hairpin's exit onto the next straight
+ * and LOSES 1.5-3.5 s on the synthetic sweeper → hairpin; the distance term
+ * at 0.1·DIST_GAIN is worth ~0.06 s there on top of the weighting.
+ */
+export function minTimeOffsets(
+  track: TrackModel,
+  stepM: number,
+  baseCurv: Float32Array,
+  loM: Float32Array,
+  hiM: Float32Array,
+  params: SimParams,
+  init?: Float64Array,
+): MinTimeTrace {
+  const n = baseCurv.length;
+  const kappa = params.rider.kappa;
+  const P = clampParams({ ...params, rider: { ...params.rider, lineDeviationM: 0 } });
+  let d = solveOffsets(n, stepM, baseCurv, loM, hiM, kappa, init ? { warm: init } : {});
+  const movedP95M: number[] = [];
+  const lapTimesS: number[] = [];
+  let w: Float64Array | null = null;
+  let best = d;
+  let bestLap = Infinity;
+  let bestIter = 0;
+  let it = 0;
+  const half = CURV_SCALE_M / Math.max(0.1, stepM);
+  for (; ; it++) {
+    const line = lineFromOffsets(track, Float32Array.from(d));
+    const env = solve(line, P);
+    lapTimesS.push(env.lapTimeS);
+    if (env.lapTimeS < bestLap) {
+      bestLap = env.lapTimeS;
+      best = d;
+      bestIter = it;
+    }
+    if (it >= MT_ITERS || (it > 0 && movedP95M[it - 1] < MT_TOL_P95_M)) break;
+    const v2 = smoothClosed(Float32Array.from(env.v, (v) => v * v), half);
+    // v_ref² = the curvature-weighted mean of v², Σκ²v²/Σκ²: the weights move
+    // curvature cost from slow corners to fast ones without changing its
+    // total against the distance pull, so κ keeps its meaning
+    let num = 0;
+    let den = 0;
+    for (let i = 0; i < n; i++) {
+      const k2 = line.curvature[i] * line.curvature[i];
+      num += k2 * v2[i];
+      den += k2;
+    }
+    const mean = den > 0 && num > 0 ? num / den : 1;
+    const wNew = new Float64Array(n);
+    for (let i = 0; i < n; i++) wNew[i] = Math.max(MT_W_MIN, v2[i] / mean);
+    if (w) for (let i = 0; i < n; i++) w[i] = (1 - MT_DAMP) * w[i] + MT_DAMP * wNew[i];
+    else w = wNew;
+    const next = solveOffsets(n, stepM, baseCurv, loM, hiM, kappa, { weight: w, warm: d, extraPull: MT_DIST * (1 - kappa) });
+    movedP95M.push(p95Abs(next, d));
+    d = next;
+  }
+  return { offsets: best, iterations: it, bestIteration: bestIter, movedP95M, lapTimesS };
+}
+
+/** The min-time trace of `buildLine`'s own solve (diagnostics, scripts, tests). */
+export function minTimeTrace(track: TrackModel, corridor: Corridor | undefined, params: SimParams, fallbackHalfWidthM = 5, init?: Float64Array): MinTimeTrace {
+  const stepM = track.lengthM / Math.max(1, track.centerline.length - 1);
+  const { loM, hiM } = offsetBounds(track, corridor, params, fallbackHalfWidthM);
+  return minTimeOffsets(track, stepM, polylineCurvature(track.centerline, CURV_SCALE_M), loM, hiM, params, init);
+}
+
 export function buildLine(
   track: TrackModel,
   corridor: Corridor | undefined,
@@ -488,7 +637,10 @@ export function buildLine(
   // measurement scale: the minimum-curvature target is not a lateral-g
   // measurement, and its re-tuning is its own task (lineQp.ts).
   const baseCurv = polylineCurvature(cl, CURV_SCALE_M);
-  const d = solveOffsets(n, stepM, baseCurv, loM, hiM, params.rider.kappa);
+  const d =
+    (params.rider.lineMode ?? 'min-time') === 'min-time'
+      ? Float32Array.from(minTimeOffsets(track, stepM, baseCurv, loM, hiM, params).offsets)
+      : Float32Array.from(solveOffsets(n, stepM, baseCurv, loM, hiM, params.rider.kappa));
 
   // rider wander: a deterministic smooth deviation, clamped back into the box
   const dev = params.rider.lineDeviationM;

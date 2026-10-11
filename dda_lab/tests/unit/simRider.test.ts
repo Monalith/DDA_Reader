@@ -14,7 +14,10 @@ import type { Envelope } from '../../src/sim/types';
 // guarded — one brake per corner, no simultaneous drive-and-brake, alive
 // channels — is asserted here on the event-driven path.
 
-const P = clampParams(DEFAULT_SIM_PARAMS);
+// The plain minimum-curvature line: these tests count the fixture's five known
+// corners. The default min-time line (pist-line note §7) rides the 250 m
+// sweeper as a double apex at κ 0.85 (197 / 180 km/h), braking between — six.
+const P = clampParams({ ...DEFAULT_SIM_PARAMS, rider: { ...DEFAULT_SIM_PARAMS.rider, lineMode: 'min-curvature' } });
 
 /** Rises through 5 % in a cyclic channel. */
 const applications = (b: Float32Array): number => {

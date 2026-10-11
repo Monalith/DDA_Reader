@@ -46,6 +46,9 @@ export interface Line {
  */
 export type SolverMode = 'rider' | 'freeTrajectory' | 'ocp' | 'fit';
 
+/** The racing line's κ = 0 objective (`RiderParams.lineMode`). */
+export type LineMode = 'min-curvature' | 'min-time';
+
 /**
  * Per-sample overrides of the rider's lap-wide ceilings for `solve()`, one
  * value per line sample, m/s². Absent arrays keep the v2 ceilings. Used by the
@@ -267,6 +270,13 @@ export interface RiderParams {
   leanUsage: number;
   /** Line style: 0 = C line (even curvature), 1 = V line (squared off). */
   kappa: number;
+  /**
+   * What the κ = 0 end of the line minimises (src/sim/line.ts):
+   * 'min-time' (default when absent) weights the curvature by the QSS speed
+   * squared and iterates line ↔ speed profile, so a fast sweeper is opened at
+   * the cost of a slow hairpin; 'min-curvature' is the plain Σκ² line.
+   */
+  lineMode?: LineMode;
   /**
    * EXTENT of trail braking, 0..1: how deep into the corner the rider carries
    * the brakes at all, as the lateral-grip-use fraction at which brake

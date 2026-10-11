@@ -112,7 +112,7 @@ export function toSession(
     meta: {
       track: '',
       rider: 'Virtual rider',
-      note: `${params.machine.presetId} · κ ${params.rider.kappa.toFixed(2)} · brake ${params.rider.brakingG.toFixed(2)} g`,
+      note: `${params.machine.presetId} · κ ${params.rider.kappa.toFixed(2)} ${params.rider.lineMode ?? 'min-time'} · brake ${params.rider.brakingG.toFixed(2)} g`,
     },
     // the lap comes from the simulation, not from gates: keep it when the start line moves
     lapsFromFile: true,

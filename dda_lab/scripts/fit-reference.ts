@@ -3,6 +3,7 @@
 //
 //   cd dda_lab && npx vite-node scripts/fit-reference.ts [reference.json ...]
 //        [--track serres.pist.json] [--line map|centre|race] [--kappa 0..1] [--kerb m] [--compare]
+//        [--line-mode min-time|min-curvature|both]
 //
 // Default (no --track): the Serres track from the file's own lat/lon, no
 // corridor, `DEFAULT_SIM_PARAMS` (1000 preset, μ 1.40) — the map line. With
@@ -11,8 +12,10 @@
 // centreline itself. `--kerb` sets the kerb allowance past the corridor edge
 // (`tyre.kerbM`, default 1.0 m). `--compare` fits map, centre, and the race
 // line at the preset's κ and at κ = 0 (minimum curvature), each with kerbM 0
-// and 1.0, and prints a compact comparison. Env: FIT_ITER overrides the
-// iteration cap.
+// and 1.0, and prints a compact comparison. `--line-mode` picks the race
+// line's κ = 0 objective (default min-time, src/sim/line.ts); with
+// `--compare --line-mode both` the comparison is instead race κ .85 / 0,
+// kerb 1.0, on both objectives. Env: FIT_ITER overrides the iteration cap.
 //
 // Note: since 2026-10-11 (pist-line note §6) the race line is the exact
 // bounded minimum-curvature solve; earlier tables were made on the old
@@ -20,7 +23,7 @@
 import { readFileSync } from 'node:fs';
 import { fitRider, type RiderFit } from '../src/sim/fitRider';
 import { G } from '../src/sim/solver';
-import type { Line } from '../src/sim/types';
+import type { Line, LineMode } from '../src/sim/types';
 import { clampParams, DEFAULT_SIM_PARAMS } from '../src/sim/presets';
 import { parseReference } from '../src/sim/reference';
 import { fitLine, loadPistModel, type LineKind, type PistModel } from './lib/fitLines';
@@ -65,14 +68,15 @@ export function shiftedApexG(run: FitRun, tolM = REF_POS_TOL_M): number[] {
   });
 }
 
-export function fitFile(path: string, maxIter?: number, kind: LineKind = 'map', model?: PistModel, kappa?: number, kerbM?: number): FitRun {
+export function fitFile(path: string, maxIter?: number, kind: LineKind = 'map', model?: PistModel, kappa?: number, kerbM?: number, lineMode?: LineMode): FitRun {
   const ref = parseReference(JSON.parse(readFileSync(path, 'utf8')));
   const P0 = clampParams(DEFAULT_SIM_PARAMS);
   const P = kerbM === undefined ? P0 : { ...P0, tyre: { ...P0.tyre, kerbM } };
-  const line = fitLine(kind, P, readReferenceRows(path), model, kappa);
+  const line = fitLine(kind, P, readReferenceRows(path), model, kappa, lineMode);
   const k = kappa ?? P.rider.kappa;
+  const mode = lineMode ? ` ${lineMode}` : '';
   const label =
-    kind === 'race' ? `race κ ${k.toFixed(2)} kerb ${(P.tyre.kerbM ?? 1).toFixed(1)}` : kind === 'map' ? `map (κ ${k.toFixed(2)}, 5 m)` : 'pist centreline';
+    kind === 'race' ? `race κ ${k.toFixed(2)} kerb ${(P.tyre.kerbM ?? 1).toFixed(1)}${mode}` : kind === 'map' ? `map (κ ${k.toFixed(2)}, 5 m)${mode}` : 'pist centreline';
   return { fit: fitRider(line, P, ref, maxIter === undefined ? {} : { maxIter }), line, lineLengthM: line.lengthM, label };
 }
 
@@ -187,7 +191,9 @@ export function compareTable(runs: FitRun[]): string {
   const kappaArg = opt('--kappa');
   const kerbArg = opt('--kerb');
   const compare = argv.includes('--compare');
-  const optVals = new Set([trackPath, lineArg, kappaArg, kerbArg].filter(Boolean));
+  const modeArg = opt('--line-mode');
+  if (modeArg && !['min-time', 'min-curvature', 'both'].includes(modeArg)) throw new Error(`--line-mode ${modeArg}: min-time | min-curvature | both`);
+  const optVals = new Set([trackPath, lineArg, kappaArg, kerbArg, modeArg].filter(Boolean));
   const files = argv.filter((a) => a.endsWith('.json') && !a.endsWith('.pist.json') && !optVals.has(a));
   if (!files.length) files.push(...DEFAULT_FILES);
   const it = process.env.FIT_ITER ? Number(process.env.FIT_ITER) : undefined;
@@ -203,14 +209,21 @@ export function compareTable(runs: FitRun[]): string {
   for (const path of files) {
     if (compare) {
       if (!model) throw new Error('--compare needs --track file.pist.json');
-      const runs = [
-        fitFile(path, it, 'map'),
-        fitFile(path, it, 'centre', model),
-        fitFile(path, it, 'race', model, undefined, 0),
-        fitFile(path, it, 'race', model, undefined, 1),
-        fitFile(path, it, 'race', model, 0, 0),
-        fitFile(path, it, 'race', model, 0, 1),
-      ];
+      const runs =
+        modeArg === 'both'
+          ? // the two line objectives side by side (pist-line note §7): κ .85 / 0, kerb 1.0
+            (['min-curvature', 'min-time'] as const).flatMap((m) => [
+              fitFile(path, it, 'race', model, undefined, 1, m),
+              fitFile(path, it, 'race', model, 0, 1, m),
+            ])
+          : [
+              fitFile(path, it, 'map', undefined, undefined, undefined, modeArg as LineMode | undefined),
+              fitFile(path, it, 'centre', model),
+              fitFile(path, it, 'race', model, undefined, 0, modeArg as LineMode | undefined),
+              fitFile(path, it, 'race', model, undefined, 1, modeArg as LineMode | undefined),
+              fitFile(path, it, 'race', model, 0, 0, modeArg as LineMode | undefined),
+              fitFile(path, it, 'race', model, 0, 1, modeArg as LineMode | undefined),
+            ];
       console.log(`\n## Compare: ${runs[0].fit.reference} (${path.split('/').pop()})\n`);
       console.log(compareTable(runs));
       if (argv.includes('--full')) {
@@ -221,7 +234,7 @@ export function compareTable(runs: FitRun[]): string {
       }
       continue;
     }
-    const r = fitFile(path, it, kind, model, kappa, kerbM);
+    const r = fitFile(path, it, kind, model, kappa, kerbM, modeArg === 'both' ? undefined : (modeArg as LineMode | undefined));
     console.log(`\n## Fit: ${r.fit.reference} (${path.split('/').pop()}) on ${r.label}, line ${r.lineLengthM.toFixed(0)} m\n`);
     console.log(fitTable(r.fit));
   }

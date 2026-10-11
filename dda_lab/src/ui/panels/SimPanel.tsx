@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLab, type OptimalMode } from '../../state/store';
 import { DERIVED_KEYS } from '../../sim/derive';
 import { DEFAULT_KERB_M, MACHINE_PRESETS } from '../../sim/presets';
-import type { DerivedRiderKey, SimParams, SolverMode } from '../../sim/types';
+import type { DerivedRiderKey, LineMode, SimParams, SolverMode } from '../../sim/types';
 import { fmtDelta, fmtLapTime } from '../../state/selectors';
 import { optimalAvailability, optimalRunner, type Availability } from './simRunners';
 import { rangeValue } from './simRange';
@@ -444,6 +444,17 @@ export default function SimPanel() {
               testId="sim-risk-slider" onChange={(v) => debouncedSetSimParams({ rider: { risk: v } })} />
           </div>
           {optimal && <p className="sim-ideal-note">Ideal rider: the optimal modes ignore Aggressiveness and Risk.</p>}
+          <label className="sim-slider">
+            <span className="sim-slider-label" title="What the C end (κ 0) of the line minimises. Min time weights curvature by speed², so a fast sweeper is opened at the cost of a slow hairpin; min curvature is the plain smoothest line.">Line objective</span>
+            <select
+              value={params.rider.lineMode ?? 'min-time'}
+              data-testid="sim-line-mode"
+              onChange={(e) => setSimParams({ rider: { lineMode: e.target.value as LineMode } })}
+            >
+              <option value="min-time">Min time</option>
+              <option value="min-curvature">Min curvature</option>
+            </select>
+          </label>
           <Slider label="Line style (C↔V)" value={params.rider.kappa} min={0} max={1} step={0.01}
             testId="sim-kappa" onChange={(v) => debouncedSetSimParams({ rider: { kappa: v } })} />
           <Slider label="Kerb allowance" value={params.tyre.kerbM ?? DEFAULT_KERB_M} min={0} max={2} step={0.1} unit="m" decimals={1}

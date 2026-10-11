@@ -16,7 +16,7 @@ import {
 } from '../../src/sim/referenceFromDda';
 import type { Reference } from '../../src/sim/reference';
 import { deriveRider } from '../../src/sim/derive';
-import type { Line, SimParams } from '../../src/sim/types';
+import type { Line, LineMode, SimParams } from '../../src/sim/types';
 import type { TrackModel } from '../../src/core/types';
 import { chooseCurvatureScaleM, CURV_SCALE_M, lineFromOffsets, polylineCurvature } from '../../src/sim/line';
 import { classifyLaps } from './ddaLap';
@@ -425,9 +425,10 @@ export function fitAndCompare(label: string, line: Line, ref: Reference, trace: 
   };
 }
 
-export function fitOnPist(ref: Reference, trace: DdaLapTrace, model: PistModel, kappa: number, kerbM: number, cal: LeanCal): FitCompare {
+export function fitOnPist(ref: Reference, trace: DdaLapTrace, model: PistModel, kappa: number, kerbM: number, cal: LeanCal, lineMode?: LineMode): FitCompare {
   const P = panigaleParams(kerbM);
-  return fitAndCompare(`race κ ${kappa.toFixed(2)} kerb ${kerbM.toFixed(1)}`, fitLine('race', P, [], model, kappa), ref, trace, cal, kerbM);
+  const mode = lineMode ? ` ${lineMode}` : '';
+  return fitAndCompare(`race κ ${kappa.toFixed(2)} kerb ${kerbM.toFixed(1)}${mode}`, fitLine('race', P, [], model, kappa, lineMode), ref, trace, cal, kerbM);
 }
 
 export interface DucatiLateral {

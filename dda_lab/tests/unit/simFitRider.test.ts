@@ -368,7 +368,8 @@ describe('fitRider on the corrected BMW lap (v2) on the pist κ 0 kerb 1.0 race 
   };
   const ref = parseReference(raw);
   const model = loadPistModel(new URL('../../public/tracks/serres.pist.json', import.meta.url).pathname);
-  const PK: SimParams = { ...P, tyre: { ...P.tyre, kerbM: 1 } };
+  // pinned to min-curvature: the min-time objective deliberately tightens the slow K2 (1.51 → 1.64 g)
+  const PK: SimParams = { ...P, tyre: { ...P.tyre, kerbM: 1 }, rider: { ...P.rider, lineMode: 'min-curvature' } };
   const line = fitLine('race', PK, raw.telemetri_1m as never, model, 0);
   const fit = fitRider(line, PK, ref);
   const byName = (n: string) => fit.corners.find((c) => c.name === n)!;

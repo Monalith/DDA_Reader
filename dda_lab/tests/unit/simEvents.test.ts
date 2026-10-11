@@ -11,7 +11,11 @@ import { deriveRider } from '../../src/sim/derive';
 import type { Corner, Envelope, Line, SimParams } from '../../src/sim/types';
 import { chicaneTrack, circuitTrack, testCaps, trackFromSegments } from './circuitFixture';
 
-const P = clampParams(DEFAULT_SIM_PARAMS);
+// The plain minimum-curvature line: these tests are about the corner
+// detector on the fixture's five known corners. The default min-time line
+// (pist-line note §7) rides the 250 m sweeper as a double apex at κ 0.85 —
+// two curvature peaks, so the detector rightly finds six sections there.
+const P = clampParams({ ...DEFAULT_SIM_PARAMS, rider: { ...DEFAULT_SIM_PARAMS.rider, lineMode: 'min-curvature' } });
 
 interface Run { line: Line; env: Envelope; corners: Corner[]; ev: EventProfile; params: SimParams }
 

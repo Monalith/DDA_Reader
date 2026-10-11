@@ -6,7 +6,11 @@ import { clampParams, DEFAULT_SIM_PARAMS, presetById } from '../../src/sim/prese
 import type { Corner, SimParams } from '../../src/sim/types';
 import { chicaneTrack, circuitTrack, trackFromSegments } from './circuitFixture';
 
-const P = clampParams(DEFAULT_SIM_PARAMS);
+// The plain minimum-curvature line: these tests are about the corner
+// detector on the fixture's five known corners. The default min-time line
+// (pist-line note §7) rides the 250 m sweeper as a double apex at κ 0.85 —
+// two curvature peaks, so the detector rightly finds six sections there.
+const P = clampParams({ ...DEFAULT_SIM_PARAMS, rider: { ...DEFAULT_SIM_PARAMS.rider, lineMode: 'min-curvature' } });
 
 /** Cyclic distance forward from `a` to `b` in a lap of `n` samples. */
 const fwd = (a: number, b: number, n: number): number => (b - a + n) % n;

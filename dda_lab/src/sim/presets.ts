@@ -123,6 +123,7 @@ const DEFAULT_RIDER_BASE: RiderParams = {
   overrides: [],
   lineDeviationM: 0.4,
   kappa: presetById('1000').kappa,
+  lineMode: 'min-time',
   // derived below; zeros here only so the object is complete before deriveRider()
   sBrake: 0, sDrive: 0, sLat: 0, rollOnS: 0, rollRateFrac: 0,
   brakingG: 0, brakeRiseGps: 0, throttleDelayS: 0, tcThreshold: 0, leanUsage: 0,
@@ -200,6 +201,7 @@ export function clampParams(p: SimParams): SimParams {
       tcThreshold: clamp(p.rider.tcThreshold, 0, 1),
       leanUsage: clamp(p.rider.leanUsage, 0, 1),
       kappa: clamp(p.rider.kappa, 0, 1),
+      lineMode: p.rider.lineMode === 'min-curvature' ? 'min-curvature' : 'min-time',
       trailBrakeDepth: clamp(p.rider.trailBrakeDepth, 0, 1),
       trailBrakeProfile: clamp(p.rider.trailBrakeProfile, 0, 1),
     },

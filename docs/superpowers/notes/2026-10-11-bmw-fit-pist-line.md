@@ -301,3 +301,147 @@ K3, K4, K6, K8 and K12 even on κ 0 / kerb 1.0, so the §4 point stands.
   mostly K1.
 - **Still red, unchanged.** The two literal BMW assertions (lap and zone times against the reference
   clock) are still red as intended. The lap is now −1.0 s.
+
+## 7. Min-time line approximation (2026-10-11, follow-up to ducati-lateral note §5 item b)
+
+### 7.1 Method
+
+`src/sim/line.ts`, `lineMode: 'min-curvature' | 'min-time'` in `RiderParams` (default `'min-time'`;
+absent = min-time; `clampParams` keeps it). The sim panel has a "Line objective" select next to the κ slider.
+
+- **Iteration (`minTimeOffsets`).** (a) Solve the κ-blended minimum-curvature line. (b) Run the QSS
+  (`solve`) with the rider's own params (no wander). (c) Re-solve with the curvature term weighted per
+  station by w = (v/v_ref)², with v² smoothed over the 20 m curvature scale. v_ref² = Σκ²v²/Σκ² on the
+  current line, the curvature-weighted mean, so the weights move curvature cost between corners without
+  changing its total against the distance pull, and κ keeps its meaning. Add a small distance term,
+  0.1·DIST_GAIN·(1 − κ). The solve is warm-started on the previous line (≤ 3 Gauss–Newton passes).
+  (d) Repeat ≤ 4 times, with the weights damped (0.6 new), until the line moves < 0.1 m p95.
+- **Safeguard.** The fixed-point iteration is not monotone in lap time. Each iterate's QSS lap is
+  recorded, iterate 0 being the min-curvature line, and **the fastest iterate is returned**. So the
+  min-time line is never slower than min-curvature on its own QSS rider.
+- **κ semantics.** κ = 0 is the min-time line. κ = 1 is still minimum distance: the lengths match to
+  < 1 m. In between, the blend works as before.
+- **Weight strength.** (v/v_ref)⁴ and ⁶ were tried. They open the sweeper further but cost the
+  hairpin's exit onto the next straight: +1.5 s and +3.5 s on the synthetic fixture. The spec's
+  square is the best of the three.
+
+### 7.2 QP fix found on the way (`src/sim/lineQp.ts`)
+
+- **The bug.** The projected-Newton stopping test (|x − P(x − g/diag Q)| < 1e-5 m) is mis-scaled for
+  this fourth-order Hessian, by ~(λ/h)⁴.
+- **What it did.** At 0.4–0.9 m station spacing it declared the **centreline** optimal at iteration
+  0. The old 3200-station speed test passed because it solved nothing. At 2 m spacing its "converged"
+  10–30 iterations were in fact unconverged.
+- **The fix.** Optimality is now the projected *reduced* Newton step, and the ε of the active set
+  follows it. A new `admmBoxQp` (ADMM with residual balancing, ρ₀ = 1e-5·mean diag, O(n) banded solve
+  per iteration) finds the active set and warm-starts projected Newton, which polishes it. Tolerances
+  are 1 cm for ADMM and 1 mm for Newton.
+- **Effect on the min-curvature line at 2 m.** It moved by tenths: Serres BMW κ 0 lap 85.22 → 85.21 s.
+  The envelope pin moved, 59.285918 → 58.436497 s, but that is mostly the min-time default.
+
+### 7.3 Synthetic (tests/unit/simLine.test.ts, `sweeperHairpin`)
+
+The fixture is a 600 m straight, then a LEFT 90° R150 sweeper, a 60 m link, and a RIGHT 90° R15
+hairpin, closed by a rounded rectangle. It is 12 m wide, with 2 m stations. Results at κ 0, 1000
+preset:
+
+| | min-curvature | min-time |
+|---|---|---|
+| sweeper mean-κ radius | 175 m | 182 m |
+| sweeper min speed | 139 km/h | 150 km/h |
+| hairpin peak radius | 36 m | 32 m |
+| QSS lap | 59.782 s | 59.607 s (−0.175 s) |
+
+- **The lap gain depends on spacing:**
+
+  | | 2 m | 1.5 m | 1 m |
+  |---|---|---|---|
+  | lap gain | −0.175 s | −0.198 s | −0.060 s |
+
+  The trade-off is flat, and min-curvature itself moves ±0.15 s with spacing.
+- **Geometry variants** at 2 m gain −0.07 to −0.20 s.
+- **At κ .85** the safeguard returns the min-curvature line.
+- **The 5-corner circuit at the preset κ .85** gains −0.85 s: 59.29 → 58.44 s. The 250 m sweeper
+  becomes a double apex (197 / 180 km/h), so the corner detector finds 6 sections. The
+  detector/event/rider tests are pinned to `'min-curvature'` for that reason.
+
+### 7.4 Serres (`scripts/line-modes.ts`; fit-reference also takes `--line-mode min-time|min-curvature|both`)
+
+Fitted lateral cap at the matched apex, g. "HEAD" is the pre-§7 line (old QP, min-curvature).
+
+**BMW 1:19.81, 1000 preset, pist race line, kerb 1.0**
+
+| | κ0 HEAD | κ0 min-curv | κ0 min-time | κ.85 HEAD | κ.85 min-curv | κ.85 min-time |
+|---|---|---|---|---|---|---|
+| K2 | 1.51 | 1.52 | **1.64** | 1.71 | 1.71 | 1.71 |
+| K3 | 1.35 | 1.35 | 1.32 | 1.69 | 1.70 | 1.70 |
+| K4 | 1.84 | 1.84 | 1.85 | 1.99 | 1.99 | 1.99 |
+| K6 | 1.50 | 1.50 | 1.44 | 1.25 | 1.25 | 1.25 |
+| K8 | 1.49 | 1.49 | 1.48 | 1.71 | 1.71 | 1.71 |
+| K9 | 1.32 | 1.32 | 1.28 | 1.55 | 1.55 | 1.55 |
+| K12 | 1.66 | 1.65 | 1.63 | 1.95 | 1.95 | 1.95 |
+| K4 radius at apex, m | 108 | 107 | 107 | 99 | 99 | 99 |
+| line length, m | 3197 | 3196 | 3188 | 3032 | 3032 | 3032 |
+| fit lap / ref-on-line, s | 85.22 / 84.68 | 85.21 / 84.67 | 84.93 / 84.54 | 79.37 / 79.61 | 79.37 / 79.61 | 79.37 / 79.61 |
+| QSS lap, preset rider, s | 82.65 | 82.67 | **82.45** | 80.50 | 80.50 | 80.50 |
+
+**Ducati best lap 6, Panigale V4 μ 1.35 / 59°, pist race line, kerb 1.0; owner's own GPS line for reference**
+
+| | κ0 HEAD | κ0 min-curv | κ0 min-time | κ.85 (all) | owner GPS |
+|---|---|---|---|---|---|
+| K2 | 1.01 | 1.02 | 1.09 | 1.06 | 1.00 |
+| K3 | 1.07 | 1.08 | 1.05 | 1.35 | 1.02 |
+| K4 | 1.28 | 1.28 | 1.29 | 1.39 | 0.91 |
+| K6 | 1.23 | 1.23 | 1.19 | 1.03 | 0.99 |
+| K8 | 0.90 | 0.90 | 0.90 | 1.04 | 1.10 |
+| K9 | 0.86 | 0.86 | 0.83 | 1.01 | 0.99 |
+| K12 | 0.97 | 0.97 | 0.96 | 1.15 | 1.07 |
+| K4 radius at apex, m | 108 | 107 | 107 | 99 | **152** |
+| fit lap / ref-on-line, s | 99.55 / 99.76 | 99.54 / 99.75 | 99.11 / 99.37 | 92.73 / 93.77 | 96.01 / 95.80 |
+| QSS lap, Panigale, s | 83.65 | 83.64 | **83.39** | 81.53 | — |
+
+**Verdict: the speed-weighted line behaves as intended but does not fix K4.**
+
+- **What it does.** It makes the slow K2 tighter: BMW 1.52 → 1.64 g. It relieves K3, K6 and K9 by
+  0.03–0.06 g, and it shortens the κ 0 line by 8 m. It gains 0.22 s (BMW) and 0.25 s (Ducati) of QSS
+  lap time.
+- **What it does not do.** The K4 radius stays at 107 m, against the owner's 152 m. K4 g is unchanged.
+- **Why K4 stays put.** Mapped into the pist frame, the owner's line has R 173 m at K4. He enters K4
+  mid-track (+1 m), apexes at +7.6 m, and exits to the centre and beyond (−2.8 m, 50 m later). The race
+  lines stay on the inside (+7 m) through the exit to set up what follows.
+  - **It is not a local minimum.** Warm-starting the min-curvature/min-time solve from the owner's
+    path converges back to the same line (83.63 / 83.35 s).
+  - **The owner's path is faster but not curvature-optimal.** It has more Σκ² (0.139 against 0.111),
+    yet the Panigale's QSS on it, clamped to the box, is 81.65 s against 83.4 s. That is the same as
+    the κ .85 line (81.53 s).
+  - **What the objective is missing.** Most of the remaining 2 s is distance / exit-speed coupling,
+    which a curvature objective with a local speed weight cannot represent.
+- **Next.** Use time-sensitivity weights that propagate each apex's dv into its braking and exit zones,
+  or a direct lap-time descent such as `freeTrajectory`, started from the min-time line.
+- **The other agent's new test.** Its BMW "every apex ≤ 1.47 g" assertion on κ 0 is red either way:
+  K2 1.51 on HEAD, 1.64 on min-time.
+
+### 7.5 Speed
+
+- **Node, 3218 stations:** 150–220 ms for a 4-iteration min-time solve. That is 1 initial
+  ADMM + Newton solve, then ≤ 4 × (QSS ~20 ms + warm QP), plus the final QSS. Min-curvature alone
+  takes ~40 ms.
+- **Serres, 1578 stations:** ~105 ms min-time, against 20–45 ms min-curvature.
+- **In the browser (Playwright, Serres):** the whole `setSimParams` (line + QSS + events + session +
+  `refreshAll`) takes 123–131 ms on min-time and 50–79 ms on min-curvature.
+- **Tests.** `simLine` asserts < 300 ms for the 3200-station min-time solve.
+
+### 7.6 Test changes
+
+- **`simLine`.**
+  - The QP describe is pinned to `'min-curvature'`.
+  - The 3200-station test now also asserts that the apex reaches the bound; this catches the old
+    false convergence.
+  - New `min-time line` describe: default and clamp; the sweeper opened and the hairpin tightened;
+    lap ≥ 0.1 s quicker; box at κ 0 / .5 / .85 / 1; never slower than iterate 0; κ 1 length; 300 ms.
+- **`simCorners`, `simEvents`, `simRider`.** P is pinned to `'min-curvature'`, because of the
+  five-corner fixture's double apex.
+- **`simSolver`.** The envelope pin and the inline snapshot were re-pinned (58.436497 s).
+- **`simLongG`.** The 600 brake onset bound went 1.1 → 1.15 s (now 1.104 s).
+- **`simFreeTrajectory`.** The describe timeout went to 15 s; the box test already took 4.7 s at the 5 s
+  default.

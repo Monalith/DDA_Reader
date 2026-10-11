@@ -176,6 +176,88 @@ function cornerLoop(n: number, start: number, lenV: number, radiusM: number): Li
 
 const P: SimParams = clampParams(DEFAULT_SIM_PARAMS);
 
+/** The 5-corner synthetic circuit (`circuitFixture.ts`), no jitter, as a Line at P. */
+function circuitLine(): Line {
+  const { track, corridor } = circuitTrack();
+  return buildLine(track, corridor, P);
+}
+
+/** Position-weighted sum: any change to any sample moves it. */
+function checksum(a: ArrayLike<number>): string {
+  let s = 0;
+  for (let i = 0; i < a.length; i++) s += a[i] * ((i % 7) + 1);
+  return s.toPrecision(17);
+}
+
+describe('v1 envelope pin (Review Focus 4)', () => {
+  // Recorded on the v1 solver (ecaf5e3) BEFORE any v2 change. With every 3D
+  // channel absent or zero the v2 g-budget must reproduce this bit for bit,
+  // otherwise every calibration note in the repo is silently invalidated.
+  it('reproduces the v1 envelope on the circuit fixture at the defaults', () => {
+    const env = solve(circuitLine(), P);
+    expect(env.lapTimeS.toFixed(6)).toBe('60.836382');
+    expect(checksum(env.v)).toBe('338840.38137817383');
+    expect(checksum(env.longG)).toBe('-3.3443849224427140');
+    expect(checksum(env.latG)).toBe('1812.5413375199423');
+    expect(checksum(env.leanDeg)).toBe('-81241.075258576311');
+    expect(checksum(env.gripUse)).toBe('4283.3734395606443');
+    expect(Array.from(env.v).slice(0, 50)).toMatchInlineSnapshot(`
+      [
+        33.533294677734375,
+        34.06070327758789,
+        34.59857940673828,
+        35.143280029296875,
+        35.692138671875,
+        36.242374420166016,
+        36.79171371459961,
+        37.337669372558594,
+        37.879493713378906,
+        38.416561126708984,
+        38.94832229614258,
+        39.474239349365234,
+        39.993831634521484,
+        40.506675720214844,
+        41.012271881103516,
+        41.51032638549805,
+        42.00068664550781,
+        42.4832878112793,
+        42.958133697509766,
+        43.425323486328125,
+        43.88505554199219,
+        44.33767318725586,
+        44.78363800048828,
+        45.22352600097656,
+        45.65452575683594,
+        46.075408935546875,
+        46.48667526245117,
+        46.88878631591797,
+        47.28216552734375,
+        47.667213439941406,
+        48.04429244995117,
+        48.41374588012695,
+        48.77589416503906,
+        49.13103485107422,
+        49.47944641113281,
+        49.821388244628906,
+        50.1571044921875,
+        50.4868278503418,
+        50.81077194213867,
+        51.12914276123047,
+        51.44213104248047,
+        51.74991989135742,
+        52.05268096923828,
+        52.35057830810547,
+        52.64376449584961,
+        52.9323844909668,
+        53.216583251953125,
+        53.49648666381836,
+        53.77222442626953,
+        54.04391860961914,
+      ]
+    `);
+  });
+});
+
 describe('solve', () => {
   it('matches the analytic lap time of a constant-radius circle', () => {
     const r = 80;

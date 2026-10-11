@@ -31,12 +31,29 @@
  */
 export const GRIP_WARN = 1.05;
 
+/** Largest finite value of a channel, 0 when there is none. */
+function finitePeak(ch: ArrayLike<number> | undefined | null): number {
+  let peak = 0;
+  if (!ch) return peak;
+  for (let i = 0; i < ch.length; i++) if (Number.isFinite(ch[i]) && ch[i] > peak) peak = ch[i];
+  return peak;
+}
+
 /**
  * Warning text for a `grip_use` channel, or null when there is nothing to warn
  * about. The percentage of the lap is counted against the SAME threshold as the
  * peak, so the two numbers in the message describe one condition.
+ *
+ * Spec v2 §2.8: `gripUse` is normalised to the RIDER's ceiling (μ_eff, the
+ * allowed-slip grip), so 1.0 is "the rider's own margin is used up", not "the
+ * tyre is gone". The banner fires on that. `gripUsePeak` (against the tyre's
+ * peak μ) only qualifies it: under the same threshold the tyre still holds and
+ * the advice is to ride inside the margin; over it the front would let go.
  */
-export function gripRiskMessage(gripUse: ArrayLike<number> | undefined | null): string | null {
+export function gripRiskMessage(
+  gripUse: ArrayLike<number> | undefined | null,
+  gripUsePeak?: ArrayLike<number> | null,
+): string | null {
   if (!gripUse || !gripUse.length) return null;
   let peak = 0;
   let over = 0;
@@ -54,9 +71,21 @@ export function gripRiskMessage(gripUse: ArrayLike<number> | undefined | null): 
   // which is correct: there is no lap there to warn about.
   if (peak <= GRIP_WARN) return null;
   const pct = (100 * over) / finite;
+  const tyrePeak = gripUsePeak && gripUsePeak.length ? finitePeak(gripUsePeak) : null;
+  const tyrePart = tyrePeak != null && tyrePeak > 0 ? ` (${(tyrePeak * 100).toFixed(0)} % of the tyre)` : '';
+  const head =
+    `Tyre demand peaks at ${(peak * 100).toFixed(0)} % of the rider's grip ceiling${tyrePart}, over ` +
+    `${pct < 1 ? pct.toFixed(1) : pct.toFixed(0)} % of the lap. `;
+  if (tyrePeak != null && tyrePeak > 0 && tyrePeak <= GRIP_WARN) {
+    return (
+      head +
+      `The rider is past their own margin but the tyre still holds — lower Risk, or the ` +
+      `trail brake depth under Gelişmiş, to ride inside it.`
+    );
+  }
   return (
-    `Tyre demand peaks at ${(peak * 100).toFixed(0)} % of the friction circle, over ` +
-    `${pct < 1 ? pct.toFixed(1) : pct.toFixed(0)} % of the lap. At these settings the front ` +
-    `would let go on the brakes — lower the trail brake depth or the braking g.`
+    head +
+    `At these settings the front would let go on the brakes — lower Risk, or the trail brake ` +
+    `depth under Gelişmiş.`
   );
 }

@@ -258,6 +258,77 @@ describe('v1 envelope pin (Review Focus 4)', () => {
   });
 });
 
+describe('3D road g-budget (spec v2 §2.3, R1 §3.5)', () => {
+  const withChannels = (line: Line, slope: number, bank: number, nu: number): Line => ({
+    ...line,
+    slopeRad: new Float32Array(line.curvature.length).fill(slope),
+    bankRad: new Float32Array(line.curvature.length).fill(bank),
+    nu: new Float32Array(line.curvature.length).fill(nu),
+  });
+
+  it('zero-filled channels are bit-identical to absent ones', () => {
+    for (const line of [circuitLine(), cornerLine(), circleLine(60)]) {
+      const a = solve(line, P);
+      const b = solve(withChannels(line, 0, 0, 0), P);
+      expect(b.lapTimeS).toBe(a.lapTimeS);
+      for (const k of ['v', 'longG', 'latG', 'leanDeg', 'gripUse'] as const) expect(Array.from(b[k])).toEqual(Array.from(a[k]));
+    }
+  });
+
+  it('an uphill straight is slower than a flat one', () => {
+    const line = straightLine(3000);
+    const flat = solve(line, P).lapTimeS;
+    expect(solve(withChannels(line, 0.05, 0, 0), P).lapTimeS).toBeGreaterThan(flat);
+  });
+
+  it('slope costs drive uphill and gives it back downhill, on a corner exit', () => {
+    // A bare straight cannot show the downhill half: pass 1 already holds it at
+    // the flat drag-limited top speed. The exit straight of a corner is pure
+    // drive from a slow apex, so grade there acts on the forward pass only.
+    // (A constant grade round a closed loop is not a road, and on it the
+    // longer downhill braking zone cancels the drive gain.)
+    const line = cornerLine();
+    const n = line.curvature.length;
+    const exitStart = n - 150;
+    const graded = (sig: number): Line => {
+      const slopeRad = new Float32Array(n);
+      for (let i = exitStart; i < n; i++) slopeRad[i] = sig;
+      return { ...line, slopeRad };
+    };
+    const flat = solve(line, P).lapTimeS;
+    expect(solve(graded(0.05), P).lapTimeS).toBeGreaterThan(flat);
+    expect(solve(graded(-0.05), P).lapTimeS).toBeLessThan(flat);
+    // and on the braking zone the sign flips: uphill helps the brakes
+    const braking = (sig: number): Line => {
+      const slopeRad = new Float32Array(n);
+      for (let i = 150; i < 400; i++) slopeRad[i] = sig;
+      return { ...line, slopeRad };
+    };
+    expect(solve(braking(0.05), P).lapTimeS).toBeLessThan(solve(braking(-0.05), P).lapTimeS);
+  });
+
+  it('favourable banking raises the corner speed; a crest (ν < 0) lowers it', () => {
+    const line = circleLine(60);
+    const flat = solve(line, P).lapTimeS;
+    // 5° of banking toward the centre: v² gains g·sinβ/|κ| on the numerator
+    expect(solve(withChannels(line, 0, 0.087, 0), P).lapTimeS).toBeLessThan(flat);
+    // the same banking the wrong way round (a right-hand circle)
+    const right = { ...line, curvature: line.curvature.map((k) => -k) };
+    expect(solve(withChannels(right, 0, 0.087, 0), P).lapTimeS).toBeLessThan(solve(right, P).lapTimeS);
+    // a crest unloads the tyre
+    expect(solve(withChannels(line, 0, 0, -0.005), P).lapTimeS).toBeGreaterThan(flat);
+    // and a dip loads it
+    expect(solve(withChannels(line, 0, 0, 0.005), P).lapTimeS).toBeLessThan(flat);
+  });
+
+  it('stays finite on a crest sharp enough to unload the tyre entirely', () => {
+    const env = solve(withChannels(cornerLine(), 0.1, -0.2, -0.05), P);
+    expect(Number.isFinite(env.lapTimeS)).toBe(true);
+    expect(env.v.every((x) => Number.isFinite(x) && x > 0)).toBe(true);
+    expect(env.gripUse.every(Number.isFinite)).toBe(true);
+  });
+});
+
 describe('solve', () => {
   it('matches the analytic lap time of a constant-radius circle', () => {
     const r = 80;

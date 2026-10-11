@@ -12,13 +12,33 @@
 // Combined grip is the friction ellipse: longitudinal capacity falls as lateral
 // use rises, which is what makes trail braking and progressive throttle come out
 // of the model rather than being scripted.
+//
+// 3D ROAD (spec v2 §2.3, R1 §3.5). Every pass works in the road frame with an
+// effective normal gravity and tyre-frame demands:
+//
+//   g̃   = g·cosσ·cosβ + v²·ν        (σ slope, β bank, ν normal curvature)
+//   ã_y = v²κ − sgn(κ)·g·cosσ·sinβ  (favourable banking takes lateral demand)
+//   ã_x = a_x + g·sinσ              (uphill costs drive, helps braking)
+//
+// and the friction ellipse / lean are judged against g̃ instead of g. All three
+// channels are optional on `Line` and read as zero; with zero channels every
+// expression below reduces to the v1 one with the SAME floating-point
+// operations (×1, +0), which is what keeps the v1 envelope bit-identical
+// (pinned in simSolver.test.ts).
 import { clampParams } from './presets';
 import type { Envelope, Line, SimParams } from './types';
+import { AIR_DENSITY } from './vehicle';
 
 export const G = 9.81;
 
-/** Air density at sea level, kg/m^3. */
-const RHO = 1.225;
+/** Air density at sea level, kg/m^3 (single source: vehicle.ts). */
+const RHO = AIR_DENSITY;
+/**
+ * Lowest effective normal gravity the passes will use, m/s^2. Over a sharp
+ * crest v²ν can cancel g entirely (the bike goes light); a zero g̃ would be a
+ * zero friction budget and a division by zero. Numeric guard, not a model.
+ */
+const G_TILDE_MIN = 0.1 * 9.81;
 /** Rolling and driveline losses as an equivalent deceleration, m/s^2. */
 const ROLLING = 0.15;
 /** Nothing below this is a real speed; keeps every division finite. */
@@ -186,6 +206,33 @@ export function solve(line: Line, params: SimParams): Envelope {
   const aWheelie = (G * p.machine.wheelbaseM) / (2 * p.machine.cgHeightM);
   const power = p.machine.powerKw * 1000;
 
+  // ---- 3D road channels (absent = 0) ------------------------------------
+  //
+  // Precomputed per sample so the passes stay a handful of flops: cc = cosσ·cosβ,
+  // sb = g·cosσ·sinβ (bank's lateral help), gs = g·sinσ (grade), nu = ν.
+  // With the channels absent cc = 1, sb = gs = nu = 0 exactly.
+  const cc = new Float64Array(n).fill(1);
+  const sb = new Float64Array(n);
+  const gs = new Float64Array(n);
+  const nu = new Float64Array(n);
+  if (line.slopeRad || line.bankRad || line.nu) {
+    for (let i = 0; i < n; i++) {
+      const sig = line.slopeRad?.[i] ?? 0;
+      const bet = line.bankRad?.[i] ?? 0;
+      cc[i] = Math.cos(sig) * Math.cos(bet);
+      sb[i] = G * Math.cos(sig) * Math.sin(bet);
+      gs[i] = G * Math.sin(sig);
+      nu[i] = line.nu?.[i] ?? 0;
+    }
+  }
+  /** g̃/g at sample i and speed vv: 1 exactly on a flat road. */
+  const gRatio = (i: number, vv: number): number => Math.max(G_TILDE_MIN, G * cc[i] + vv * vv * nu[i]) / G;
+  /** Signed tyre-frame lateral demand ã_y, m/s^2. */
+  const aY = (i: number, vv: number): number => {
+    const k = line.curvature[i];
+    return vv * vv * k - (k > 0 ? sb[i] : k < 0 ? -sb[i] : 0);
+  };
+
   /** Arc length of the segment ending at i (wrapping at the start line). */
   const dsAt = (i: number): number => {
     const d = i === 0 ? line.lengthM - line.cumDistM[n - 1] : line.cumDistM[i] - line.cumDistM[i - 1];
@@ -193,25 +240,37 @@ export function solve(line: Line, params: SimParams): Envelope {
   };
 
   // ---- pass 1: lateral limit -------------------------------------------
+  //
+  // |ã_y| ≤ c·g̃ with c = aLatMax/g:
+  //   v²·(|κ| − c·ν) ≤ aLatMax·cosσ·cosβ + g·cosσ·sinβ
+  // written with r = 1/|κ| so that on a flat road it is exactly v1's
+  // sqrt(aLatMax·r). A denominator ≤ 0 (a dip loading the tyre faster than the
+  // corner asks) means no lateral limit: the v1 top-speed cap applies.
+  const cLat = aLatMax / G;
   for (let i = 0; i < n; i++) {
     const k = Math.abs(line.curvature[i]);
     const r = k > 1e-6 ? 1 / k : Infinity;
-    const vLat = Number.isFinite(r) ? Math.sqrt(aLatMax * r) : Infinity;
+    let vLat = Infinity;
+    if (Number.isFinite(r)) {
+      const den = 1 - cLat * nu[i] * r;
+      const num = (aLatMax * cc[i] + sb[i]) * r;
+      vLat = den <= 0 ? Infinity : Math.sqrt(Math.max(0, num / den));
+    }
     v[i] = Math.max(V_MIN, Math.min(vTop, vLat));
   }
 
-  /** How much of the tyre's lateral capacity is in use at speed `vv`, 0..1. */
-  const latUse = (vv: number, k: number): number => Math.min(1, (vv * vv * Math.abs(k)) / aLatMax);
+  /** How much of the tyre's lateral capacity is in use at speed `vv` at sample i, 0..1. */
+  const latUse = (vv: number, i: number): number => Math.min(1, Math.abs(aY(i, vv)) / (aLatMax * gRatio(i, vv)));
 
-  /** Fraction of grip still available longitudinally at speed `vv` and curvature `k`. */
-  const ellipse = (vv: number, k: number): number => {
-    const used = latUse(vv, k);
+  /** Fraction of grip still available longitudinally at speed `vv` at sample i. */
+  const ellipse = (vv: number, i: number): number => {
+    const used = latUse(vv, i);
     return Math.sqrt(Math.max(0, 1 - used * used));
   };
 
-  /** Longitudinal share available for BRAKING at this speed and curvature. */
-  const brakeEllipse = (vv: number, k: number): number =>
-    brakeShare(latUse(vv, k), p.rider.trailBrakeDepth, p.rider.trailBrakeProfile);
+  /** Longitudinal share available for BRAKING at this speed and sample. */
+  const brakeEllipse = (vv: number, i: number): number =>
+    brakeShare(latUse(vv, i), p.rider.trailBrakeDepth, p.rider.trailBrakeProfile);
 
   /** `lossDecelMs2` for this machine. */
   const aLoss = (vv: number): number => lossDecelMs2(p.machine, vv);
@@ -229,7 +288,8 @@ export function solve(line: Line, params: SimParams): Envelope {
         const ds = dsAt(i);
         const vv = Math.max(V_MIN, v[j]);
         const aPower = power / (p.machine.massKg * vv);
-        const aGrip = mu * G * ellipse(vv, line.curvature[j]);
+        const gr = gRatio(j, vv);
+        const aGrip = mu * G * gr * ellipse(vv, j);
         const aDrag = aLoss(vv);
         // Traction control shaves drive torque when the SLIP DEMAND is high — not
         // always.
@@ -257,10 +317,11 @@ export function solve(line: Line, params: SimParams): Envelope {
         // cut at all upright, and at full lean the drive is held to
         // `0.55 + 0.45 * tcThreshold` of what is left on the ellipse — the same
         // allowance the `dtc` channel in `rider.ts` reports, so the two agree.
-        const slip = latUse(vv, line.curvature[j]);
+        const slip = latUse(vv, j);
         const tcFloor = 0.55 + 0.45 * p.rider.tcThreshold;
         const tcFactor = 1 - (1 - tcFloor) * slip;
-        const a = Math.min(aPower, aGrip * tcFactor, aWheelie) - aDrag;
+        // grade: uphill (gs > 0) costs drive
+        const a = Math.min(aPower, aGrip * tcFactor, aWheelie * gr) - aDrag - gs[j];
         const vMax = Math.sqrt(Math.max(V_MIN * V_MIN, vv * vv + 2 * a * ds));
         if (v[i] > vMax) v[i] = Math.max(V_MIN, vMax);
       }
@@ -316,8 +377,9 @@ export function solve(line: Line, params: SimParams): Envelope {
         const i = step;
         const j = (i + 1) % n;
         const ds = dsAt(j);
-        const aTyre = Math.min(aBrakeMax * brakeEllipse(v[j], line.curvature[j]), jerk * tOn[i]);
-        const vMax = Math.sqrt(v[j] * v[j] + 2 * (aTyre + aLoss(v[j])) * ds);
+        const aTyre = Math.min(aBrakeMax * gRatio(j, v[j]) * brakeEllipse(v[j], j), jerk * tOn[i]);
+        // grade: uphill (gs > 0) helps braking
+        const vMax = Math.sqrt(v[j] * v[j] + 2 * (aTyre + aLoss(v[j]) + gs[j]) * ds);
         if (v[i] > vMax) v[i] = Math.max(V_MIN, vMax);
       }
     }
@@ -334,7 +396,8 @@ export function solve(line: Line, params: SimParams): Envelope {
       const j = (i + 1) % n;
       const ds = dsAt(j);
       const need = (v[i] * v[i] - v[j] * v[j]) / (2 * ds);
-      onBrake[i] = need > aLoss(v[i]) + BRAKE_ON_MARGIN ? 1 : 0;
+      // gravity on an uphill decelerates without the brake, just as drag does
+      onBrake[i] = need > aLoss(v[i]) + gs[j] + BRAKE_ON_MARGIN ? 1 : 0;
     }
     // Twice round, so a zone that straddles the start line gets its clock from
     // before it rather than from zero.
@@ -379,9 +442,14 @@ export function solve(line: Line, params: SimParams): Envelope {
     longG[i] = (segG[(i - 1 + n) % n] + segG[i]) / 2;
     const aLat = (v[i] * v[i] * line.curvature[i]) / G;
     latG[i] = aLat;
+    // tyre-frame demand in units of g, and g̃/g, for the lean and the grip
+    // judgement; on a flat road these are exactly aLat and 1
+    const gr = gRatio(i, v[i]);
+    const aYg = aY(i, v[i]) / G;
     // app convention: left = negative, so lean is the NEGATED arctangent of the
-    // lateral acceleration (see `Envelope.leanDeg`)
-    leanDeg[i] = (-Math.atan(aLat) * 180) / Math.PI;
+    // lateral acceleration (see `Envelope.leanDeg`); on a 3D road the roll
+    // relative to the road normal is atan(ã_y/g̃)
+    leanDeg[i] = (-Math.atan(aYg / gr) * 180) / Math.PI;
     // Combined tyre demand as a fraction of the FRICTION CIRCLE: both axes are
     // divided by the same mu, so 1.0 means the tyre is at its limit and above
     // 1 means it is being asked for more than it has — a fall, not a lap. The
@@ -396,7 +464,7 @@ export function solve(line: Line, params: SimParams): Envelope {
     // 1.0 laterally with grip still in hand. Running out of lean angle is a
     // separate constraint with its own channel (`leanDeg`); it is not a tyre
     // overload and must not be reported as one.
-    const lu = Math.min(1.5, Math.abs(aLat) / mu);
+    const lu = Math.min(1.5, Math.abs(aYg) / (mu * gr));
     // The TYRE's longitudinal share, which is not the net longitudinal g:
     // aero and rolling losses decelerate the bike without being carried by a
     // contact patch, so they are added back before the tyre is judged. Driving
@@ -405,7 +473,8 @@ export function solve(line: Line, params: SimParams): Envelope {
     // the backward pass's own output would read over the friction circle at
     // the end of a fast straight and trip the UI's over-the-limit banner on a
     // lap that is perfectly within the tyre.
-    const lo = Math.min(1.5, Math.abs(longG[i] + aLoss(v[i]) / G) / mu);
+    // grade: the tyre also carries g·sinσ (uphill drive, downhill braking)
+    const lo = Math.min(1.5, Math.abs(longG[i] + aLoss(v[i]) / G + gs[i] / G) / (mu * gr));
     gripUse[i] = Math.hypot(lu, lo);
   }
 

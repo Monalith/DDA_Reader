@@ -103,7 +103,7 @@ const ADVANCED: Record<DerivedRiderKey, { label: string; min: number; max: numbe
 const MODES: Array<{ mode: SolverMode; label: string; help: string }> = [
   { mode: 'rider', label: 'Sürücü', help: 'Human rider driven by Aggressiveness and Risk. Live on every slider.' },
   { mode: 'freeTrajectory', label: 'Serbest yörünge', help: 'Line and speed optimised together for the ideal rider. Runs in the background on "Hesapla".' },
-  { mode: 'ocp', label: 'Tam OCP', help: 'Full minimum-time optimal control on the lab server. Minutes; runs on "Hesapla".' },
+  { mode: 'ocp', label: 'Tam OCP', help: 'Full minimum-time optimal control, solved by the DDA Lab bridge on THIS computer (seconds on Serres). Runs on "Hesapla".' },
 ];
 
 function LockIcon({ locked }: { locked: boolean }) {

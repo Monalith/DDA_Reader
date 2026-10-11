@@ -130,6 +130,10 @@ export default function SimPanel() {
   const corridor = useLab((s) => s.corridor);
   const busy = useLab((s) => s.corridorBusy);
   const extract = useLab((s) => s.extractCorridorNow);
+  const publishCorridor = useLab((s) => s.publishCorridor);
+  const exportCorridorJson = useLab((s) => s.exportCorridorJson);
+  const importCorridorJson = useLab((s) => s.importCorridorJson);
+  const corridorFileRef = useRef<HTMLInputElement>(null);
   const corridorToken = useLab((s) => s.corridorToken);
   const setCorridorToken = useLab((s) => s.setCorridorToken);
   const params = useLab((s) => s.simParams);
@@ -250,6 +254,45 @@ export default function SimPanel() {
             {resolved} % · {medianWidth.toFixed(1)} m wide
           </span>
         )}
+        <button
+          data-testid="sim-publish"
+          disabled={busy || !corridor}
+          title="Save the current corridor to the bridge (a local bridge needs no token)"
+          onClick={() => void publishCorridor()}
+        >
+          Save
+        </button>
+        <button
+          data-testid="sim-corridor-export"
+          disabled={!corridor}
+          title="Download the corridor as JSON"
+          onClick={() => {
+            const text = exportCorridorJson();
+            if (!text) return;
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+            a.download = 'corridor.json';
+            a.click();
+            URL.revokeObjectURL(a.href);
+          }}
+        >
+          ⤓ JSON
+        </button>
+        <button data-testid="sim-corridor-import" title="Import a corridor JSON for the loaded circuit" onClick={() => corridorFileRef.current?.click()}>
+          ⤒ JSON
+        </button>
+        <input
+          ref={corridorFileRef}
+          type="file"
+          accept=".json,application/json"
+          hidden
+          data-testid="sim-corridor-file"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            e.target.value = '';
+            if (f) void f.text().then((t) => importCorridorJson(t));
+          }}
+        />
         <input
           type="password"
           className="sim-token"

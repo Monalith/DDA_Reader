@@ -273,16 +273,15 @@ def test_corridor_write_needs_the_token(corridor_client):
     assert corridor_client.get("/corridors/serres-23518-41073").status_code == 404
 
 
-def test_corridor_write_refused_when_no_token_is_configured(tmp_path, monkeypatch):
+def test_corridor_write_is_open_when_no_token_is_configured(tmp_path, monkeypatch):
+    # a local bridge (no DDA_CORRIDOR_TOKEN) saves corridors without a token;
+    # a host that HAS one still requires it (test above)
     monkeypatch.setattr(dda_lab_bridge, "CORRIDOR_DIR", tmp_path / "corridors")
     monkeypatch.setattr(dda_lab_bridge, "CORRIDOR_TOKEN", "")
     client = TestClient(dda_lab_bridge.app)
-    r = client.put(
-        "/corridors/serres-23518-41073",
-        json=VALID_CORRIDOR,
-        headers={"X-Corridor-Token": ""},
-    )
-    assert r.status_code == 503
+    r = client.put("/corridors/serres-23518-41073", json=VALID_CORRIDOR)
+    assert r.status_code == 200, r.text
+    assert client.get("/corridors/serres-23518-41073").status_code == 200
 
 
 @pytest.mark.parametrize(

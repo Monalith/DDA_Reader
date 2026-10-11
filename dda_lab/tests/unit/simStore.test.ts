@@ -355,3 +355,23 @@ describe('sim store v2', () => {
     expect(st.simRisk).toBeNull();
   });
 });
+
+describe('corridor JSON export / import', () => {
+  it('round-trips the corridor through the stored JSON record', async () => {
+    const { useLab } = await import('../../src/state/store');
+    const { circuitTrack } = await import('./circuitFixture');
+    const t = circuitTrack();
+    useLab.getState().setTrack(t);
+    const n = t.centerline.length;
+    const corridor = { stepM: 2, leftM: new Float32Array(n).fill(5), rightM: new Float32Array(n).fill(5), known: new Array<boolean>(n).fill(true) };
+    useLab.setState({ corridor });
+    const text = useLab.getState().exportCorridorJson();
+    expect(text).not.toBeNull();
+    useLab.setState({ corridor: undefined });
+    expect(useLab.getState().importCorridorJson(text!)).toBe(true);
+    const back = useLab.getState().corridor!;
+    expect(back.known.filter(Boolean).length).toBeGreaterThan(n * 0.9);
+    expect(useLab.getState().importCorridorJson('{"version":1}')).toBe(false);
+    expect(useLab.getState().importCorridorJson('not json')).toBe(false);
+  });
+});

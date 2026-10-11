@@ -11,6 +11,7 @@ import { parseWorkspace, serializeWorkspace } from '../core/workspace';
 import { browserTileLoader } from '../sim/browserTiles';
 import { CorridorError, extractCorridor } from '../sim/corridor';
 import { fetchCorridor, putCorridor } from '../sim/corridorService';
+import { deserializeCorridor, serializeCorridor } from '../sim/corridorCache';
 import { buildMosaic, SAT_ZOOM, tileRangeFor } from '../sim/tiles';
 import { simulate } from '../sim';
 import { DERIVED_KEYS, deriveRider } from '../sim/derive';
@@ -143,6 +144,12 @@ export interface LabState {
   /** Write token for the corridor store; empty means this user cannot publish one. */
   corridorToken: string;
   setCorridorToken(t: string): void;
+  /** Push the current corridor to the bridge again (with the token if one is set; a local bridge takes it without). */
+  publishCorridor(): Promise<void>;
+  /** The current corridor as the stored JSON record, or null when there is none. */
+  exportCorridorJson(): string | null;
+  /** Install a corridor from a stored JSON record; false when it is not this circuit's. */
+  importCorridorJson(text: string): boolean;
 
   /** Virtual rider parameters. */
   simParams: SimParams;
@@ -786,6 +793,54 @@ export const useLab = create<LabState>((set, get) => ({
     } catch {
       /* storage unavailable: the token still works this session */
     }
+  },
+  async publishCorridor() {
+    const st = get();
+    const track = activeTrack(st);
+    if (!track || !st.corridor) {
+      set({ statusMessage: 'Nothing to publish — extract or import a corridor first.' });
+      return;
+    }
+    set({ corridorBusy: true });
+    try {
+      const saved = await putCorridor(track, st.corridor, st.corridorToken);
+      set({
+        statusMessage: saved
+          ? 'Corridor saved to the bridge.'
+          : 'The bridge refused the corridor — a public host needs the publish token; a local bridge must be running.',
+      });
+    } finally {
+      set({ corridorBusy: false });
+    }
+  },
+  exportCorridorJson() {
+    const st = get();
+    const track = activeTrack(st);
+    if (!track || !st.corridor) return null;
+    return JSON.stringify(serializeCorridor(track, st.corridor));
+  },
+  importCorridorJson(text) {
+    const track = activeTrack(get());
+    if (!track) {
+      set({ statusMessage: 'Load a session first — a corridor belongs to its track.' });
+      return false;
+    }
+    let raw: unknown;
+    try {
+      raw = JSON.parse(text);
+    } catch {
+      set({ statusMessage: 'Corridor import: not valid JSON.' });
+      return false;
+    }
+    const corridor = deserializeCorridor(track, raw);
+    if (!corridor) {
+      set({ statusMessage: 'Corridor import: this file is not a corridor of the loaded circuit.' });
+      return false;
+    }
+    const pct = Math.round((100 * corridor.known.filter(Boolean).length) / corridor.known.length);
+    set({ corridor, statusMessage: `Corridor imported — ${pct} % of the track resolved.` });
+    if (get().simEnabled) runSim(set, get);
+    return true;
   },
   async loadCorridor() {
     const track = activeTrack(get());

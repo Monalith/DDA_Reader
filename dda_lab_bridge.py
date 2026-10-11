@@ -418,12 +418,11 @@ async def put_corridor(key: str, request: Request, x_corridor_token: str = Heade
     # parser or the pydantic validator (previously FastAPI validated the body
     # during dependency injection, before this function even ran, letting
     # anyone drive CPU and a large error response with no token at all).
-    if not CORRIDOR_TOKEN:
-        return JSONResponse(
-            status_code=503,
-            content={"error": "read_only", "detail": "DDA_CORRIDOR_TOKEN is not set on this host"},
-        )
-    if x_corridor_token != CORRIDOR_TOKEN:
+    # A host WITH a token (the public server) requires it; a host without one
+    # (a user's local bridge, 127.0.0.1 only) accepts writes as they are —
+    # owner decision 2026-10-11 ("şimdilik tokensız kaydet"). The key
+    # allowlist, the body cap and the schema still apply either way.
+    if CORRIDOR_TOKEN and x_corridor_token != CORRIDOR_TOKEN:
         return JSONResponse(status_code=401, content={"error": "unauthorized"})
     path = _corridor_path(key)
     if path is None:

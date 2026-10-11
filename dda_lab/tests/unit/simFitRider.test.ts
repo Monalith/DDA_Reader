@@ -20,13 +20,14 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { buildCenterline } from '../../src/core/track';
 import type { TrackModel } from '../../src/core/types';
-import { alignReference, smoothedCurvature } from '../../src/sim/alignRef';
+import { alignReference, peakGroups, smoothedCurvature } from '../../src/sim/alignRef';
 import { fitRider, fitToReference, lateralCeilingG } from '../../src/sim/fitRider';
 import { buildLine } from '../../src/sim/line';
 import { clampParams, DEFAULT_SIM_PARAMS } from '../../src/sim/presets';
 import { parseReference, type RefCorner, type Reference } from '../../src/sim/reference';
 import { G, solve } from '../../src/sim/solver';
 import type { Envelope, EnvelopeCaps, Line, SimParams } from '../../src/sim/types';
+import { fitLine, loadPistModel } from '../../scripts/lib/fitLines';
 import { CIRCUIT_SEGMENTS, circuitTrack, segmentIndices } from './circuitFixture';
 
 const P = clampParams(DEFAULT_SIM_PARAMS);
@@ -347,5 +348,106 @@ describe('fitRider on the real BMW Serres lap (1:19.81)', () => {
     expect(session.channels.has('lean')).toBe(true);
     expect(session.channels.has('rpm')).toBe(true);
     expect(session.laps[0].timeS).toBeCloseTo(fit.lapTimeS, 6);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4. the corrected BMW lap (v2): K8 / K12 re-read from the video
+//
+// public/examples/serres_BMW_1-19-81_v2.json, built by scripts/make-bmw-v2.ts
+// from docs/superpowers/notes/2026-10-11-bmw-k8-k12-reread.md; the numbers are
+// in docs/superpowers/notes/2026-10-11-bmw-v2-fit.md.
+
+describe('fitRider on the corrected BMW lap (v2) on the pist κ 0 kerb 1.0 race line', () => {
+  const v1raw = JSON.parse(readFileSync(new URL('../../public/examples/serres_BMW_1-19-81.json', import.meta.url), 'utf8')) as {
+    telemetri_1m: Array<Record<string, number | null>>;
+  };
+  const raw = JSON.parse(readFileSync(new URL('../../public/examples/serres_BMW_1-19-81_v2.json', import.meta.url), 'utf8')) as {
+    meta: Record<string, unknown>;
+    telemetri_1m: Array<Record<string, number | null>>;
+  };
+  const ref = parseReference(raw);
+  const model = loadPistModel(new URL('../../public/tracks/serres.pist.json', import.meta.url).pathname);
+  const PK: SimParams = { ...P, tyre: { ...P.tyre, kerbM: 1 } };
+  const line = fitLine('race', PK, raw.telemetri_1m as never, model, 0);
+  const fit = fitRider(line, PK, ref);
+  const byName = (n: string) => fit.corners.find((c) => c.name === n)!;
+  const LIMIT_G = 1.47; // the 1.40 g ceiling × 1.05
+
+  it('parses v2: K8 apex 1375 m at ~112 km/h, K12 apex 2085 m at ~107 km/h, the lap before K5 untouched', () => {
+    expect(raw.meta.versiyon).toBe(2);
+    expect(ref.corners).toHaveLength(16);
+    const k8 = ref.corners.find((c) => c.name === 'K8')!;
+    const k12 = ref.corners.find((c) => c.name === 'K12')!;
+    expect(k8.apexM).toBe(1375);
+    expect(Math.abs(k8.kmh.apex - 113)).toBeLessThanOrEqual(1.5);
+    expect(k12.apexM).toBe(2085);
+    expect(Math.abs(k12.kmh.apex - 107)).toBeLessThanOrEqual(1.5);
+    // v1 rows outside the re-aligned span (K5 1063 m … K13 2516 m) are byte for byte the same
+    for (const s of [0, 500, 1063, 2516, 3000, 3185]) expect(raw.telemetri_1m[s]).toEqual(v1raw.telemetri_1m[s]);
+    // the speed integral moves by ~1 m (the re-read is a few km/h over 2 s)
+    expect(ref.lengthIntM).toBeGreaterThan(3030);
+    expect(ref.lengthIntM).toBeLessThan(3045);
+  });
+
+  it('matches 16 ↔ 16 and puts K12 on the kerb-side |κ| peak, not the exit peak', () => {
+    expect(fit.corners).toHaveLength(16);
+    const s = fit.alignment.apexIdx.map((i) => line.cumDistM[i]);
+    for (let k = 1; k < s.length; k++) expect(s[k]).toBeGreaterThan(s[k - 1]);
+    // K11's apex and K12's are one |κ| peak apart (~60 m), not two (~125 m, v1)
+    expect(s[11] - s[10]).toBeLessThan(80);
+  });
+
+  it('reproduces the reference apex speeds within 2 km/h', () => {
+    for (const d of fit.residuals.apexKmh) expect(Math.abs(d)).toBeLessThan(2);
+  });
+
+  // The corrected corners: K8 1.49 → 1.23 g, K12 1.66 → 1.42 g at the apex
+  // (HEAD c7922fe line; the v2-fit note §3).
+  it('K8 and K12 are back under 1.47 g at the apex (K8 under the 1.40 g ceiling)', () => {
+    expect(byName('K8').aLatG).toBeLessThan(1.4);
+    expect(byName('K12').aLatG).toBeLessThan(LIMIT_G);
+  });
+
+  // Documented exceptions (none of them touched by the v2 correction; the
+  // v2-fit note §3-4), HEAD c7922fe line: K2 1.51, K4 1.84, K6 1.50 g at the
+  // apex. K2 and K4 are line/geometry (the same on v1); K6 sits at 1.40-1.50 g
+  // depending on the race-line build. Every other apex must stay ≤ 1.47 g.
+  const EXCEPT = new Set(['K2', 'K4', 'K6']);
+  it('every apex ≤ 1.47 g except the documented K2, K4, K6', () => {
+    for (const c of fit.corners) if (!EXCEPT.has(c.name)) expect(c.aLatG, c.name).toBeLessThanOrEqual(LIMIT_G);
+  });
+
+  // RED by design while the exceptions above remain: K2 1.51, K4 1.84,
+  // K6 1.50 g (HEAD c7922fe line). Not a v2 data problem.
+  it('every apex ≤ 1.47 g (no exceptions)', () => {
+    for (const c of fit.corners) expect(c.aLatG, c.name).toBeLessThanOrEqual(LIMIT_G);
+  });
+});
+
+describe('alignReference peak merge (opt-in)', () => {
+  const raw = JSON.parse(readFileSync(new URL('../../public/examples/serres_BMW_1-19-81_v2.json', import.meta.url), 'utf8')) as {
+    telemetri_1m: Array<Record<string, number | null>>;
+  };
+  const ref = parseReference(raw);
+  const model = loadPistModel(new URL('../../public/tracks/serres.pist.json', import.meta.url).pathname);
+  // the pist centreline: no line optimisation in the way
+  const line = fitLine('centre', P, raw.telemetri_1m as never, model);
+  const sAt = (i: number) => line.cumDistM[i];
+
+  it("groups K11's two right peaks on the centreline (56 m, shallow dip) but not the 2058 / 2127 pair the note suspected (69 m, 41 % dip)", () => {
+    const g = peakGroups(line);
+    const k11 = g.find((x) => x.dir === -1 && x.members.some((m) => Math.abs(m.s - 2002) < 10))!;
+    expect(k11.members.map((m) => Math.round(m.s / 10) * 10)).toEqual([2000, 2060]);
+    expect(g.some((x) => x.members.some((m) => Math.abs(m.s - 2127) < 10) && x.members.length > 1)).toBe(false);
+  });
+
+  it('off by default: K12 takes the kerb-side peak; with the merge it falls back to the exit peak', () => {
+    const off = alignReference(ref, line, P);
+    const on = alignReference(ref, line, P, { mergePeaks: true });
+    expect(Math.abs(sAt(off.apexIdx[11]) - 2058)).toBeLessThan(10);
+    expect(Math.abs(sAt(on.apexIdx[11]) - 2127)).toBeLessThan(10);
+    expect(on.apexIdx).toHaveLength(16);
+    expect(on.notes.some((n) => /merged as one corner/.test(n))).toBe(true);
   });
 });

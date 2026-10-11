@@ -92,4 +92,6 @@ line, unmeasured).
 3. Reference geometry: K3 −17 km/h in the BMW file is the line, not the model.
 4. `DERIVE_TABLE` coefficients remain `öneri`; one owner lap and two video-derived laps are the
    whole calibration set.
-5. Deploy: `deploy_lab.sh` (lab) and `--with-ocp` (bridge service) not run — owner's call.
+5. Deploy: not run (owner: "lokalde devam"). OCP never goes to the server: `ocpBase()` is always
+   the local bridge, `/ocp/jobs` takes no token, `deploy_lab.sh` has no OCP path, the desktop
+   spec bundles ocp/ + CasADi (not yet built/tested as a frozen app).

@@ -10,7 +10,7 @@
 // `fetch`), so the unit tests never reach the network (vitest runs in node).
 import type { LngLat, TrackModel } from '../core/types';
 import { corridorKey } from './corridorCache';
-import { corridorBase } from './corridorService';
+import { LOCAL_BRIDGE } from './corridorService';
 import { lineFromOffsets, offsetBounds } from './line';
 import type { Corridor, Envelope, Line, MachineParams, SimParams, TyreTrackParams } from './types';
 
@@ -51,9 +51,14 @@ export interface OcpSubmitOpts {
   token?: string;
 }
 
-/** Same origin in production, the local bridge in dev — the rule `corridorService` uses. */
+/**
+ * ALWAYS the local bridge (owner decision 2026-10-11): the server only serves
+ * the app, the OCP solve runs on the computer that asked for it — every user
+ * runs the DDA Lab bridge (the desktop build) locally. Corridors are
+ * different: they are shared data and keep `corridorBase()`.
+ */
 export function ocpBase(): string {
-  return corridorBase();
+  return LOCAL_BRIDGE;
 }
 
 function defaultFetch(): typeof fetch {

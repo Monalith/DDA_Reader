@@ -497,20 +497,20 @@ def test_ocp_rejects_keys_outside_the_allowlist(ocp_client, key):
     assert post_job(ocp_client, ocp_body(key=key)).status_code == 422
 
 
-def test_ocp_post_needs_the_token(ocp_client):
-    assert post_job(ocp_client, ocp_body(), token=None).status_code == 401
-    assert post_job(ocp_client, ocp_body(), token="wrong").status_code == 401
-
-
-def test_ocp_post_refused_when_no_token_is_configured(ocp_client, monkeypatch):
+def test_ocp_post_needs_no_token(ocp_client, monkeypatch):
+    # the solver only runs in a user's local bridge (owner decision 2026-10-11):
+    # no token, even when the host has none configured
     monkeypatch.setattr(dda_lab_bridge, "CORRIDOR_TOKEN", "")
-    assert post_job(ocp_client, ocp_body(), token="").status_code == 503
+    assert post_job(ocp_client, ocp_body(), token=None).status_code == 202
 
 
-def test_ocp_huge_body_without_token_is_401_not_parsed(ocp_client):
-    huge = b"{" + b"x" * (5 * 1024 * 1024) + b"}"
-    r = ocp_client.post("/ocp/jobs", content=huge, headers={"Content-Type": "application/json"})
-    assert r.status_code == 401
+def test_ocp_huge_body_without_token_is_413_not_parsed(ocp_client):
+    r = ocp_client.post(
+        "/ocp/jobs",
+        content=b"x" * (dda_lab_bridge.OCP_MAX_BODY_BYTES + 1),
+        headers={"Content-Type": "application/json"},
+    )
+    assert r.status_code == 413
 
 
 def test_ocp_oversized_body_with_token_is_413(ocp_client):

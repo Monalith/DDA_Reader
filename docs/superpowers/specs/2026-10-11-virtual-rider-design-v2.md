@@ -169,7 +169,7 @@ Kullanıcı kararı: "Do both and make it a choice I can click to switch between
 |---|---|---|---|---|
 | **Sürücü** (varsayılan) | 2.1-2.8 viraj-olay QSS | tarayıcı ana iş parçacığı, < 50 ms, slider canlı | A/R ile insan sürücü; kısıt 1-3 geçerli | `Session` (sim) |
 | **Serbest yörünge** | Free-trajectory QSS: çizgi ve hız birlikte optimize (Veneri & Massaro 2020 yaklaşımı). Uygulama: koridor içinde çizgi ofsetleri karar değişkeni; iç döngü mevcut QSS zarfı (s=1, jerk/roll-rate yok); dış döngü gradyansız/ADAM benzeri optimizasyon veya TUM min-curvature QP + FBGA hız profili (algoritma referansı, LGPL kodu taşınmaz) | **Web Worker**, saniyeler; ilerleme çubuğu; sonuç `(trackKey, machine, tyre)` anahtarıyla önbellek | ideal (tavan) | `Session` (sim-opt) |
-| **Tam OCP** | Transient minimum-time optimal kontrol (çok-gövdeli/tek-iz + roll, steer; `fastest-lap` MIT C++/Python + Ipopt ya da CasADi) | **FastAPI köprüsü**, arka plan işi, dakikalar; `POST /ocp/jobs`, `GET /ocp/jobs/{id}`; sonuç sunucuda saklanır (koridor deseni, token korumalı yazma) | ideal (fizik tavanı) | `Session` (sim-ocp) |
+| **Tam OCP** | Transient minimum-time optimal kontrol (tek-iz + roll; CasADi direct collocation + IPOPT, `ocp/`) | **Kullanıcının YEREL köprüsü** (127.0.0.1:8777, masaüstü DDA Lab uygulaması; kullanıcı kararı 2026-10-11: sunucu yalnız uygulamayı servis eder, çözüm her kullanıcının kendi bilgisayarında koşar); `POST /ocp/jobs` (token yok), `GET /ocp/jobs/{id}`; Serres'te ~2 s | ideal (fizik tavanı) | `Session` (sim-ocp) |
 
 Kurallar:
 - Üç mod aynı `Line`/`Corridor`/`SimParams`'ı okur; yalnız `simulate()` arkasındaki çözücü değişir
@@ -178,8 +178,8 @@ Kurallar:
   Δt karşılaştırması: "sürücü vs ideal çizgi vs fizik tavanı" **koçluk görünümü**.
 - Optimal modlarda A/R sliderları devre dışı (gri, açıklama: "ideal sürücü"); makine/lastik sliderları
   aktif; hesap yeniden tetiklenir ancak **buton ile** ("Hesapla"), slider sürüklemesinde değil.
-- Tam OCP sunucu kaynağı: kos-web droplet 512 MB; iş kuyruğu tek işçi, zaman aşımı 15 dk,
-  `MemoryMax` ayrı systemd slice. Köprü yoksa mod gri, açıklama ile.
+- Tam OCP sunucuya HİÇ kurulmaz (`deploy_lab.sh` ocp/ yüklemez; sunucudaki `/ocp/jobs` 503 döner).
+  Masaüstü build (`DDA Lab.spec`) ocp/ + CasADi'yi paketler; yerel köprü yoksa mod gri, açıklama ile.
 - Serbest yörünge çizgisi `idealLine` katmanına ikinci renkte çizilir; OCP çizgisi üçüncü.
 
 Bu bölüm model-selection K4/K5'in "ertelendi" kararını **kullanıcı talebiyle** geri alır; sürücü modu

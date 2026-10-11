@@ -483,17 +483,12 @@ def _ocp_queue():
 
 
 @app.post("/ocp/jobs")
-async def post_ocp_job(request: Request, x_corridor_token: str = Header("")):
-    # Same order as PUT /corridors: token before the body is even read, so an
-    # unauthenticated caller cannot make the server parse or solve anything.
-    if not CORRIDOR_TOKEN:
-        return JSONResponse(
-            status_code=503,
-            content={"error": "read_only", "detail": "DDA_CORRIDOR_TOKEN is not set on this host"},
-        )
-    if x_corridor_token != CORRIDOR_TOKEN:
-        return JSONResponse(status_code=401, content={"error": "unauthorized"})
-
+async def post_ocp_job(request: Request):
+    # No token (owner decision 2026-10-11): the OCP solver only ever runs in a
+    # user's LOCAL bridge, bound to 127.0.0.1, solving for that user. What
+    # still guards it: the body cap (413), the schema (422), the bounded queue
+    # (429) and the per-job timeout. The public server runs without ocp/ and
+    # answers 503 below.
     content_length = request.headers.get("content-length")
     if content_length is not None:
         try:
@@ -569,4 +564,9 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    # the OCP job queue starts its solver as a spawned child process, which a
+    # frozen (PyInstaller) build can only do with freeze_support() in place
+    import multiprocessing
+
+    multiprocessing.freeze_support()
     main()

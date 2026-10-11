@@ -7,9 +7,10 @@
 //   freeTrajectory — W2's `freeTrajectory.worker.ts`, one Worker for the page,
 //                    a newer request cancels the running one, results cached
 //                    by corridor key + machine/tyre (`optCache`);
-//   ocp            — W5's bridge job (`submitOcp` + `waitForOcp`), POST needs
-//                    the corridor write token the panel already holds.
-import { useLab, type OptimalMode, type OptimalRunner } from '../../state/store';
+//   ocp            — the LOCAL bridge's job (`submitOcp` + `waitForOcp`): the
+//                    solve runs on this computer (owner decision 2026-10-11),
+//                    so the user must be running the DDA Lab bridge locally.
+import type { OptimalMode, OptimalRunner } from '../../state/store';
 import { idealParams } from '../../sim/freeTrajectory';
 import { lineFromOffsets } from '../../sim/line';
 import { buildOcpRequest, ocpBase, submitOcp, waitForOcp } from '../../sim/ocpClient';
@@ -82,8 +83,7 @@ const freeTrajectoryRunner: OptimalRunner = (track, corridor, params, onProgress
   });
 
 const ocpRunner: OptimalRunner = async (track, corridor, params, onProgress) => {
-  const token = useLab.getState().corridorToken;
-  const { id } = await submitOcp(buildOcpRequest(track, corridor, params), undefined, { token: token || undefined });
+  const { id } = await submitOcp(buildOcpRequest(track, corridor, params));
   const r = await waitForOcp(id, { onProgress: (frac) => onProgress(frac) });
   return { offsetsM: Float32Array.from(r.offsetsM), vMs: Float32Array.from(r.vMs), lapTimeS: r.lapTimeS };
 };
@@ -100,9 +100,9 @@ export async function optimalAvailability(mode: OptimalMode): Promise<Availabili
       ? { ok: false, reason: 'The free-trajectory optimiser needs Web Workers, which this browser does not provide.' }
       : { ok: true };
   }
-  // ocp: the bridge answers 404 for an unknown job when the service is up,
-  // 503 (`ocp_unavailable`) when deployed without --with-ocp, and the fetch
-  // itself fails when there is no bridge at all
+  // ocp: the LOCAL bridge answers 404 for an unknown job when the service is
+  // up, 503 (`ocp_unavailable`) when it runs without the ocp package, and the
+  // fetch itself fails when no bridge is running on this computer
   try {
     const res = await fetch(`${ocpBase()}/ocp/jobs/availability-probe`, { method: 'GET' });
     if (res.status === 404) {
@@ -111,11 +111,11 @@ export async function optimalAvailability(mode: OptimalMode): Promise<Availabili
       const body = (await res.json().catch(() => null)) as { error?: string } | null;
       return body?.error === 'not_found'
         ? { ok: true }
-        : { ok: false, reason: 'The lab bridge predates the OCP service — redeploy it with deploy_lab.sh --with-ocp.' };
+        : { ok: false, reason: 'The local DDA Lab bridge is an older build without the OCP solver.' };
     }
-    if (res.status === 503) return { ok: false, reason: 'The lab bridge is up but was deployed without the OCP service (deploy_lab.sh --with-ocp).' };
+    if (res.status === 503) return { ok: false, reason: 'The local DDA Lab bridge is running without the OCP solver (ocp/ + casadi missing).' };
     return { ok: false, reason: `The lab bridge answered ${res.status} to the OCP probe.` };
   } catch {
-    return { ok: false, reason: 'Full OCP needs the lab bridge, which is not reachable from this page.' };
+    return { ok: false, reason: 'Full OCP runs on this computer: start the DDA Lab bridge (desktop app) on 127.0.0.1:8777 first.' };
   }
 }

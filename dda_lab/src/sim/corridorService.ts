@@ -11,7 +11,7 @@ import type { TrackModel } from '../core/types';
 import { corridorKey, deserializeCorridor, serializeCorridor } from './corridorCache';
 import type { Corridor } from './types';
 
-const LOCAL_BRIDGE = 'http://127.0.0.1:8777';
+export const LOCAL_BRIDGE = 'http://127.0.0.1:8777';
 const TIMEOUT_MS = 8000;
 
 /** Same origin in production; the local bridge when running `npm run dev`. */

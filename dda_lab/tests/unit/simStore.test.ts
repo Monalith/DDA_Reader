@@ -132,22 +132,25 @@ describe('sim store', () => {
         expect(worstDiff(name)).toBeLessThan(1e-6);
       }
       // and the channels are mutually consistent, which is what the overwrite
-      // destroyed: the app writes lean as -atan(lat_g) (left = negative), so
-      // tan(lean) + lat_g is zero up to resampling error everywhere. The
-      // residual is 1.1e-3, from `toSession` interpolating `lean` and `lat_g`
-      // onto the 10 Hz grid independently (interpolating an angle and
-      // interpolating its tangent do not commute). Before this fix the same
-      // measure was 385.
+      // destroyed. In v1 lean was -atan(lat_g) exactly; since v2 `lean` is the
+      // BIKE roll (crown + hang-off, vehicle.ts), which is larger than the
+      // ideal angle at lean and zero below ~0.15 g, so the check is now sign
+      // agreement (left = negative, opposite to lat_g) wherever the bike is
+      // actually leaning, plus the exact carry-through asserted above. A refit
+      // from GPS (the bug this guards) would break the exact carry-through
+      // long before it broke the sign.
       const sim = useLab.getState().sessions.find((s) => s.isSim)!;
       const lean = sim.channels.get('lean')!.data;
       const latG = sim.channels.get('lat_g')!.data;
-      let worst = 0;
+      let signErrors = 0;
       let leaning = 0;
       for (let i = 0; i < lean.length; i++) {
-        worst = Math.max(worst, Math.abs(Math.tan((lean[i] * Math.PI) / 180) + latG[i]));
-        if (Math.abs(lean[i]) > 10) leaning++;
+        if (Math.abs(lean[i]) > 10) {
+          leaning++;
+          if (Math.sign(lean[i]) !== -Math.sign(latG[i])) signErrors++;
+        }
       }
-      expect(worst).toBeLessThan(0.01);
+      expect(signErrors).toBe(0);
       expect(leaning).toBeGreaterThan(0); // an all-zero lean channel cannot pass
     };
 

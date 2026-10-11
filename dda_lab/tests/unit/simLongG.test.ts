@@ -315,20 +315,13 @@ describe('aero and rolling losses assist braking (mechanism 1)', () => {
     expect(deepest(real.BMW).peakG).toBeLessThan(deepest(real.R6).peakG - 0.03);
   });
 
-  // KNOWN v2 REGRESSION, marked `it.fails` so it is visible rather than
-  // deleted, and so vitest goes red the moment it is fixed (remove `.fails`
-  // then). v1 reproduced the DIRECTION and ~40 % of the size (-1.252 vs
-  // -1.182, 0.07 g). After W1 Task 1.4 the two are level: -1.494 (1000) vs
-  // -1.496 (600). Two causes, both measured:
-  //  - the roll-rate cap (spec v2 §2.5) with the Biniewicz thesis β0 = 23.5
-  //    falls to its 0.05 rad/s floor above 76 m/s, and the main straight's
-  //    curvature wiggles (±8-13° of lean at 260-280 km/h) then cap the faster
-  //    bike's speed at its hardest braking point — the 1000's aero advantage
-  //    there is gone;
-  //  - the tyre share is now stoppie-limited on both (1.307 vs 1.257 g),
-  //    not the shared `brakingG`.
-  // Calibration (β0, the roll-rate stencil, `rollRateFrac`) belongs to W4.
-  it.fails('reproduces the 1000-vs-600 difference the two real laps show (v2: known regression, W4)', () => {
+  // v2 history: after W1 Task 1.4 the two bikes came out level (-1.494 vs
+  // -1.496 g) because the roll-rate cap with the Biniewicz thesis β0 fell to
+  // its floor above 76 m/s and both tyre shares were stoppie-limited. The
+  // roll-rate fix (jerk floor, 20 m stencil, lean dead-band) and W6's preset
+  // hang-off/crown values restored the direction, so the `it.fails` marker
+  // that made the regression visible is gone again.
+  it('reproduces the 1000-vs-600 difference the two real laps show', () => {
     const litre = deepest(simLap('1000').metrics).peakG;
     const six = deepest(simLap('600').metrics).peakG;
     expect(litre).toBeLessThan(six - 0.03);

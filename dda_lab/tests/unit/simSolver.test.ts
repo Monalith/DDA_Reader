@@ -198,13 +198,16 @@ function checksum(a: ArrayLike<number>): string {
  * The fix moved it because the roll-rate cap binds less at the corner
  * transitions (rollRateFrac 0.5 / 0.85 / 1: 63.33 / 60.75 / 60.40 s).
  */
+// Re-pinned at the W1+W6 merge: W6's presets give the 1000 a 0.25 m hang-off
+// (was 0.15) and class-specific crown radii, which moves the lean limit and
+// therefore the lateral ceiling; 60.745382 -> 60.452037 on the fixture.
 const PIN = {
-  lapTimeS: '60.745382',
-  v: '338026.50145721436',
-  longG: '-7.8638236373662949',
-  latG: '1728.5890253243124',
-  leanDeg: '-78170.201274098828',
-  gripUse: '4402.4120898608817',
+  lapTimeS: '60.452037',
+  v: '339279.27805519104',
+  longG: '-0.98895514896139503',
+  latG: '1746.9644737006893',
+  leanDeg: '-70602.067173283547',
+  gripUse: '4432.8517881811713',
 } as const;
 
 describe('envelope pin (Review Focus 4)', () => {
@@ -225,64 +228,67 @@ describe('envelope pin (Review Focus 4)', () => {
   // are bit-identical to absent ones' below, against the live solver.
   it('reproduces the pinned envelope on the circuit fixture at the defaults', () => {
     const env = solve(circuitLine(), P);
-    expect(env.lapTimeS.toFixed(6)).toBe(PIN.lapTimeS);
-    expect(checksum(env.v)).toBe(PIN.v);
-    expect(checksum(env.longG)).toBe(PIN.longG);
-    expect(checksum(env.latG)).toBe(PIN.latG);
-    expect(checksum(env.leanDeg)).toBe(PIN.leanDeg);
-    expect(checksum(env.gripUse)).toBe(PIN.gripUse);
+    // one object so a legitimate re-pin shows every new value in a single diff
+    expect({
+      lapTimeS: env.lapTimeS.toFixed(6),
+      v: checksum(env.v),
+      longG: checksum(env.longG),
+      latG: checksum(env.latG),
+      leanDeg: checksum(env.leanDeg),
+      gripUse: checksum(env.gripUse),
+    }).toEqual(PIN);
     expect(Array.from(env.v).slice(0, 50)).toMatchInlineSnapshot(`
       [
-        33.50994110107422,
-        34.038143157958984,
-        34.576751708984375,
-        35.12212371826172,
-        35.671607971191406,
-        36.2224235534668,
-        36.772300720214844,
-        37.318756103515625,
-        37.861045837402344,
-        38.39855194091797,
-        38.93072509765625,
-        39.45703125,
-        39.976993560791016,
-        40.49018859863281,
-        40.996116638183594,
-        41.49449157714844,
-        41.98515701293945,
-        42.46805191040039,
-        42.943180084228516,
-        43.410640716552734,
-        43.870635986328125,
-        44.32350540161133,
-        44.76971435546875,
-        45.2098388671875,
-        45.64115905761719,
-        46.062347412109375,
-        46.47390365600586,
-        46.87628936767578,
-        47.269935607910156,
-        47.655235290527344,
-        48.03255844116211,
-        48.402244567871094,
-        48.764617919921875,
-        49.119972229003906,
-        49.468589782714844,
-        49.81072998046875,
-        50.146636962890625,
-        50.47654342651367,
-        50.80066680908203,
-        51.11920928955078,
-        51.43236541748047,
-        51.74031448364258,
-        52.04323196411133,
-        52.341278076171875,
-        52.63460922241211,
-        52.923370361328125,
-        53.20770263671875,
-        53.48773956298828,
-        53.763607025146484,
-        54.035423278808594,
+        33.533294677734375,
+        34.06070327758789,
+        34.59857940673828,
+        35.143280029296875,
+        35.692138671875,
+        36.242374420166016,
+        36.79171371459961,
+        37.337669372558594,
+        37.879493713378906,
+        38.416561126708984,
+        38.94832229614258,
+        39.474239349365234,
+        39.993831634521484,
+        40.506675720214844,
+        41.012271881103516,
+        41.51002883911133,
+        41.998600006103516,
+        42.47856521606445,
+        42.950435638427734,
+        43.414634704589844,
+        43.87148666381836,
+        44.321205139160156,
+        44.76389694213867,
+        45.1995735168457,
+        45.6282844543457,
+        46.049766540527344,
+        46.461605072021484,
+        46.8642578125,
+        47.25815963745117,
+        47.64370346069336,
+        48.02125930786133,
+        48.391170501708984,
+        48.75375747680664,
+        49.109317779541016,
+        49.458133697509766,
+        49.80046463012695,
+        50.13655471801758,
+        50.46664047241211,
+        50.79093551635742,
+        51.109642028808594,
+        51.42295837402344,
+        51.73106384277344,
+        52.03413009643555,
+        52.33232116699219,
+        52.62579345703125,
+        52.91469192504883,
+        53.19915771484375,
+        53.47932434082031,
+        53.755313873291016,
+        54.027252197265625,
       ]
     `);
   });
@@ -1059,9 +1065,13 @@ describe('v2 solver: load transfer, μ_eff ellipse, roll rate (spec v2 §2.1-2.5
   });
 
   it('with hang-off the lean-limited 1000 preset corners faster', () => {
-    const base = solve(circleLine(60), P).lapTimeS;
+    // The preset already hangs off 0.25 m (W6), at which point mu binds before
+    // the lean limit and more hang-off buys nothing; compare against a rider
+    // who sits bolt upright instead, where the crown correction alone caps the
+    // ideal lean below the tyre's mu.
+    const upright = solve(circleLine(60), clampParams({ ...P, machine: { ...P.machine, hangOffM: 0 } })).lapTimeS;
     const hang = solve(circleLine(60), clampParams({ ...P, machine: { ...P.machine, hangOffM: 0.3 } })).lapTimeS;
-    expect(hang).toBeLessThan(base);
+    expect(hang).toBeLessThan(upright);
   });
 
   it('a bigger tyre crown costs lean-limited corner speed', () => {

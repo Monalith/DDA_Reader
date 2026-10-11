@@ -56,8 +56,11 @@ describe('envelopeFromEvent', () => {
       expect(out.latG[i]).toBeCloseTo((v[i] * v[i] * line.curvature[i]) / G, 4);
       // longG scales with v^2 exactly
       expect(out.longG[i]).toBeCloseTo(env.longG[i] * 0.81, 3);
-      // the app's lean convention survives: left = negative, opposite to latG
-      if (Math.abs(out.latG[i]) > 0.05) expect(Math.sign(out.leanDeg[i])).toBe(-Math.sign(out.latG[i]));
+      // the app's lean convention survives: left = negative, opposite to latG.
+      // Gated on the BIKE lean, not on latG: with the rider hanging off, the
+      // bike itself stays upright below ~0.15 g (vehicle.ts clamps the crown/
+      // hang-off correction at zero), so a small latG legitimately has lean 0.
+      if (Math.abs(out.leanDeg[i]) > 0.5) expect(Math.sign(out.leanDeg[i])).toBe(-Math.sign(out.latG[i]));
       expect(Math.abs(out.leanDeg[i])).toBeLessThanOrEqual(Math.abs(env.leanDeg[i]) + 1e-4);
     }
   });

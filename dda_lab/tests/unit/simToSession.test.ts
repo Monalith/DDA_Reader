@@ -135,9 +135,13 @@ describe('simulate', () => {
     // way round, so the backward (braking) pass never binds and brakingG has
     // nothing to do there; the oval's straights give it a real braking zone
     // to shorten, so the two settings must come out strictly different.
+    //
+    // v2: `brakingG` is a DERIVED value and only acts when the user has pinned
+    // it (spec v2 §2.6, `overrides`); unpinned, the allowed slip `sBrake` sets
+    // the braking ceiling. Pin it here so the slider's old meaning is tested.
     const { track, corridor } = ovalTrack(500, 25);
-    const slow = simulate(track, corridor, clampParams({ ...P, rider: { ...P.rider, brakingG: 0.6 } }), 'a', 'A', '#fff');
-    const fast = simulate(track, corridor, clampParams({ ...P, rider: { ...P.rider, brakingG: 1.4 } }), 'b', 'B', '#fff');
+    const slow = simulate(track, corridor, clampParams({ ...P, rider: { ...P.rider, brakingG: 0.6, overrides: ['brakingG'] } }), 'a', 'A', '#fff');
+    const fast = simulate(track, corridor, clampParams({ ...P, rider: { ...P.rider, brakingG: 1.4, overrides: ['brakingG'] } }), 'b', 'B', '#fff');
     expect(fast.lapTimeS).toBeLessThan(slow.lapTimeS);
   });
 

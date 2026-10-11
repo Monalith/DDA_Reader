@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { clampParams, DEFAULT_SIM_PARAMS, MACHINE_PRESETS, presetById } from '../../src/sim/presets';
 import { riderChannels } from '../../src/sim/rider';
@@ -30,6 +32,38 @@ describe('presets', () => {
     expect(lean250).toBeLessThan(lean600);
     expect(lean600).toBeLessThan(lean1000);
     expect(lean1000).toBeLessThanOrEqual(leanPanigale);
+  });
+
+  it('puts the CG between 40 % and 60 % of the wheelbase from the rear contact', () => {
+    for (const p of MACHINE_PRESETS) {
+      const f = p.machine.cgRearM / p.machine.wheelbaseM;
+      expect(f, p.id).toBeGreaterThanOrEqual(0.4);
+      expect(f, p.id).toBeLessThanOrEqual(0.6);
+    }
+  });
+
+  it('keeps the rider lighter than bike + rider and the v2 geometry in its physical range', () => {
+    for (const p of MACHINE_PRESETS) {
+      expect(p.machine.riderMassKg, p.id).toBeLessThan(p.machine.massKg);
+      expect(p.machine.riderMassKg, p.id).toBeGreaterThan(0);
+      // R1 §3.2: t ~ 0.06-0.09 m, d_r 0-0.3 m
+      expect(p.machine.tyreCrownM, p.id).toBeGreaterThanOrEqual(0.05);
+      expect(p.machine.tyreCrownM, p.id).toBeLessThanOrEqual(0.1);
+      expect(p.machine.hangOffM, p.id).toBeGreaterThanOrEqual(0);
+      expect(p.machine.hangOffM, p.id).toBeLessThanOrEqual(0.3);
+    }
+  });
+
+  it('cites a source for every v2 machine number in every preset', () => {
+    // Global constraint: a coefficient that is a proposal carries its source
+    // and the tag öneri / doğrulanmadı. One field per line, each with a
+    // `// source:` comment, so a grep can hold the file to it.
+    const text = readFileSync(resolve(__dirname, '../../src/sim/presets.ts'), 'utf8');
+    for (const key of ['cgRearM', 'tyreCrownM', 'hangOffM', 'riderMassKg']) {
+      const lines = text.split('\n').filter((l) => new RegExp(`\\b${key}:\\s*[0-9.]`).test(l));
+      expect(lines.length, key).toBe(MACHINE_PRESETS.length);
+      for (const l of lines) expect(l, l).toMatch(/\/\/ source:.*\S/);
+    }
   });
 
   it('falls back to custom for an unknown id instead of throwing', () => {

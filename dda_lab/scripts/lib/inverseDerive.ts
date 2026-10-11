@@ -29,7 +29,7 @@ export function inverseGripFraction(frac: number, axis: TyreAxis): number {
  *
  * `brakingG` and `leanUsage` go through the tyre curve:
  *   brakingG  = μx·gripScale·g(sBrake, long)  →  sBrake  →  R
- *   leanUsage = g(sLat, lat)                  →  sLat    →  R
+ *   leanUsage = min(1, a + b·R)               →  R (ambiguous at the cap)
  * The tyre curve saturates at s = 1, so a measured value at or above the
  * ceiling returns the R for s = 1 (the inverse cannot say how far above).
  */
@@ -42,7 +42,9 @@ export function invertDerive(key: DerivedRiderKey, value: number, tyre: TyreTrac
     const muX = (tyre.muX ?? tyre.mu) * tyre.gripScale;
     return lin('sBrake', inverseGripFraction(value / muX, 'long'));
   }
-  if (key === 'leanUsage') return lin('sLat', inverseGripFraction(value, 'lat'));
+  // leanUsage has its own linear map, capped at 1 in deriveRider(); at the
+  // cap the inverse can only say "R at or above the cap"
+  if (key === 'leanUsage') return value >= 1 ? lin('leanUsage', 1) : lin('leanUsage', value);
   return lin(key, value);
 }
 

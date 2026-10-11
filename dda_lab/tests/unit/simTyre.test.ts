@@ -40,7 +40,7 @@ describe('effectiveMu', () => {
     expect(mu.lat).toBeCloseTo(1.3, 9);
   });
   it('muX undefined means muX = mu', () => {
-    expect(effectiveMu({ ...tyre, muX: undefined }, DEFAULT_SIM_PARAMS.rider).brake).toBeCloseTo(1.3, 9);
+    expect(effectiveMu({ ...tyre, muX: undefined }, { ...DEFAULT_SIM_PARAMS.rider, sBrake: 1 }).brake).toBeCloseTo(1.3, 9);
   });
   it('gripScale multiplies every axis', () => {
     const r = { ...DEFAULT_SIM_PARAMS.rider, sBrake: 0.6, sDrive: 0.6, sLat: 0.6 };

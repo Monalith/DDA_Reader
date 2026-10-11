@@ -20,7 +20,7 @@ import { eventProfile, type EventCaps, type EventProfile } from './events';
 import { buildLine, lineFromOffsets } from './line';
 import { clampParams } from './presets';
 import { riderChannels } from './rider';
-import { brakeShare, G, lossDecelMs2, solve } from './solver';
+import { brakeCapMs2, driveCapMs2, G, lossDecelMs2, solve } from './solver';
 import { toSession } from './toSession';
 import type { Corner, Corridor, Envelope, Line, SimParams, SolverMode } from './types';
 
@@ -75,35 +75,16 @@ export function idealParams(params: SimParams): SimParams {
 }
 
 /**
- * Tyre force caps for the event template, built from the same quantities the
- * v1 solver uses (`brakeShare`, `lossDecelMs2`, μ·gripScale, the lean limit),
- * so nothing new is needed from W1.
- *
- * MERGE: replace the bodies with W1's `brakeCapMs2(line, p, i, v)` /
- * `driveCapMs2(line, p, i, v)` (they add load transfer, μ_eff and the 3D
- * g-budget); the signatures already match the contract.
+ * Tyre force caps for the event template: exactly the per-sample caps the
+ * solver's own passes use (load transfer, μ_eff ellipse, trail-brake taper,
+ * roll-dependent stoppie/wheelie limits), WITHOUT drag — the template adds
+ * `lossDecelMs2` itself.
  */
 export function eventCaps(line: Line, params: SimParams): EventCaps {
   const p = clampParams(params);
-  const mu = p.tyre.mu * p.tyre.gripScale;
-  const muX = (p.tyre.muX ?? p.tyre.mu) * p.tyre.gripScale;
-  const leanLimitRad = (p.tyre.maxLeanDeg * p.rider.leanUsage * Math.PI) / 180;
-  const aLatMax = Math.max(0.1, Math.min(mu, Math.tan(leanLimitRad))) * G;
-  const aBrakeMax = Math.max(0.1, Math.min(p.rider.brakingG, muX)) * G;
-  // wheelie: front unloads at g·b/h (R1 §3.1), b = cgRearM
-  const aWheelie = (G * p.machine.cgRearM) / p.machine.cgHeightM;
-  const power = p.machine.powerKw * 1000;
-  const tcFloor = 0.55 + 0.45 * p.rider.tcThreshold;
-  const latUse = (i: number, v: number): number =>
-    Math.min(1, (v * v * Math.abs(line.curvature[i] ?? 0)) / aLatMax);
   return {
-    brakeCapMs2: (i, v) => aBrakeMax * brakeShare(latUse(i, v), p.rider.trailBrakeDepth, p.rider.trailBrakeProfile),
-    driveCapMs2: (i, v) => {
-      const lu = latUse(i, v);
-      const ellipse = Math.sqrt(Math.max(0, 1 - lu * lu));
-      const tc = 1 - (1 - tcFloor) * lu;
-      return Math.max(0, Math.min(power / (p.machine.massKg * Math.max(V_MIN, v)), muX * G * ellipse * tc, aWheelie));
-    },
+    brakeCapMs2: (i, v) => brakeCapMs2(line, p, i, v),
+    driveCapMs2: (i, v) => driveCapMs2(line, p, i, v),
     lossDecelMs2: (v) => lossDecelMs2(p.machine, v),
   };
 }
@@ -211,9 +192,7 @@ export function simulate(
   const corners = findCorners(line, qss.v, p);
   const ev = eventProfile(line, qss, corners, p, eventCaps(line, p));
   const env = envelopeFromEvent(line, qss, ev);
-  // MERGE: `riderChannels(line, env, p, ev)` once W3's rider.ts takes the event
-  // profile (brake/tps from events instead of the v1 per-sample heuristics).
-  const ch = riderChannels(line, env, p);
+  const ch = riderChannels(line, env, p, ev);
   return {
     session: toSession(line, env, ch, p, id, name, color),
     line,

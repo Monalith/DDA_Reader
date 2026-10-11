@@ -24,19 +24,45 @@ export const BRAKE_RISE_MAX_GPS = 2.8;
  *   tcThreshold                             — v1 default kept constant (no source ties it to A/R yet)
  */
 export const DERIVE_TABLE: Record<DerivedRiderKey, { from: 'A' | 'R' | 'const'; a: number; b: number }> = {
-  sBrake: { from: 'R', a: 0.3, b: 0.65 },
+  // Calibrated on the BMW reference (2026-10-11 sweep, notes/2026-10-11-v2-
+  // calibration.md): long_g p25 of -0.70 g needs sBrake ~0.5 on a 1.40 tyre,
+  // i.e. R ~0.3; the owner's 0.80 g tyre peak sits at R ~0. (ölçüm + öneri)
+  // Floor 0.15 (g ≈ 0.35: a 0.5 g tyre peak on a 1.42 tyre, the owner's
+  // typical zone) rising to 0.75 (g ≈ 0.97) at full risk; the BMW's deepest
+  // 0.98 g tyre peak sits at R ~0.4.
+  sBrake: { from: 'R', a: 0.15, b: 0.6 },
   sDrive: { from: 'R', a: 0.5, b: 0.45 },
-  sLat: { from: 'R', a: 0.55, b: 0.42 },
+  // Lateral grip is mostly camber thrust (R2 §4.3) and its curve is flat:
+  // riders of every level corner near the lateral ceiling, which is why the
+  // BMW brakes at p25 -0.70 g yet carries v1's corner speeds. Risk therefore
+  // moves sLat only in the top 15 %. (R2 + ölçüm, öneri)
+  sLat: { from: 'R', a: 0.85, b: 0.15 },
   // brakingG is NOT a linear map: it is μx · g(sBrake); see deriveRider().
   brakingG: { from: 'R', a: 0, b: 0 },
   brakeRiseGps: { from: 'A', a: 0.6 * BRAKE_RISE_MAX_GPS, b: 0.4 * BRAKE_RISE_MAX_GPS },
-  throttleDelayS: { from: 'A', a: 1.6, b: -1.4 },
+  // Measured, not the Champ School window (that 2 s is brake-release to
+  // drive, not apex to throttle): the R6 reference picks the throttle up at
+  // the apex (-0.06 s), the owner's Ducati laps reach 20 % at +0.20 s. So
+  // A = 0.4 (owner) -> 0.2 s, A = 0.8 (R6) -> 0.0 s; negative = before the
+  // speed apex, which events.ts allows down to -0.3 s. (ölçüm + öneri)
+  throttleDelayS: { from: 'A', a: 0.4, b: -0.5 },
   rollOnS: { from: 'A', a: 1.2, b: -0.8 },
-  rollRateFrac: { from: 'A', a: 0.5, b: 0.5 },
-  trailBrakeDepth: { from: 'R', a: 0.3, b: 0.6 },
-  trailBrakeProfile: { from: 'R', a: 0, b: 1 },
-  // leanUsage is NOT linear either: φ_use = φ_max · g(sLat, Cy); see deriveRider().
-  leanUsage: { from: 'R', a: 0, b: 0 },
+  // Owner's turn-in roll rate is 0.48 of the Biniewicz bound (W4, p90 of the
+  // median corner) at A ~0.3; pros at the bound. (ölçüm + öneri)
+  rollRateFrac: { from: 'A', a: 0.4, b: 0.6 },
+  // Trail braking is worth ~12 s across its square on Serres (simSerres);
+  // the BMW reference brakes softly (p25 -0.70 g, R ~0.35) yet laps 1:19.8,
+  // which is only possible if it still carries the brakes deep. So risk
+  // moves the pair over the upper half of their range, not from zero.
+  // (ölçüm + öneri; v1 calibration was 0.85 / 0.80)
+  trailBrakeDepth: { from: 'R', a: 0.6, b: 0.4 },
+  trailBrakeProfile: { from: 'R', a: 0.5, b: 0.5 },
+  // Lean usage is its own map, not g(sLat): the owner's Ducati laps use 87 %
+  // of the preset's lean limit (p99 51.2° of 59°) at the bottom of the risk
+  // scale, while the BMW reference brakes softly (R ~0.35) yet carries v1's
+  // corner speeds, i.e. leans to the limit. Steep and capped at 1 in
+  // deriveRider(): R 0 -> 0.87, R >= 0.37 -> 1. (ölçüm + öneri)
+  leanUsage: { from: 'R', a: 0.87, b: 0.35 },
   tcThreshold: { from: 'const', a: 0.5, b: 0 },
 };
 
@@ -80,7 +106,7 @@ export function deriveRider(rider: RiderParams, tyre: TyreTrackParams): RiderPar
   // force-level fields that go through the tyre curve
   const muX = (tyre.muX ?? tyre.mu) * tyre.gripScale;
   setIf('brakingG', muX * gripFraction(out.sBrake, 'long'));
-  setIf('leanUsage', gripFraction(out.sLat, 'lat'));
+  setIf('leanUsage', Math.min(1, lin('leanUsage')));
 
   return out;
 }

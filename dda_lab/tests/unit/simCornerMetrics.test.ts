@@ -280,7 +280,8 @@ describe('inverting the A/R derivation (spec v2 §2.6)', () => {
         expect(invertDerive('rollRateFrac', r.rollRateFrac, tyre)).toBeCloseTo(A, 6);
         expect(invertDerive('sDrive', r.sDrive, tyre)).toBeCloseTo(R, 6);
         expect(invertDerive('brakingG', r.brakingG, tyre)).toBeCloseTo(R, 4);
-        expect(invertDerive('leanUsage', r.leanUsage, tyre)).toBeCloseTo(R, 4);
+        // leanUsage is capped at 1 (R >= 0.37 all read 1), so it only inverts below the cap
+        if (r.leanUsage < 1) expect(invertDerive('leanUsage', r.leanUsage, tyre)).toBeCloseTo(R, 4);
       }
     }
   });

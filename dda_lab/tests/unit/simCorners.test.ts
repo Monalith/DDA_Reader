@@ -68,10 +68,13 @@ describe('findCorners', () => {
     const line = buildLine(chicaneTrack(), undefined, P);
     const env = solve(line, P);
     const cs = findCorners(line, env.v, P);
-    expect(cs.length).toBe(1);
-    expect(cs[0].flips.length).toBeGreaterThanOrEqual(1);
-    expect(cs[0].hasBrake).toBe(true);
-    expectOrdered(cs[0], line.points.length);
+    // The fixture's three closing bends were flat-out in v1; the v2 roll-rate
+    // limit makes each a (shallow) corner of its own, so assert the chicane
+    // itself: exactly ONE section carries the flip, and it is braked.
+    const chicane = cs.filter((c) => c.flips.length >= 1);
+    expect(chicane.length).toBe(1);
+    expect(chicane[0].hasBrake).toBe(true);
+    for (const c of cs) expectOrdered(c, line.points.length);
   });
 
   it('a kink taken flat out has no brake event', () => {

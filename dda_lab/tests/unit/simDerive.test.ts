@@ -24,11 +24,15 @@ describe('deriveRider', () => {
     }
   });
 
-  it('derives brakingG as muX * gripScale * g(sBrake) and leanUsage as g(sLat)', () => {
+  it('derives brakingG as muX * gripScale * g(sBrake) and leanUsage from its own capped map', () => {
     for (const r of [0, 0.3, 0.7, 1]) {
       const out = deriveRider(rider(0.5, r), TYRE);
       expect(out.brakingG).toBeCloseTo(1.1 * 0.95 * gripFraction(out.sBrake, 'long'), 12);
-      expect(out.leanUsage).toBeCloseTo(gripFraction(out.sLat, 'lat'), 12);
+      // calibration 2026-10-11: lean usage is NOT g(sLat) — the owner uses 87 %
+      // of the lean limit at the bottom of the risk scale, the BMW reference
+      // leans to the limit at R ~0.35, so the map is steep and capped at 1
+      const t = DERIVE_TABLE.leanUsage;
+      expect(out.leanUsage).toBeCloseTo(Math.min(1, t.a + t.b * r), 12);
     }
   });
 

@@ -17,6 +17,7 @@
 import { simulate } from '../src/sim/index';
 import { G, lossDecelMs2 } from '../src/sim/solver';
 import { clampParams, DEFAULT_SIM_PARAMS, presetById } from '../src/sim/presets';
+import type { SimParams } from '../src/sim/types';
 import { cornerMetrics, median, rollOn, throttlePickUp, type CornerMetrics } from './lib/cornerMetrics';
 import {
   brakeApplications,
@@ -97,13 +98,16 @@ function matchCorners(real: CornerMetrics, realLen: number, sim: CornerMetrics, 
   });
 }
 
-function validate(path: string): { rows: Row[]; matches: Match[]; title: string } {
+export function validate(
+  path: string,
+  params: SimParams = DEFAULT_SIM_PARAMS,
+): { rows: Row[]; matches: Match[]; title: string } {
   const kind = referenceKind(path);
   const rows = readReferenceRows(path);
   const real = referenceTrace(rows, kind);
   const realMachine = presetById(kind === 'R6' ? '600' : '1000').machine;
 
-  const P = clampParams(DEFAULT_SIM_PARAMS);
+  const P = clampParams(params);
   const res = simulate(serresTrack(rows), undefined, P, 'sim', 'Sim', '#888');
   const sim = sessionTrace(res.session, res.lapTimeS);
 
@@ -225,4 +229,7 @@ function main(): void {
   process.exitCode = failed ? 1 : 0;
 }
 
-main();
+// run as a script only; `validate()` is importable by the calibration sweep
+// vite-node strips the script path from argv, so the sweep that imports
+// validate() opts out with an env flag instead
+if (!process.env.SIM_VALIDATE_LIB) main();

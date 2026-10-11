@@ -176,7 +176,14 @@ function cornerLoop(n: number, start: number, lenV: number, radiusM: number): Li
   return { points, curvature, cumDistM, lengthM: n, offsetM: new Float32Array(n) };
 }
 
-const P: SimParams = clampParams(DEFAULT_SIM_PARAMS);
+// The solver tests probe the PHYSICS at the tyre's ceiling: every allowed-slip
+// fraction and the roll-rate share at 1, lean usage at the limit. The shipped
+// defaults (derive.ts, A 0.9 / R 0.5) sit below that on purpose; the rider
+// tests (simEvents, simRider, simSerres) use those.
+const P: SimParams = clampParams({
+  ...DEFAULT_SIM_PARAMS,
+  rider: { ...DEFAULT_SIM_PARAMS.rider, sBrake: 1, sDrive: 1, sLat: 1, rollRateFrac: 1, leanUsage: 1 },
+});
 
 /** The 5-corner synthetic circuit (`circuitFixture.ts`), no jitter, as a Line at P. */
 function circuitLine(): Line {
@@ -202,12 +209,14 @@ function checksum(a: ArrayLike<number>): string {
 // (was 0.15) and class-specific crown radii, which moves the lean limit and
 // therefore the lateral ceiling; 60.745382 -> 60.452037 on the fixture.
 const PIN = {
-  lapTimeS: '60.452037',
-  v: '339279.27805519104',
-  longG: '-0.98895514896139503',
-  latG: '1746.9644737006893',
-  leanDeg: '-70602.067173283547',
-  gripUse: '4432.8517881811713',
+  // 2026-10-11 merge: P is now the CEILING rider (every slip fraction, the
+  // roll-rate share and lean usage at 1) on W6's presets; 59.492084 s.
+  lapTimeS: '59.492084',
+  v: '343347.87624740601',
+  longG: '2.8394868113100529',
+  latG: '1824.8698953449493',
+  leanDeg: '-73207.890756562352',
+  gripUse: '4304.7470043075155',
 } as const;
 
 describe('envelope pin (Review Focus 4)', () => {
@@ -239,56 +248,56 @@ describe('envelope pin (Review Focus 4)', () => {
     }).toEqual(PIN);
     expect(Array.from(env.v).slice(0, 50)).toMatchInlineSnapshot(`
       [
-        33.533294677734375,
-        34.06070327758789,
-        34.59857940673828,
-        35.143280029296875,
-        35.692138671875,
-        36.242374420166016,
-        36.79171371459961,
-        37.337669372558594,
-        37.879493713378906,
-        38.416561126708984,
-        38.94832229614258,
-        39.474239349365234,
-        39.993831634521484,
-        40.506675720214844,
-        41.012271881103516,
-        41.51002883911133,
-        41.998600006103516,
-        42.47856521606445,
-        42.950435638427734,
-        43.414634704589844,
-        43.87148666381836,
-        44.321205139160156,
-        44.76389694213867,
-        45.1995735168457,
-        45.6282844543457,
-        46.049766540527344,
-        46.461605072021484,
-        46.8642578125,
-        47.25815963745117,
-        47.64370346069336,
-        48.02125930786133,
-        48.391170501708984,
-        48.75375747680664,
-        49.109317779541016,
-        49.458133697509766,
-        49.80046463012695,
-        50.13655471801758,
-        50.46664047241211,
-        50.79093551635742,
-        51.109642028808594,
-        51.42295837402344,
-        51.73106384277344,
-        52.03413009643555,
-        52.33232116699219,
-        52.62579345703125,
-        52.91469192504883,
-        53.19915771484375,
-        53.47932434082031,
-        53.755313873291016,
-        54.027252197265625,
+        34.410343170166016,
+        34.95169448852539,
+        35.503787994384766,
+        36.0628776550293,
+        36.62623596191406,
+        37.19100570678711,
+        37.754852294921875,
+        38.31521987915039,
+        38.87134552001953,
+        39.42258834838867,
+        39.961830139160156,
+        40.48799133300781,
+        41.00209045410156,
+        41.505062103271484,
+        41.997859954833984,
+        42.481266021728516,
+        42.9559440612793,
+        43.42247009277344,
+        43.88134002685547,
+        44.33295822143555,
+        44.77762985229492,
+        45.21554183959961,
+        45.64677047729492,
+        46.068145751953125,
+        46.4798583984375,
+        46.88237762451172,
+        47.27613067626953,
+        47.66151809692383,
+        48.03890609741211,
+        48.40864562988281,
+        48.771053314208984,
+        49.12643051147461,
+        49.47505569458008,
+        49.81719207763672,
+        50.1530876159668,
+        50.482975006103516,
+        50.807071685791016,
+        51.125579833984375,
+        51.438697814941406,
+        51.746604919433594,
+        52.049476623535156,
+        52.34747314453125,
+        52.640750885009766,
+        52.92945861816406,
+        53.2137336730957,
+        53.49371337890625,
+        53.7695198059082,
+        54.04127502441406,
+        54.30909729003906,
+        54.57309341430664,
       ]
     `);
   });
@@ -630,7 +639,8 @@ describe('solve', () => {
       // above: the nine combinations put the braking point on slightly
       // different samples, and the loss term they are each read at differs
       // with the speed at that sample. Measured spread: 1.1e-5 g.
-      for (const peak of peaks) expect(Math.abs(peak - peaks[0])).toBeLessThan(5e-5);
+      // 1e-4 since the v2 caps: the stoppie limit is read at the bike's roll, which differs by a sample between runs
+      for (const peak of peaks) expect(Math.abs(peak - peaks[0])).toBeLessThan(1e-4);
     });
 
     it('carries the brakes to a higher lean the deeper and braver the rider is', () => {
@@ -800,7 +810,10 @@ describe('solve', () => {
     const p = clampParams({
       machine: { presetId: '250', ...presetById('250').machine },
       tyre: { ...presetById('250').tyre },
-      rider: { ...P.rider, kappa: presetById('250').kappa },
+      // leanUsage 0.9: with W6's 0.2 m hang-off the 250's full 52° is no
+      // longer lean-limited (tan of the ideal limit 1.36 > μ 1.32); a rider
+      // using 90 % of it is, which is the case this test is about
+      rider: { ...P.rider, kappa: presetById('250').kappa, leanUsage: 0.9 },
     });
     // the lean limit really is the binding constraint for this preset (v2:
     // on the IDEAL roll the crown/hang-off-corrected bike lean allows)
@@ -1000,8 +1013,14 @@ describe('v2 solver: load transfer, μ_eff ellipse, roll rate (spec v2 §2.1-2.5
     const env = solve(line, P);
     let hardest = 0;
     for (let i = 0; i < env.v.length; i++) {
-      const cap = stoppieLimitMs2(P.machine, 0) + lossDecelMs2(P.machine, env.v[i]);
-      expect(-env.longG[i] * 9.81).toBeLessThanOrEqual(cap + 0.05);
+      // the stoppie limit at the bike's OWN roll there: the CG sits lower at
+      // lean (h_φ), so the limit on the first leaned samples is a little above
+      // the upright one
+      const phi = (Math.abs(env.leanDeg[i]) * Math.PI) / 180;
+      const cap = stoppieLimitMs2(P.machine, phi) + lossDecelMs2(P.machine, env.v[i]);
+      // 0.1 m/s^2 (0.01 g): longG[i] averages two segments whose drag is read
+      // at their own speeds, while the cap reads drag at v[i]
+      expect(-env.longG[i] * 9.81).toBeLessThanOrEqual(cap + 0.1);
       hardest = Math.max(hardest, -env.longG[i] * 9.81 - lossDecelMs2(P.machine, env.v[i]));
     }
     // and the stoppie really is what binds (1.307 g < μ 1.33 on the 1000)

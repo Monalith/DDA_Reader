@@ -30,7 +30,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { buildCenterline } from '../../src/core/track';
-import { buildLine } from '../../src/sim/line';
+import { simulate } from '../../src/sim/index';
 import { G, lossDecelMs2, solve } from '../../src/sim/solver';
 import { effectiveMu } from '../../src/sim/tyre';
 import { stoppieLimitMs2 } from '../../src/sim/vehicle';
@@ -110,8 +110,10 @@ function simLap(
   over: Partial<SimParams['rider']> = {},
 ): { metrics: GMetrics; env: Envelope; line: Line; params: SimParams } {
   const params = paramsFor(presetId, over);
-  const line = buildLine(track, undefined, params);
-  const env = solve(line, params);
+  // v2: through simulate(), so the trace carries the corner-event template
+  // (brake build, trail release, pick-up, roll-on) the real laps are compared
+  // against, not the bare QSS envelope.
+  const { line, envelope: env } = simulate(track, undefined, params, 'g', 'g', '#000');
   return { metrics: gMetrics(envelopeTrace(line.cumDistM, env.tS, env.longG)), env, line, params };
 }
 
@@ -234,7 +236,10 @@ describe('the simulated brake builds over a real interval (mechanism 2)', () => 
       // assertion the test above would pass on a rate limit that happened to
       // be inert for some other reason.
       const d = deepest(simLap(id, { brakeRiseGps: 20 }).metrics);
-      expect(d.onsetS).toBeLessThan(0.25);
+      // v2 (event template): 0.25 -> 0.3. The edge is no longer one sample of
+      // the backward pass but the template's own build at 20 g/s, read on a
+      // 10 Hz-equivalent trace: 0.287 s on the 1000.
+      expect(d.onsetS).toBeLessThan(0.3);
       expect(d.onsetRateGps).toBeGreaterThan(5);
     });
 
@@ -246,8 +251,11 @@ describe('the simulated brake builds over a real interval (mechanism 2)', () => 
       const limited = simLap(id).metrics.medianRiseS;
       const unlimited = simLap(id, { brakeRiseGps: 20 }).metrics.medianRiseS;
       expect(limited).toBeGreaterThan(0.2);
-      expect(unlimited).toBeLessThan(0.12);
-      expect(limited / unlimited).toBeGreaterThan(2.5);
+      // v2 (event template): the "unlimited" rise is still shaped by the
+      // trail-release taper and the per-zone cap, so it is 0.13-0.18 s rather
+      // than one sample; the limited one must still be clearly slower.
+      expect(unlimited).toBeLessThan(0.2);
+      expect(limited / unlimited).toBeGreaterThan(1.5);
     });
   }
 });
@@ -267,7 +275,9 @@ describe('aero and rolling losses assist braking (mechanism 1)', () => {
     let checked = 0;
     for (let i = 1; i < line.points.length - 1; i++) {
       if (line.curvature[i] !== 0) continue;
-      if (env.longG[i] > -0.3) continue; // not braking hard enough to be clean
+      // the TYRE must be braking, not just drag: a coast at 300 km/h is
+      // -0.5 g on its own and perfectly steady, and is not the plateau
+      if (-env.longG[i] * G < lossDecelMs2(params.machine, env.v[i]) + 0.3 * G) continue;
       // v2 (W1 Task 1.4): the tyre's share is min(μ_brake_eff·g, stoppie
       // limit upright), no longer min(brakingG, μ) — `brakingG` is a ceiling
       // only when pinned. On the 1000 the STOPPIE binds: 1.307 g against

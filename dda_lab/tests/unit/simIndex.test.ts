@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { effectiveMu } from '../../src/sim/tyre';
+import { stoppieLimitMs2 } from '../../src/sim/vehicle';
 import { envelopeFromEvent, eventCaps, idealParams, simulate } from '../../src/sim';
 import { buildLine } from '../../src/sim/line';
 import { clampParams, DEFAULT_SIM_PARAMS } from '../../src/sim/presets';
@@ -71,9 +73,11 @@ describe('eventCaps', () => {
   const caps = eventCaps(line, P);
   const straight = line.curvature.findIndex((k) => Math.abs(k) < 1e-5);
 
-  it('brakes with the tyre at min(brakingG, muX) upright, without drag', () => {
+  it('brakes with the tyre at min(μ_brake_eff, stoppie) upright, without drag', () => {
     expect(straight).toBeGreaterThanOrEqual(0);
-    const want = Math.min(P.rider.brakingG, (P.tyre.muX ?? P.tyre.mu) * P.tyre.gripScale) * G;
+    // v2 caps (W1): the rider's allowed-slip μ on the front, or the stoppie
+    // limit if that binds first; `brakingG` only acts when pinned.
+    const want = Math.min(effectiveMu(P.tyre, P.rider).brake * G, stoppieLimitMs2(P.machine, 0));
     // |κ| < 1e-5 is not exactly 0: a few micro-g of lateral use remain
     expect(caps.brakeCapMs2(straight, 50)).toBeCloseTo(want, 4);
     expect(caps.brakeCapMs2(straight, 50)).toBeLessThanOrEqual(want);

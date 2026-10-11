@@ -27,6 +27,8 @@ import type { Corner, Corridor, Envelope, Line, SimParams, SolverMode } from './
 export interface SimResult {
   session: Session;
   line: Line;
+  /** The envelope the session was packaged from (line-sampled; grip channels for the risk banner). */
+  envelope: Envelope;
   lapTimeS: number;
   mode: SolverMode;
   /** Corner sections (rider mode only). */
@@ -201,7 +203,7 @@ export function simulate(
       ? envelopeFromSpeed(line, Float32Array.from(optimal.vMs, (x) => Math.max(V_MIN, x)), qss)
       : qss;
     const ch = riderChannels(line, env, ip);
-    return { session: toSession(line, env, ch, ip, id, name, color), line, lapTimeS: env.lapTimeS, mode };
+    return { session: toSession(line, env, ch, ip, id, name, color), line, envelope: env, lapTimeS: env.lapTimeS, mode };
   }
 
   const line = buildLine(track, corridor, p);
@@ -215,6 +217,7 @@ export function simulate(
   return {
     session: toSession(line, env, ch, p, id, name, color),
     line,
+    envelope: env,
     lapTimeS: env.lapTimeS,
     mode,
     corners: ev.corners,

@@ -86,7 +86,7 @@ on first use, and that version runs these scripts unchanged.)
 | brake build rate 10–90 %, g/s (median) | 1.1 | 2.6 | — | info |
 | tyre brake peak, g (median / deepest) | −0.78 / −0.94 | −0.85 / −0.85 | — | info |
 | long_g p25 (braking samples), g | −0.66 | −0.95 | −0.70 ± 0.10 | **FAIL** |
-| t_pick − t_apex, s (median; n real/sim) | −0.22 (7) | 0.31 (10) | real ± 0.3 | **FAIL** |
+| t_pick − t_apex, s (median; n real/sim) | −0.06 (6) | 0.31 (10) | real ± 0.3 | **FAIL** |
 | roll-on tps 20 → 90 %, s (median; n real/sim) | 3.26 (6) | 1.61 (7) | real ± 0.3 | **FAIL** |
 
 | real apex s, m | real min km/h | sim apex s, m | sim min km/h | Δ km/h |
@@ -128,8 +128,10 @@ on first use, and that version runs these scripts unchanged.)
    4.5–6.9 km/h deep, below the 8 km/h prominence. Either that rider carries
    more speed there, or the ±3 km/h overlay read smooths the dips. The
    threshold is the spec's and was **not** tuned to make the two files agree.
-5. **R6 throttle.** The real rider picks up the throttle *before* the speed
-   apex (median −0.22 s). The v1 sim picks up 0.31 s after it. The real
+5. **R6 throttle.** The real rider picks up the throttle at the speed apex
+   (median −0.06 s; 6 corners, counted only where the throttle actually
+   closed and re-opened through 10 %). The v1 sim picks up 0.31 s after it,
+   0.37 s late, just outside the ±0.3 s band. The real
    roll-on is slow, 3.26 s from 20 to 90 %, because there is a long
    part-throttle phase on the exits. The v1 sim takes 1.61 s. Both rows feed
    `throttleDelayS` and `rollOnS` in `DERIVE_TABLE`. The Ducati

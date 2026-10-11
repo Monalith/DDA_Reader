@@ -8,6 +8,7 @@
 // NOT count as corners.
 import { describe, expect, it } from 'vitest';
 import {
+  biteRateGps,
   brakeBuild,
   cornerMetrics,
   findSpeedCorners,
@@ -169,6 +170,38 @@ describe('brakeBuild', () => {
     // 10-90 % rate: 0.8 g over 0.32 s
     expect(b!.rateGps).toBeCloseTo(2.5, 1);
   });
+
+  it('the bite rate is the steepest 0.3 s of the build, not the 10-90 % average', () => {
+    // 2.5 g/s bite to 0.5 g, then a slow 0.5 g/s squeeze to 0.9 g
+    const dt = 0.1;
+    const n = 50;
+    const tS = Float64Array.from({ length: n }, (_, i) => i * dt);
+    const g = Float32Array.from(tS, (t) => {
+      const u = t - 1;
+      if (u <= 0) return 0;
+      if (u <= 0.2) return -2.5 * u;
+      return -Math.min(0.9, 0.5 + 0.5 * (u - 0.2));
+    });
+    // steepest 3-sample span: 0 -> -0.55 g between t = 1.0 and 1.3 s
+    expect(biteRateGps(tS, g, 0, n - 1)).toBeCloseTo(0.55 / 0.3, 2);
+    const b = brakeBuild(tS, g, 0, n - 1)!;
+    expect(b.rateGps).toBeLessThan(1.2);
+  });
+
+  it('a robust peak ignores a one-sample spike deeper than the plateau', () => {
+    // 0.4 s build to a 0.8 g plateau held 2 s, with one -1.5 g sample in it
+    const dt = 0.1;
+    const n = 40;
+    const tS = Float64Array.from({ length: n }, (_, i) => i * dt);
+    const g = Float32Array.from(tS, (t) => (t <= 1 ? 0 : -0.8 * Math.min(1, (t - 1) / 0.4)));
+    g[25] = -1.5;
+    const raw = brakeBuild(tS, g, 0, n - 1)!;
+    expect(raw.peakG).toBeCloseTo(-1.5, 5);
+    const rob = brakeBuild(tS, g, 0, n - 1, { robustPct: 10 })!;
+    expect(rob.peakG).toBeCloseTo(-0.8, 2);
+    // -0.1 g -> 0.72 g on a 2 g/s ramp
+    expect(rob.buildS).toBeCloseTo(0.31, 2);
+  });
 });
 
 describe('throttle pick-up, roll-on and turn-in roll rate', () => {
@@ -192,6 +225,13 @@ describe('throttle pick-up, roll-on and turn-in roll rate', () => {
     const p = throttlePickUp(tS, tps, 20);
     expect(p!.iP).toBe(40);
     expect(p!.tPickS).toBeCloseTo(2.0, 5);
+  });
+
+  it('a throttle held open through the corner has no pick-up', () => {
+    const n = 100;
+    const tS = Float64Array.from({ length: n }, (_, i) => i * 0.1);
+    const tps = Float32Array.from(tS, (t) => 15 + 5 * Math.sin(t));
+    expect(throttlePickUp(tS, tps, 50)).toBeNull();
   });
 
   it('measures roll rate on the signed lean, so a flick reads its true rate', () => {

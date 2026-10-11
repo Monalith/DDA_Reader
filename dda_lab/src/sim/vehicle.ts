@@ -52,6 +52,9 @@ export function cgHeightAtLean(m: MachineParams, phiRad: number): number {
  *
  *     a_wheelie = g̃·b/h_φ − F_D·h_D/(m·h_φ),   h_D = h (cgHeightM)
  *
+ * h_D = h (aero force at the CG height) is R1's simplification, "öneri" —
+ * no measured centre of pressure for any preset (doğrulanmadı).
+ *
  * Drag acts above the ground and pitches the bike nose-up, so the limit FALLS
  * with speed. Floored at 0.1 m/s^2. `gEff` is the effective normal gravity g̃
  * of the 3D g-budget (R1 §3.5); it defaults to g on a flat road.
@@ -67,7 +70,8 @@ export function wheelieLimitMs2(m: MachineParams, vMs: number, phiRad: number, g
  * Tyre-borne braking deceleration at which the rear wheel unloads, m/s^2
  * (R1 §3.1): `g̃·(p − b)/h_φ`. With h_D ≈ h the drag moment cancels against
  * its own share of deceleration, so drag is added ON TOP of this by the caller
- * (the backward pass adds `lossDecelMs2`). Floored at 0.1 m/s^2.
+ * (the backward pass adds `lossDecelMs2`). Floored at 0.1 m/s^2. `gEff` as
+ * in `wheelieLimitMs2`.
  */
 export function stoppieLimitMs2(m: MachineParams, phiRad: number, gEff: number = G): number {
   const hPhi = cgHeightAtLean(m, phiRad);
@@ -93,18 +97,31 @@ export function stoppieLimitMs2(m: MachineParams, phiRad: number, gEff: number =
  *    gives φ = −atan2(e, h − t) ≈ −4.8° at φ_i = 0, i.e. the bike leaning OUT
  *    of a corner it is not taking; mirrored, that is a ~10° step at every
  *    curvature sign change. Clamping at zero reads as "the rider only hangs
- *    off as far as the lean asks for", which is what a rider does on a kink.
+ *    off as far as the lean asks for", which is what a rider does on a kink
+ *    ("öneri": a modelling choice, not from R1; doğrulanmadı against IMU).
  */
 export function bikeLeanRad(m: MachineParams, idealLeanRad: number): number {
-  const phiI = Math.abs(idealLeanRad);
-  if (!(phiI > 0)) return 0;
+  return bikeLeanFn(m)(idealLeanRad);
+}
+
+/**
+ * `bikeLeanRad` with the machine constants (t/R, α) worked out once: the
+ * solver calls it per sample and per bisection step. Same arithmetic, same
+ * result to the bit.
+ */
+export function bikeLeanFn(m: MachineParams): (idealLeanRad: number) => number {
   const t = Math.max(0, m.tyreCrownM);
   const hmt = Math.max(1e-3, m.cgHeightM - t);
   const e = m.massKg > 0 ? (m.riderMassKg * Math.max(0, m.hangOffM)) / m.massKg : 0;
   const R = Math.hypot(hmt, e);
-  const delta = Math.asin(Math.min(1, (t * Math.sin(phiI)) / R)) - Math.atan2(e, hmt);
-  const phi = Math.max(0, phiI + delta);
-  return idealLeanRad < 0 ? -phi : phi;
+  const alpha = Math.atan2(e, hmt);
+  return (idealLeanRad: number): number => {
+    const phiI = Math.abs(idealLeanRad);
+    if (!(phiI > 0)) return 0;
+    const delta = Math.asin(Math.min(1, (t * Math.sin(phiI)) / R)) - alpha;
+    const phi = Math.max(0, phiI + delta);
+    return idealLeanRad < 0 ? -phi : phi;
+  };
 }
 
 /**
@@ -118,10 +135,11 @@ export function idealLeanLimitRad(m: MachineParams, maxBikeLeanRad: number): num
   if (!(maxBikeLeanRad > 0)) return 0;
   let lo = 0;
   let hi = Math.PI / 2 - 1e-6;
-  if (bikeLeanRad(m, hi) <= maxBikeLeanRad) return hi;
+  const lean = bikeLeanFn(m);
+  if (lean(hi) <= maxBikeLeanRad) return hi;
   for (let k = 0; k < 40; k++) {
     const mid = 0.5 * (lo + hi);
-    if (bikeLeanRad(m, mid) <= maxBikeLeanRad) lo = mid;
+    if (lean(mid) <= maxBikeLeanRad) lo = mid;
     else hi = mid;
   }
   return lo;

@@ -1,17 +1,23 @@
-// Quasi-steady-state lap solver: three O(n) passes over the line.
+// Quasi-steady-state lap solver: O(n) passes over the line. In the v2 rider
+// model (spec v2 §2) this envelope is the UPPER BOUND the event template
+// (events.ts, W3) rides under.
 //
-//   (1) lateral limit   v_lat = sqrt(a_lat_max * r)
-//   (2) backward pass   braking into every speed minimum
-//   (3) forward pass    acceleration out of it
-//   v(s) = min of the three;  t = integral ds / v
+//   (1)  lateral limit   |ã_y| ≤ min(μ_lat_eff, tan φ_i,max)·g̃
+//   (1b) roll-rate cap   v·|dφ/ds| ≤ rollRateFrac·φ̇_max(v, φ)
+//   (2)  backward pass   braking into every speed minimum
+//   (3)  forward pass    acceleration out of it
+//   v(s) = min of all;  t = integral ds / v
 //
 // (2) and (3) run as a short fixed-point loop rather than once each, because
 // the braking rate limit is anchored at the moment the brake goes on and that
 // is where the two curves meet. See `BRAKE_RATE_ITERS`.
 //
-// Combined grip is the friction ellipse: longitudinal capacity falls as lateral
-// use rises, which is what makes trail braking and progressive throttle come out
-// of the model rather than being scripted.
+// Combined grip is the friction ellipse with the RIDER's axes μ_eff (allowed
+// slip scales each axis, tyre.ts): longitudinal capacity falls as lateral use
+// rises, which is what makes trail braking and progressive throttle come out
+// of the model rather than being scripted. Load transfer caps both ends:
+// braking at the stoppie limit, drive at the wheelie limit, each at the bike's
+// real roll (vehicle.ts, R1 §3.1-3.2).
 //
 // 3D ROAD (spec v2 §2.3, R1 §3.5). Every pass works in the road frame with an
 // effective normal gravity and tyre-frame demands:
@@ -22,12 +28,20 @@
 //
 // and the friction ellipse / lean are judged against g̃ instead of g. All three
 // channels are optional on `Line` and read as zero; with zero channels every
-// expression below reduces to the v1 one with the SAME floating-point
-// operations (×1, +0), which is what keeps the v1 envelope bit-identical
-// (pinned in simSolver.test.ts).
+// expression reduces to the flat-road one with the SAME floating-point
+// operations (×1, +0), so zero-filled and absent channels give bit-identical
+// envelopes (asserted in simSolver.test.ts).
 import { clampParams } from './presets';
+import { effectiveMu } from './tyre';
 import type { Envelope, Line, SimParams } from './types';
-import { AIR_DENSITY } from './vehicle';
+import {
+  AIR_DENSITY,
+  bikeLeanFn,
+  idealLeanLimitRad,
+  rollRateBoundRadPerS,
+  stoppieLimitMs2,
+  wheelieLimitMs2,
+} from './vehicle';
 
 export const G = 9.81;
 
@@ -177,34 +191,62 @@ export function topSpeedMs(params: SimParams): number {
   return lo;
 }
 
-export function solve(line: Line, params: SimParams): Envelope {
+/**
+ * Everything the passes need about one (line, params) pair, precomputed once:
+ * the rider's effective μ per axis, the lean-limited lateral ceiling, the 3D
+ * road channels, and the per-sample tyre caps. `solve` and the exported
+ * `brakeCapMs2` / `driveCapMs2` both read from this, so the event template
+ * (W3) gets EXACTLY the caps the passes used.
+ */
+interface SolverCtx {
+  p: SimParams;
+  n: number;
+  /** μ_eff per axis (spec v2 §2.2). */
+  muEff: { brake: number; drive: number; lat: number };
+  /** μ_peak per axis, for `gripUsePeak`. */
+  muPeak: { long: number; lat: number };
+  /** Lateral ceiling on a flat road, m/s^2: min(μ_lat_eff, tan φ_i,max)·g. */
+  aLatMax: number;
+  vTop: number;
+  gs: Float64Array;
+  gRatio(i: number, vv: number): number;
+  aY(i: number, vv: number): number;
+  dsAt(i: number): number;
+  /** |ã_y| as a fraction of the rider's lateral μ_eff·g̃, 0..1 (the ellipse's lateral axis). */
+  latUse(vv: number, i: number): number;
+  /** Signed real bike roll at sample i and speed vv, radians (left turn = +). */
+  bikeRoll(i: number, vv: number): number;
+  brakeCap(i: number, vv: number): number;
+  driveCap(i: number, vv: number): number;
+}
+
+function prepare(line: Line, params: SimParams): SolverCtx {
   const p = clampParams(params);
   const n = line.points.length;
-  const v = new Float32Array(n);
-  const longG = new Float32Array(n);
-  const latG = new Float32Array(n);
-  const leanDeg = new Float32Array(n);
-  const gripUse = new Float32Array(n);
-  const tS = new Float64Array(n);
-  if (n < 2) return { v, longG, latG, leanDeg, gripUse, tS, lapTimeS: 0 };
+  const m = p.machine;
 
-  const mu = p.tyre.mu * p.tyre.gripScale;
-  const leanLimitDeg = p.tyre.maxLeanDeg * p.rider.leanUsage;
-  // the lean angle and the tyre both cap lateral acceleration; the lower wins
-  const aLatMax = Math.max(0.1, Math.min(mu, Math.tan((leanLimitDeg * Math.PI) / 180)) * G);
-  // Braking is friction-limited too. `brakingG` is how hard the rider is
-  // WILLING to brake WITH THE TYRE — the net deceleration the channels report
-  // is more than this, because the backward pass adds the aero and rolling
-  // losses on top of it (they are not carried by a contact patch). It cannot
-  // exceed what the tyre has. Without the min, a
-  // mu*gripScale of 0.24 still braked at 1.54 g — 6.4x the available friction —
-  // and that spare deceleration is most of what let gripUse reach 1.65-1.80.
-  // The remaining friction ellipse is applied per sample in the pass below.
-  const aBrakeMax = Math.max(0.1, Math.min(p.rider.brakingG, mu) * G);
+  const muEff = effectiveMu(p.tyre, p.rider);
+  const muPeak = { long: (p.tyre.muX ?? p.tyre.mu) * p.tyre.gripScale, lat: p.tyre.mu * p.tyre.gripScale };
+  // The lean limit is on the REAL bike roll (the tyre's `maxLeanDeg`, scaled by
+  // the rider's `leanUsage`); the lateral acceleration it allows is set by the
+  // IDEAL roll that produces it, after the crown and hang-off corrections
+  // (spec v2 §2.1, R1 §3.2). The tyre and the lean both cap lateral g; the
+  // lower wins.
+  const maxBikeLean = (p.tyre.maxLeanDeg * p.rider.leanUsage * Math.PI) / 180;
+  const tanIdealMax = Math.tan(idealLeanLimitRad(m, maxBikeLean));
+  const aLatMax = Math.max(0.1, Math.min(muEff.lat, tanIdealMax) * G);
+  // Braking is friction-limited at the rider's own μ_brake_eff. `brakingG`
+  // used to be a separate cap; spec v2 derives it from the SAME quantity
+  // (derive.ts: brakingG = μx·g(sBrake)), so applying both would count the
+  // rider's restraint twice. It is honoured only when the user has PINNED it
+  // in the advanced panel (`overrides` contains 'brakingG'), as a ceiling on
+  // what the tyre would otherwise allow. Aero and rolling losses are added on
+  // top in the backward pass (they are not carried by a contact patch).
+  const pinnedBrakingG = p.rider.overrides.includes('brakingG');
+  const aBrakeMax = Math.max(0.1, (pinnedBrakingG ? Math.min(p.rider.brakingG, muEff.brake) : muEff.brake) * G);
+  const aDriveMax = Math.max(0.1, muEff.drive * G);
   const vTop = topSpeedMs(p);
-  // wheelie limit: beyond this the front lifts and no more torque gets through
-  const aWheelie = (G * p.machine.wheelbaseM) / (2 * p.machine.cgHeightM);
-  const power = p.machine.powerKw * 1000;
+  const power = m.powerKw * 1000;
 
   // ---- 3D road channels (absent = 0) ------------------------------------
   //
@@ -227,7 +269,12 @@ export function solve(line: Line, params: SimParams): Envelope {
   }
   /** g̃/g at sample i and speed vv: 1 exactly on a flat road. */
   const gRatio = (i: number, vv: number): number => Math.max(G_TILDE_MIN, G * cc[i] + vv * vv * nu[i]) / G;
-  /** Signed tyre-frame lateral demand ã_y, m/s^2. */
+  /**
+   * Signed tyre-frame lateral demand ã_y, m/s^2. `bankRad` is positive when
+   * the surface falls toward the turn centre, whichever way the turn goes, so
+   * it always reduces the demand; on a straight (κ = 0) there is no turn
+   * centre and banking is ignored.
+   */
   const aY = (i: number, vv: number): number => {
     const k = line.curvature[i];
     return vv * vv * k - (k > 0 ? sb[i] : k < 0 ? -sb[i] : 0);
@@ -239,38 +286,212 @@ export function solve(line: Line, params: SimParams): Envelope {
     return Math.max(0.05, d);
   };
 
+  // The friction ellipse's lateral semi-axis is the rider's μ_lat_eff·g̃
+  // (spec v2 §2.2), NOT the lean-limited ceiling: running out of lean angle
+  // is geometry, and leaves the tyre's longitudinal grip where it was.
+  const aLatTyre = Math.max(0.1, muEff.lat * G);
+  const latUse = (vv: number, i: number): number => Math.min(1, Math.abs(aY(i, vv)) / (aLatTyre * gRatio(i, vv)));
+
+  const bikeLean = bikeLeanFn(m);
+  const bikeRoll = (i: number, vv: number): number => bikeLean(Math.atan(aY(i, vv) / (G * gRatio(i, vv))));
+
+  // Both pitch limits are LOWEST upright (h_φ ≤ h at any lean), so the bike's
+  // roll — an atan and an asin — is only worked out where the upright limit
+  // would bind. Same result, a fraction of the cost.
+  const stoppieUpright = stoppieLimitMs2(m, 0, G);
+
+  /** Tyre braking deceleration available, m/s^2: ellipse·brakeShare, stoppie, pinned brakingG. No drag, no rate limit. */
+  const brakeCap = (i: number, vv: number): number => {
+    const gr = gRatio(i, vv);
+    const share = brakeShare(latUse(vv, i), p.rider.trailBrakeDepth, p.rider.trailBrakeProfile);
+    const aGrip = aBrakeMax * gr * share;
+    if (aGrip <= stoppieUpright * gr) return aGrip;
+    return Math.min(aGrip, stoppieLimitMs2(m, bikeRoll(i, vv), G * gr));
+  };
+
+  /**
+   * Drive acceleration available, m/s^2: power, ellipse·TC, wheelie. No drag.
+   *
+   * Traction control shaves drive torque when the SLIP DEMAND is high, not
+   * always: a constant `0.6 + 0.4·tcThreshold` multiplier used to discard 20 %
+   * of the grip bolt upright, which made the forward pass grip-limited where
+   * it should be power-limited (0.28 s on Serres; 147 → 250 kW worth 1.04 s
+   * with the constant and 2.11 s without it on the synthetic circuit). Slip is
+   * provoked by asking for drive while the tyre spends its grip sideways, so
+   * the cut scales with lateral use: none upright, `0.55 + 0.45·tcThreshold`
+   * of what is left on the ellipse at full lean — the same allowance the `dtc`
+   * channel in `rider.ts` reports.
+   */
+  const driveCap = (i: number, vv0: number): number => {
+    const vv = Math.max(V_MIN, vv0);
+    const gr = gRatio(i, vv);
+    const used = latUse(vv, i);
+    const ell = Math.sqrt(Math.max(0, 1 - used * used));
+    const tcFloor = 0.55 + 0.45 * p.rider.tcThreshold;
+    const tcFactor = 1 - (1 - tcFloor) * used;
+    const aPower = power / (m.massKg * vv);
+    const a = Math.min(aPower, aDriveMax * gr * ell * tcFactor);
+    if (a <= wheelieLimitMs2(m, vv, 0, G * gr)) return a;
+    return Math.min(a, wheelieLimitMs2(m, vv, bikeRoll(i, vv), G * gr));
+  };
+
+  return { p, n, muEff, muPeak, aLatMax, vTop, gs, gRatio, aY, dsAt, latUse, bikeRoll, brakeCap, driveCap };
+}
+
+/**
+ * Cache of prepared contexts, keyed by the caller's own (line, params)
+ * objects, so the per-sample cap queries from the event template do not redo
+ * the lean inversion and the 3D precompute on every call. The caller must not
+ * mutate a line or params object after querying it.
+ */
+const ctxCache = new WeakMap<Line, WeakMap<SimParams, SolverCtx>>();
+function ctxFor(line: Line, params: SimParams): SolverCtx {
+  let byParams = ctxCache.get(line);
+  if (!byParams) {
+    byParams = new WeakMap();
+    ctxCache.set(line, byParams);
+  }
+  let ctx = byParams.get(params);
+  if (!ctx) {
+    ctx = prepare(line, params);
+    byParams.set(params, ctx);
+  }
+  return ctx;
+}
+
+/**
+ * Tyre braking deceleration available at sample i and speed vMs, m/s^2
+ * (positive): μ_brake_eff·g̃·brakeShare, capped by the stoppie limit at the
+ * bike's roll there, and by a PINNED `brakingG`. WITHOUT drag and rolling
+ * losses (add `lossDecelMs2`), WITHOUT grade, and without the brake-rise
+ * rate limit (the event template applies its own). These are exactly the caps
+ * the solver's backward pass uses.
+ */
+export function brakeCapMs2(line: Line, params: SimParams, i: number, vMs: number): number {
+  return ctxFor(line, params).brakeCap(i, vMs);
+}
+
+/**
+ * Drive acceleration available at sample i and speed vMs, m/s^2: the least of
+ * engine power, μ_drive_eff·g̃·ellipse·TC, and the wheelie limit at the bike's
+ * roll there. WITHOUT drag and rolling losses and WITHOUT grade. Exactly the
+ * cap the solver's forward pass uses.
+ */
+export function driveCapMs2(line: Line, params: SimParams, i: number, vMs: number): number {
+  return ctxFor(line, params).driveCap(i, vMs);
+}
+
+/** Grid step of the roll-rate cap's scan for its first crossing, m/s. */
+const ROLL_SCAN_STEP_MS = 2;
+/** Bisection steps inside the crossing cell: 2 m/s / 2^20 ≈ 2e-6 m/s. */
+const ROLL_BISECT_ITERS = 20;
+
+/**
+ * Highest speed at sample i at which the roll RATE the line demands stays
+ * within the rider's share of the Biniewicz bound (spec v2 §2.5, R1 §3.3):
+ *
+ *     v · |dφ/ds| ≤ rollRateFrac · φ̇_max(v, φ)
+ *
+ * dφ/ds is the central difference of the real bike roll over i−1 … i+1.
+ *
+ * Solved per sample AT FIXED SPEED across the stencil (quasi-steady: the
+ * v'·κ term of the lateral jerk is neglected), except that a neighbour is
+ * never taken faster than its own lateral limit `vLat` — otherwise a corner
+ * of varying curvature ridden AT the lean/grip limit (constant φ, so no roll
+ * rate at all) would read as a roll demand. With that, the left side rises
+ * with v and the right side falls, so the cap is a root found by bisection
+ * and needs no outer iteration. The plan's "cap, re-solve, ×3" loop
+ * oscillates on a curvature step instead: capping the speed lowers the lean
+ * there, which lifts the cap on the next round. This is that loop's fixed
+ * point under the same stencil.
+ */
+function rollRateCap(ctx: SolverCtx, i: number, vLat: Float32Array): number {
+  const n = ctx.n;
+  const im = (i - 1 + n) % n;
+  const ip = (i + 1) % n;
+  const ds = ctx.dsAt(i) + ctx.dsAt(ip);
+  const vUpper = vLat[i];
+  const frac = ctx.p.rider.rollRateFrac;
+  const excess = (vv: number): number => {
+    const dphi = Math.abs(ctx.bikeRoll(ip, Math.min(vv, vLat[ip])) - ctx.bikeRoll(im, Math.min(vv, vLat[im]))) / ds;
+    return vv * dphi - frac * rollRateBoundRadPerS(vv, ctx.bikeRoll(i, vv));
+  };
+  if (excess(vUpper) <= 0) return vUpper;
+  if (excess(V_MIN) > 0) return V_MIN;
+  // The LOWEST root, found by a fixed-grid scan up from V_MIN and then
+  // bisection inside the first cell that goes over. Two reasons:
+  //  - the excess is not monotone once a neighbour saturates at its own
+  //    lateral limit (entering a tightening corner the far neighbour's lean
+  //    freezes while the near one's keeps rising, so dφ/ds shrinks again);
+  //    a speed past the first crossing is infeasible whatever happens above
+  //    it, so the first crossing is the cap;
+  //  - a grid fixed in absolute speed (not scaled to vUpper, which carries
+  //    the power-dependent top speed) makes the root independent of power:
+  //    a bracket that moves with vUpper moved the root in its last bits,
+  //    enough to make the lap non-monotone in power by 1e-7 s.
+  let lo = V_MIN;
+  let hi = V_MIN;
+  for (;;) {
+    hi = lo + ROLL_SCAN_STEP_MS;
+    if (hi >= vUpper || excess(hi) > 0) break;
+    lo = hi;
+  }
+  for (let k = 0; k < ROLL_BISECT_ITERS; k++) {
+    const mid = 0.5 * (lo + hi);
+    if (excess(mid) <= 0) lo = mid;
+    else hi = mid;
+  }
+  return Math.min(lo, vUpper);
+}
+
+export function solve(line: Line, params: SimParams): Envelope {
+  const n = line.points.length;
+  const v = new Float32Array(n);
+  const longG = new Float32Array(n);
+  const latG = new Float32Array(n);
+  const leanDeg = new Float32Array(n);
+  const gripUse = new Float32Array(n);
+  const gripUsePeak = new Float32Array(n);
+  const tS = new Float64Array(n);
+  if (n < 2) return { v, longG, latG, leanDeg, gripUse, gripUsePeak, tS, lapTimeS: 0 };
+
+  const ctx = prepare(line, params);
+  const { p, aLatMax, vTop, gs, gRatio, aY, dsAt, brakeCap, driveCap, muEff, muPeak } = ctx;
+
   // ---- pass 1: lateral limit -------------------------------------------
   //
-  // |ã_y| ≤ c·g̃ with c = aLatMax/g:
+  // |ã_y| ≤ c·g̃ with c = aLatMax/g (R1 §3.5):
   //   v²·(|κ| − c·ν) ≤ aLatMax·cosσ·cosβ + g·cosσ·sinβ
-  // written with r = 1/|κ| so that on a flat road it is exactly v1's
-  // sqrt(aLatMax·r). A denominator ≤ 0 (a dip loading the tyre faster than the
-  // corner asks) means no lateral limit: the v1 top-speed cap applies.
+  // A denominator ≤ 0 (a dip loading the tyre faster than the corner asks)
+  // means no lateral limit: the top-speed cap applies.
   const cLat = aLatMax / G;
   for (let i = 0; i < n; i++) {
     const k = Math.abs(line.curvature[i]);
     const r = k > 1e-6 ? 1 / k : Infinity;
     let vLat = Infinity;
     if (Number.isFinite(r)) {
-      const den = 1 - cLat * nu[i] * r;
-      const num = (aLatMax * cc[i] + sb[i]) * r;
+      const sig = line.slopeRad?.[i] ?? 0;
+      const bet = line.bankRad?.[i] ?? 0;
+      const nu = line.nu?.[i] ?? 0;
+      const den = 1 - cLat * nu * r;
+      const num = (aLatMax * Math.cos(sig) * Math.cos(bet) + G * Math.cos(sig) * Math.sin(bet)) * r;
       vLat = den <= 0 ? Infinity : Math.sqrt(Math.max(0, num / den));
     }
     v[i] = Math.max(V_MIN, Math.min(vTop, vLat));
   }
 
-  /** How much of the tyre's lateral capacity is in use at speed `vv` at sample i, 0..1. */
-  const latUse = (vv: number, i: number): number => Math.min(1, Math.abs(aY(i, vv)) / (aLatMax * gRatio(i, vv)));
-
-  /** Fraction of grip still available longitudinally at speed `vv` at sample i. */
-  const ellipse = (vv: number, i: number): number => {
-    const used = latUse(vv, i);
-    return Math.sqrt(Math.max(0, 1 - used * used));
-  };
-
-  /** Longitudinal share available for BRAKING at this speed and sample. */
-  const brakeEllipse = (vv: number, i: number): number =>
-    brakeShare(latUse(vv, i), p.rider.trailBrakeDepth, p.rider.trailBrakeProfile);
+  // ---- pass 1b: roll-rate limit (spec v2 §2.5) --------------------------
+  //
+  // Applied to the free (lateral-limited) profile before braking and drive,
+  // so the passes below brake INTO a roll-rate-limited transition exactly as
+  // they brake into a lateral-limited apex. A constant-radius arc has
+  // dφ/ds = 0 and is untouched; a chicane flip or a curvature step is where it
+  // binds.
+  {
+    const cap = new Float32Array(n);
+    for (let i = 0; i < n; i++) cap[i] = rollRateCap(ctx, i, v);
+    for (let i = 0; i < n; i++) v[i] = Math.max(V_MIN, Math.min(v[i], cap[i]));
+  }
 
   /** `lossDecelMs2` for this machine. */
   const aLoss = (vv: number): number => lossDecelMs2(p.machine, vv);
@@ -278,8 +499,10 @@ export function solve(line: Line, params: SimParams): Envelope {
   // ---- pass 3: forward (acceleration) ----------------------------------
   //
   // A function rather than a straight-line pass because the braking rate
-  // limit above needs the finished profile to find its own starting point,
-  // so passes 2 and 3 iterate together.
+  // limit below needs the finished profile to find its own starting point,
+  // so passes 2 and 3 iterate together. The cap (power, μ_drive_eff ellipse
+  // with traction control, wheelie at the bike's roll) is `driveCap`; drag
+  // and grade come off it here.
   const forward = (): void => {
     for (let pass = 0; pass < 2; pass++) {
       for (let step = 0; step < n; step++) {
@@ -287,41 +510,8 @@ export function solve(line: Line, params: SimParams): Envelope {
         const j = (i - 1 + n) % n;
         const ds = dsAt(i);
         const vv = Math.max(V_MIN, v[j]);
-        const aPower = power / (p.machine.massKg * vv);
-        const gr = gRatio(j, vv);
-        const aGrip = mu * G * gr * ellipse(vv, j);
-        const aDrag = aLoss(vv);
-        // Traction control shaves drive torque when the SLIP DEMAND is high — not
-        // always.
-        //
-        // This used to be `tcFactor = 0.6 + 0.4 * tcThreshold`, a constant
-        // multiplier on the grip term with no reference to what the tyre is doing.
-        // At the shipped `tcThreshold` = 0.5 that threw away 20 % of the
-        // longitudinal grip EVERYWHERE, including bolt upright on a straight
-        // where there is no lateral load to make the rear slip and no traction
-        // control on earth intervenes: the drive out of every corner up to about
-        // 150 km/h was capped at 10.4 m/s^2 instead of the 12.6 m/s^2 the front
-        // wheel allows.
-        //
-        // Measured. On the real Serres geometry it is worth 0.28 s (79.60 ->
-        // 79.32), because that lap is short of straight. The important cost is
-        // the other one: it made the forward pass GRIP-limited where it should
-        // have been POWER-limited, so adding power bought nothing. On the
-        // synthetic circuit (`circuitFixture.ts`), which has the straights for
-        // power to work on, going 147 -> 250 kW was worth 1.04 s with the
-        // constant and is worth 2.11 s without it, and 400 kW was wholly
-        // saturated (60.55 -> 60.54) where it now still gains.
-        //
-        // Slip is provoked by asking for drive while the tyre is already spending
-        // its grip sideways, so the intervention scales with the lateral use: no
-        // cut at all upright, and at full lean the drive is held to
-        // `0.55 + 0.45 * tcThreshold` of what is left on the ellipse — the same
-        // allowance the `dtc` channel in `rider.ts` reports, so the two agree.
-        const slip = latUse(vv, j);
-        const tcFloor = 0.55 + 0.45 * p.rider.tcThreshold;
-        const tcFactor = 1 - (1 - tcFloor) * slip;
         // grade: uphill (gs > 0) costs drive
-        const a = Math.min(aPower, aGrip * tcFactor, aWheelie * gr) - aDrag - gs[j];
+        const a = driveCap(j, vv) - aLoss(vv) - gs[j];
         const vMax = Math.sqrt(Math.max(V_MIN * V_MIN, vv * vv + 2 * a * ds));
         if (v[i] > vMax) v[i] = Math.max(V_MIN, vMax);
       }
@@ -334,50 +524,33 @@ export function solve(line: Line, params: SimParams): Envelope {
   // of which are the difference between a square -1.10 g plateau and a real
   // braking trace. See `docs/.../2026-10-11-longitudinal-g.md`.
   //
-  //   AERO AND ROLLING LOSSES ASSIST BRAKING. The forward pass has always
-  //   subtracted `aDrag`; the backward pass ignored it, so the model threw
-  //   away free retardation exactly where there is most of it. On the 1000 at
-  //   272 km/h it is 0.41 g — a third again on top of the tyre — and at
-  //   130 km/h it is 0.10 g. That ratio is the physical reason a real lap's
-  //   braking peak is deepest at the end of the fastest straight and shallow
-  //   at the slow corners, and the model could not reproduce it while the
-  //   only term was a constant.
+  //   AERO AND ROLLING LOSSES ASSIST BRAKING: added on top of the tyre's
+  //   share, so the braking peak is deepest at the end of the fastest
+  //   straight (0.41 g of drag on the 1000 at 272 km/h).
   //
-  //   PEAK RETARDATION IS NOT AVAILABLE INSTANTLY. The front tyre can only
-  //   deliver 1.1 g once the mass has pitched forward onto it, and that
-  //   rotation takes real time (fork travel, damping) on top of the rider's
-  //   own squeeze of the lever. So the TYRE's share of the deceleration is
+  //   PEAK RETARDATION IS NOT AVAILABLE INSTANTLY: the TYRE's share is
   //   rate-limited to `brakeRiseGps` g/s from the moment the brake goes on.
   //   Losses are not rate-limited: drag does not wait for the fork.
   //
-  // The rate limit is anchored at brake-on, and NOTHING KNOWS WHERE THAT IS
-  // until the whole profile is solved: the brake goes on where the braking
-  // curve meets the drive curve, so it is a property of passes 2 and 3
-  // together. (Reading it off the backward pass alone does not work, and
-  // fails quietly: that pass's own zone runs back up the straight to wherever
-  // it would meet the drag-limited top speed, 80 m earlier than the bike ever
-  // gets, and a clock started there is already 0.66 s old by the real braking
-  // point — enough to make the rate limit inert at every rate above 1 g/s
-  // while still looking like it was applied.)
-  //
-  // So both passes are inside the iteration. `tOn[i]` is how long the brake
-  // has been applied by the time the bike reaches i, measured on the PREVIOUS
-  // iteration's finished profile, and infinite on the first — iteration 0 is
-  // exactly the old unlimited solve, which is what bootstraps it.
+  // The tyre's share is `brakeCap`: μ_brake_eff·g̃·brakeShare, capped by the
+  // STOPPIE limit at the bike's roll (spec v2 §2.1). The rate limit is
+  // anchored at brake-on, which is a property of passes 2 and 3 together (the
+  // backward pass alone puts it ~80 m too early and the clock is inert), so
+  // both are inside the iteration: `tOn[i]` is how long the brake has been
+  // applied at i on the PREVIOUS iteration's profile, infinite on the first.
   const vFree = Float32Array.from(v);
   const tOn = new Float64Array(n).fill(Number.POSITIVE_INFINITY);
   const onBrake = new Uint8Array(n);
   const jerk = p.rider.brakeRiseGps * G;
   for (let iter = 0; iter < BRAKE_RATE_ITERS; iter++) {
     v.set(vFree);
-    // ---- pass 2: backward (braking) ------------------------------------
     // two laps of the loop so braking carries across the start line
     for (let pass = 0; pass < 2; pass++) {
       for (let step = n - 1; step >= 0; step--) {
         const i = step;
         const j = (i + 1) % n;
         const ds = dsAt(j);
-        const aTyre = Math.min(aBrakeMax * gRatio(j, v[j]) * brakeEllipse(v[j], j), jerk * tOn[i]);
+        const aTyre = Math.min(brakeCap(j, v[j]), jerk * tOn[i]);
         // grade: uphill (gs > 0) helps braking
         const vMax = Math.sqrt(v[j] * v[j] + 2 * (aTyre + aLoss(v[j]) + gs[j]) * ds);
         if (v[i] > vMax) v[i] = Math.max(V_MIN, vMax);
@@ -386,17 +559,13 @@ export function solve(line: Line, params: SimParams): Envelope {
     forward();
     if (iter === BRAKE_RATE_ITERS - 1) break;
     // ---- re-read the brake-on clock off the finished profile ------------
-    //
-    // The brake is on where the deceleration the profile actually realises is
-    // more than drag and rolling losses supply on their own. That is the
-    // physical definition — a closed throttle is not a brake application —
-    // and it is the one that puts the clock's zero at the lever, because a
-    // coasting approach fails it.
+    // The brake is on where the realised deceleration exceeds what drag,
+    // rolling losses (and an uphill) supply on their own: a closed throttle
+    // is not a brake application.
     for (let i = 0; i < n; i++) {
       const j = (i + 1) % n;
       const ds = dsAt(j);
       const need = (v[i] * v[i] - v[j] * v[j]) / (2 * ds);
-      // gravity on an uphill decelerates without the brake, just as drag does
       onBrake[i] = need > aLoss(v[i]) + gs[j] + BRAKE_ON_MARGIN ? 1 : 0;
     }
     // Twice round, so a zone that straddles the start line gets its clock from
@@ -414,20 +583,12 @@ export function solve(line: Line, params: SimParams): Envelope {
     }
   }
 
-
-  // ---- integrate and fill the g channels -------------------------------
+  // ---- integrate and fill the channels ---------------------------------
   //
-  // Every channel below is a POINT quantity at index i. The mean acceleration
-  // over the segment i -> i+1 is a SEGMENT quantity, so it is accumulated
-  // separately and then averaged onto the points: `longG[i]` is the mean of the
-  // segment arriving at i and the segment leaving it.
-  //
-  // That matters because `gripUse` combines `longG[i]` with `latG[i]`. While
-  // `longG[i]` held the segment value, a corner entry compared the lateral
-  // demand AT i with the longitudinal demand just AFTER i, and the mismatch —
-  // not "numerical slack" — is what put gripUse at 1.001-1.044 on the solver's
-  // own output, enough to trip the UI's over-the-limit banner on the shipped
-  // defaults even though each pass respects the friction circle exactly.
+  // Every channel below is a POINT quantity at index i; `longG[i]` is the mean
+  // of the segment arriving at i and the segment leaving it, so that it can be
+  // combined with the point `latG[i]` in `gripUse` without an index stagger
+  // (that stagger once put the circuit fixture's gripUse at 1.016).
   const segG = new Float32Array(n);
   let t = 0;
   for (let i = 0; i < n; i++) {
@@ -440,43 +601,31 @@ export function solve(line: Line, params: SimParams): Envelope {
   }
   for (let i = 0; i < n; i++) {
     longG[i] = (segG[(i - 1 + n) % n] + segG[i]) / 2;
-    const aLat = (v[i] * v[i] * line.curvature[i]) / G;
-    latG[i] = aLat;
-    // tyre-frame demand in units of g, and g̃/g, for the lean and the grip
-    // judgement; on a flat road these are exactly aLat and 1
-    const gr = gRatio(i, v[i]);
-    const aYg = aY(i, v[i]) / G;
-    // app convention: left = negative, so lean is the NEGATED arctangent of the
-    // lateral acceleration (see `Envelope.leanDeg`); on a 3D road the roll
-    // relative to the road normal is atan(ã_y/g̃)
-    leanDeg[i] = (-Math.atan(aYg / gr) * 180) / Math.PI;
-    // Combined tyre demand as a fraction of the FRICTION CIRCLE: both axes are
-    // divided by the same mu, so 1.0 means the tyre is at its limit and above
-    // 1 means it is being asked for more than it has — a fall, not a lap. The
-    // solver's own passes keep this at or under 1 by construction, so a value
-    // over 1 means a parameter combination the rider cannot ride, and the UI
-    // warns rather than quietly reporting a fast lap.
+    latG[i] = (v[i] * v[i] * line.curvature[i]) / G;
+    // REAL bike roll (crown and hang-off corrected, spec v2 §2.1), so the
+    // channel is comparable with an IMU. App convention: left = NEGATIVE
+    // (`Envelope.leanDeg`), so it is the negated roll of a left turn.
+    leanDeg[i] = (-ctx.bikeRoll(i, v[i]) * 180) / Math.PI;
+    // Combined tyre demand. The lateral term is the tyre-frame ã_y against
+    // g̃; the longitudinal term is the TYRE's share — aero and rolling losses
+    // decelerate the bike without passing through a contact patch, so they
+    // are added back, and so is the grade. Braking is judged against the
+    // front's μ, drive against the rear's.
     //
-    // The LEAN limit is deliberately NOT folded in here. Dividing the lateral
-    // term by aLatMax/G = min(mu, tan(leanLimit)) would make this an ellipse
-    // rather than a circle, and on a lean-limited machine (the 250: tan(49.4
-    // deg) = 1.17 against mu = 1.25) a perfectly rideable corner would read
-    // 1.0 laterally with grip still in hand. Running out of lean angle is a
-    // separate constraint with its own channel (`leanDeg`); it is not a tyre
-    // overload and must not be reported as one.
-    const lu = Math.min(1.5, Math.abs(aYg) / (mu * gr));
-    // The TYRE's longitudinal share, which is not the net longitudinal g:
-    // aero and rolling losses decelerate the bike without being carried by a
-    // contact patch, so they are added back before the tyre is judged. Driving
-    // at +0.5 g through 0.1 g of drag asks the rear for 0.6 g; braking at
-    // -1.5 g with 0.4 g of drag helping asks the front for 1.1 g. Without this
-    // the backward pass's own output would read over the friction circle at
-    // the end of a fast straight and trip the UI's over-the-limit banner on a
-    // lap that is perfectly within the tyre.
-    // grade: the tyre also carries g·sinσ (uphill drive, downhill braking)
-    const lo = Math.min(1.5, Math.abs(longG[i] + aLoss(v[i]) / G + gs[i] / G) / (mu * gr));
-    gripUse[i] = Math.hypot(lu, lo);
+    //   gripUse     against the RIDER's ceiling μ_eff (spec v2 §2.8): 1.0 is
+    //               the rider's own allowed slip, which the passes respect by
+    //               construction; over 1 is a lap this rider would not ride.
+    //   gripUsePeak against the TYRE's peak μ: how much margin is left.
+    //
+    // The lean limit is deliberately NOT folded in: running out of lean angle
+    // is geometry with its own channel, not a tyre overload.
+    const gr = gRatio(i, v[i]);
+    const ay = Math.abs(aY(i, v[i])) / (G * gr);
+    const ax = (longG[i] + aLoss(v[i]) / G + gs[i] / G) / gr;
+    const muLongEff = ax < 0 ? muEff.brake : muEff.drive;
+    gripUse[i] = Math.hypot(Math.min(1.5, ay / muEff.lat), Math.min(1.5, Math.abs(ax) / muLongEff));
+    gripUsePeak[i] = Math.hypot(Math.min(1.5, ay / muPeak.lat), Math.min(1.5, Math.abs(ax) / muPeak.long));
   }
 
-  return { v, longG, latG, leanDeg, gripUse, tS, lapTimeS: t };
+  return { v, longG, latG, leanDeg, gripUse, gripUsePeak, tS, lapTimeS: t };
 }

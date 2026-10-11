@@ -4,6 +4,7 @@ import { fromLocalM } from '../core/geo';
 import type { LngLat, TrackModel } from '../core/types';
 import { stencilK, stencilLeftNormal } from '../sim/corridor';
 import type { Corner, Corridor, Line } from '../sim/types';
+import type { PistPackage } from '../core/pistPackage';
 
 export type CorridorProps = { side: 'left' | 'right' };
 
@@ -108,4 +109,46 @@ export function idealLineGeoJson(line: Line): FeatureCollection<LineString, Idea
       geometry: { type: 'LineString', coordinates: line.points },
     }],
   };
+}
+
+export type PistProps =
+  | { kind: 'edge'; side: 'left' | 'right' }
+  | { kind: 'centerline' }
+  | { kind: 'corner'; n: number; name: string; dir: 'L' | 'R'; radiusM: number };
+
+/**
+ * A `.pist.json` track model as map features: the two asphalt edges (broken
+ * where the package has no edge), the surveyed centreline and one point per
+ * corner apex with its name.
+ */
+export function pistGeoJson(p: PistPackage | undefined): FeatureCollection<LineString | Point, PistProps> {
+  const features: Array<Feature<LineString | Point, PistProps>> = [];
+  if (!p) return { type: 'FeatureCollection', features };
+  for (const [side, edge] of [['left', p.leftEdge], ['right', p.rightEdge]] as const) {
+    let run: LngLat[] = [];
+    const flush = (): void => {
+      if (run.length >= 2) features.push({ type: 'Feature', properties: { kind: 'edge', side }, geometry: { type: 'LineString', coordinates: run } });
+      run = [];
+    };
+    for (const q of edge) {
+      if (q) run.push(q);
+      else flush();
+    }
+    // the loop closes: join the last run back to the first station when both are known
+    if (run.length && edge[0]) run.push(edge[0]);
+    flush();
+  }
+  features.push({
+    type: 'Feature',
+    properties: { kind: 'centerline' },
+    geometry: { type: 'LineString', coordinates: [...p.centerline, p.centerline[0]] },
+  });
+  for (const c of p.corners) {
+    features.push({
+      type: 'Feature',
+      properties: { kind: 'corner', n: c.n, name: c.name, dir: c.dir, radiusM: c.radiusM },
+      geometry: { type: 'Point', coordinates: c.apex },
+    });
+  }
+  return { type: 'FeatureCollection', features };
 }

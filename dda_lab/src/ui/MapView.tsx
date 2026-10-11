@@ -21,7 +21,8 @@ import type { Gate, Lap, LngLat, SchemaLayer, Session, TrackModel, TurnMetrics }
 import { lapX, selectedLapEntries } from '../state/selectors';
 import { activeTrack, useLab, lapMetaOf } from '../state/store';
 import { backgroundColorByZoom, inRangeSegments, rasterOpacityByZoom, zoomRadius, zoomWidth } from './focus';
-import { cornerEventsGeoJson, corridorGeoJson, idealLineGeoJson } from './SimLayers';
+import { cornerEventsGeoJson, corridorGeoJson, idealLineGeoJson, pistGeoJson } from './SimLayers';
+import { fetchTrackModel, parsePistPackage, TRACK_MODELS } from '../core/pistPackage';
 import {
   IMAGE_CORNERS,
   centerlineGeoJson,
@@ -50,6 +51,7 @@ const LAYER_KEYS = [
   'gates',
   'trace',
   'schema',
+  'pist',
 ] as const;
 
 const LAYER_LABELS: Record<string, string> = {
@@ -63,6 +65,7 @@ const LAYER_LABELS: Record<string, string> = {
   gates: 'gates',
   trace: 'trace',
   schema: 'schema',
+  pist: 'track model',
 };
 
 const EMPTY = { type: 'FeatureCollection' as const, features: [] };
@@ -175,6 +178,9 @@ export default function MapView() {
   const corridor = useLab((s) => s.corridor);
   const simLine = useLab((s) => s.simLine);
   const simCorners = useLab((s) => s.simCorners);
+  const trackPackage = useLab((s) => s.trackPackage);
+  const applyTrackPackage = useLab((s) => s.applyTrackPackage);
+  const pistFileRef = useRef<HTMLInputElement>(null);
   const dataMarkerRefs = useRef<Map<string, maplibregl.Marker>>(new Map());
 
   const track = useMemo(() => activeTrack({ tracks, activeTrackId }), [tracks, activeTrackId]);
@@ -412,7 +418,8 @@ export default function MapView() {
     setData(map, 'corridor', track && corridor ? corridorGeoJson(track, corridor) : EMPTY);
     setData(map, 'idealLine', simLine ? idealLineGeoJson(simLine) : EMPTY);
     setData(map, 'cornerEvents', simLine ? cornerEventsGeoJson(simLine, simCorners) : EMPTY);
-  }, [ready, track, entries, metrics, preview, lapMeta, corridor, simLine, simCorners]);
+    setData(map, 'pist', pistGeoJson(trackPackage));
+  }, [ready, track, entries, metrics, preview, lapMeta, corridor, simLine, simCorners, trackPackage]);
 
   // ---------- layer toggles ----------
   useEffect(() => {
@@ -424,6 +431,7 @@ export default function MapView() {
     // the corner-event markers belong to the ideal line: same toggle
     setVis(map, 'corner-events', mapLayers.idealLine !== false);
     setVis(map, 'corner-events-label', mapLayers.idealLine !== false);
+    for (const id of ['pist-edge', 'pist-center', 'pist-corner', 'pist-corner-label']) setVis(map, id, mapLayers.pist !== false);
     setVis(map, 'markers-turn', mapLayers.turns !== false);
     setVis(map, 'markers-apex', mapLayers.apex !== false);
     setVis(map, 'markers-apex-label', mapLayers.apex !== false);
@@ -796,6 +804,50 @@ export default function MapView() {
         </select>
         <select
           className="map-select"
+          data-testid="map-track-model"
+          aria-label="Track model"
+          value=""
+          title="Load a surveyed track model (.pist.json): its centreline becomes the track and its edges the rider's corridor"
+          onChange={(e) => {
+            const v = e.target.value;
+            e.currentTarget.value = '';
+            if (v === '__import') {
+              pistFileRef.current?.click();
+              return;
+            }
+            const entry = TRACK_MODELS.find((x) => x.id === v);
+            if (!entry) return;
+            useLab.getState().setStatus(`Loading track model ${entry.label}…`);
+            fetchTrackModel(entry)
+              .then((p) => applyTrackPackage(p))
+              .catch((err) => useLab.getState().setStatus(`Track model error: ${(err as Error).message}`));
+          }}
+        >
+          <option value="">{trackPackage ? `Track: ${trackPackage.name}` : 'Track model…'}</option>
+          {TRACK_MODELS.map((x) => (
+            <option key={x.id} value={x.id}>
+              {x.label}
+            </option>
+          ))}
+          <option value="__import">Import .pist.json…</option>
+        </select>
+        <input
+          ref={pistFileRef}
+          type="file"
+          accept=".json,application/json"
+          hidden
+          data-testid="map-track-model-file"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            e.target.value = '';
+            if (!f) return;
+            f.text()
+              .then((t) => applyTrackPackage(parsePistPackage(t)))
+              .catch((err) => useLab.getState().setStatus(`Track model error: ${(err as Error).message}`));
+          }}
+        />
+        <select
+          className="map-select"
           data-testid="map-basemap"
           aria-label="Basemap"
           value={basemap}
@@ -1015,7 +1067,7 @@ function syncSchemaImage(map: maplibregl.Map, schema: SchemaLayer | null): void 
 
 /** One-time creation of the empty data sources and their layers. */
 function addDataLayers(map: maplibregl.Map): void {
-  for (const id of ['centerline', 'gates', 'markers', 'schema', 'measure', 'turn-deltas', 'corridor', 'idealLine', 'cornerEvents']) {
+  for (const id of ['centerline', 'gates', 'markers', 'schema', 'measure', 'turn-deltas', 'corridor', 'idealLine', 'cornerEvents', 'pist']) {
     if (!map.getSource(id)) map.addSource(id, { type: 'geojson', data: EMPTY });
   }
 
@@ -1034,6 +1086,38 @@ function addDataLayers(map: maplibregl.Map): void {
     paint: { 'line-color': '#ff6a00', 'line-width': 2.5, 'line-opacity': 0.9 },
   });
 
+  // `.pist.json` track model: asphalt edges (cyan), surveyed centreline (thin
+  // white dashes) and corner apices with names
+  map.addLayer({
+    id: 'pist-edge',
+    type: 'line',
+    source: 'pist',
+    filter: ['==', ['get', 'kind'], 'edge'],
+    paint: { 'line-color': '#4dd0e1', 'line-width': zoomWidth(1.5, 3), 'line-opacity': 0.9 },
+  });
+  map.addLayer({
+    id: 'pist-center',
+    type: 'line',
+    source: 'pist',
+    filter: ['==', ['get', 'kind'], 'centerline'],
+    paint: { 'line-color': '#ffffff', 'line-width': 1, 'line-opacity': 0.6, 'line-dasharray': [3, 3] },
+  });
+  map.addLayer({
+    id: 'pist-corner',
+    type: 'circle',
+    source: 'pist',
+    filter: ['==', ['get', 'kind'], 'corner'],
+    paint: { 'circle-radius': zoomWidth(3, 5), 'circle-color': '#ffd166', 'circle-stroke-color': '#000', 'circle-stroke-width': 1 },
+  });
+  map.addLayer({
+    id: 'pist-corner-label',
+    type: 'symbol',
+    source: 'pist',
+    filter: ['==', ['get', 'kind'], 'corner'],
+    minzoom: 14,
+    layout: { 'text-field': ['get', 'name'], 'text-size': 11, 'text-offset': [0, 1.1], 'text-allow-overlap': true },
+    paint: { 'text-color': '#ffd166', 'text-halo-color': '#000000', 'text-halo-width': 1 },
+  });
   map.addLayer({
     id: 'centerline-line',
     type: 'line',

@@ -12,6 +12,7 @@ import { browserTileLoader } from '../sim/browserTiles';
 import { CorridorError, extractCorridor } from '../sim/corridor';
 import { fetchCorridor, putCorridor } from '../sim/corridorService';
 import { deserializeCorridor, serializeCorridor } from '../sim/corridorCache';
+import { corridorFromPist, trackFromPist, type PistPackage } from '../core/pistPackage';
 import { buildMosaic, SAT_ZOOM, tileRangeFor } from '../sim/tiles';
 import { simulate } from '../sim';
 import { DERIVED_KEYS, deriveRider } from '../sim/derive';
@@ -133,6 +134,16 @@ export interface LabState {
   activeMarkerId: string | null;
   /** Last sample the user clicked (chart or map); the 📍 Mark button places markers here. */
   clickPos: CursorPos | null;
+  /**
+   * The `.pist.json` track model in use (spec v2 follow-up, 2026-10-11): its
+   * centreline is the active track and its asphalt edges the corridor, so the
+   * virtual rider rides the surveyed model the map shows.
+   */
+  trackPackage?: PistPackage;
+  /** Make a pist package the active track (sessions re-project onto it) and its edges the corridor. */
+  applyTrackPackage(p: PistPackage): void;
+  /** Drop the package overlay; the track and corridor it installed stay until replaced. */
+  clearTrackPackage(): void;
   /** Track boundaries for the active track, from the server or freshly extracted. */
   corridor?: Corridor;
   /** True while tiles are being fetched or the store is being read. */
@@ -398,6 +409,7 @@ export const useLab = create<LabState>((set, get) => ({
   markers: [],
   activeMarkerId: null,
   clickPos: null,
+  trackPackage: undefined,
   corridor: undefined,
   corridorBusy: false,
   corridorToken: loadCorridorToken(),
@@ -635,6 +647,28 @@ export const useLab = create<LabState>((set, get) => ({
       }),
     });
   },
+  applyTrackPackage(p) {
+    const st = get();
+    const t = normalizeTrackOrigin(trackFromPist(p));
+    const tracks = [...st.tracks.filter((x) => x.id !== t.id), t];
+    const corridor = corridorFromPist(p, t) ?? undefined;
+    const pct = corridor ? Math.round((100 * corridor.known.filter(Boolean).length) / corridor.known.length) : 0;
+    set({
+      tracks,
+      activeTrackId: t.id,
+      trackPackage: p,
+      corridor,
+      sessions: refreshAll({ ...st, tracks, activeTrackId: t.id }, t),
+      cursor: null,
+      statusMessage: corridor
+        ? `Track model "${p.name}": ${t.turns.length} corners, ${(t.lengthM / 1000).toFixed(3)} km, corridor ${pct} % resolved.`
+        : `Track model "${p.name}" loaded without usable edges.`,
+    });
+    if (get().simEnabled) runSim(set, get);
+  },
+  clearTrackPackage() {
+    set({ trackPackage: undefined });
+  },
   setTrack(t0) {
     const st = get();
     const t = normalizeTrackOrigin(t0);
@@ -644,6 +678,9 @@ export const useLab = create<LabState>((set, get) => ({
       activeTrackId: t.id,
       sessions: refreshAll(st, t),
     });
+    // a pist package's edges beat the server corridor; only ask the server
+    // when the active track is not the package's
+    if (get().trackPackage && t.id.startsWith('pist-')) return;
     void get().loadCorridor();
   },
   setLapMeta(sessionId, lap, patch) {

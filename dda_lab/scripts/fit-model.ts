@@ -33,12 +33,12 @@ function report(m: FitModel): void {
   console.log(`\n## ${m.reference} · ${m.corners.length} corners (path ${m.pathTrusted ? 'measured' : 'not measured'})`);
   console.log(`lap ${r.env.lapTimeS.toFixed(2)} s · ref ${m.refLapTimeS.toFixed(2)} s · ref speed on line ${m.alignedRefLapS.toFixed(2)} s`);
   console.log(`fit iterations ${m.stats.fitIterations}, refine rounds ${m.stats.refineRounds} (${m.stats.refineSolves} solves), error ${m.stats.errorBefore.toFixed(1)} → ${m.stats.errorAfter.toFixed(1)}, ${(m.stats.ms / 1000).toFixed(1)} s`);
-  console.log('| corner | apex ref | apex sim | v rms km/h | a rms g | lat g | κ | lat× | brk× | exit× | run× | roll-on s | coast |');
-  console.log('|---|---|---|---|---|---|---|---|---|---|---|---|---|');
+  console.log('| corner | apex ref | apex sim | v rms km/h | a rms g | lat g | κ | lat× | brk× | exit× | run× | roll-on s | coast | slide |');
+  console.log('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|');
   rows.forEach((row, k) => {
     const s = m.fitted[k];
     console.log(
-      `| ${row.name} | ${row.apexRefKmh.toFixed(1)} | ${row.apexSimKmh.toFixed(1)} | ${row.vRmsKmh.toFixed(1)} | ${row.aRmsG.toFixed(3)} | ${row.aLatPeakG.toFixed(2)} | ${s.kappa.toFixed(2)} | ${s.latScale.toFixed(2)} | ${s.brakeScale.toFixed(2)} | ${s.exitScale.toFixed(2)} | ${s.runScale.toFixed(2)} | ${s.rollOnS.toFixed(2)} | ${s.coast ? 'on' : 'off'} |`,
+      `| ${row.name} | ${row.apexRefKmh.toFixed(1)} | ${row.apexSimKmh.toFixed(1)} | ${row.vRmsKmh.toFixed(1)} | ${row.aRmsG.toFixed(3)} | ${row.aLatPeakG.toFixed(2)} | ${s.kappa.toFixed(2)} | ${s.latScale.toFixed(2)} | ${s.brakeScale.toFixed(2)} | ${s.exitScale.toFixed(2)} | ${s.runScale.toFixed(2)} | ${s.rollOnS.toFixed(2)} | ${s.coast ? 'on' : 'off'} | ${s.slideOut.toFixed(2)} |`,
     );
   });
 }

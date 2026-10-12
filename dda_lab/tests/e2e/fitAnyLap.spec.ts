@@ -87,4 +87,40 @@ test('fit to a recorded lap → pick a corner on the map → tune its line', asy
   await page.getByTestId('sim-fit-reset-corner').click();
   await expect(page.getByTestId('sim-fit-reset-corner')).toBeDisabled();
   console.log(`${rows} corners · map pick: ${pt ? 'map' : 'chip fallback'} · ${before}`);
+
+  // the sliders ARE the fitted values: after a fit (and after a reset) every
+  // slider of the corner reads its fitted[k]; moving one ("Slide out") moves
+  // only that setting, from the fitted lap time
+  const lab = async <T,>(fn: string): Promise<T> => page.evaluate(`(${fn})(window.__lab.getState())`) as Promise<T>;
+  // a braked-into corner: the slowest reference apex (the session-built track names its corners its own way)
+  const kSlide = await lab<number>(
+    `(st) => st.fitModel.corners.reduce((b, c, k, a) => (c.vApexRefMs < a[b].vApexRefMs ? k : b), 0)`,
+  );
+  const slideName = (await page.getByTestId(`sim-fit-chip-${kSlide}`).textContent()) ?? '';
+  await page.getByTestId('sim-fit-table').locator('tbody tr').nth(kSlide).click(); // a row selects (a chip toggles)
+  await expect(page.getByTestId('sim-fit-corner-name')).toContainText(slideName);
+  const keys = ['kappa', 'apexShiftM', 'brakeScale', 'minSpeedDeltaKmh', 'slideOut', 'latScale', 'rollOnS', 'exitScale', 'runScale'];
+  const fitted0 = await lab<Record<string, number>>(`(st) => st.fitModel.fitted[${kSlide}]`);
+  for (const key of keys) {
+    const dom = Number(await page.getByTestId(`sim-fit-${key}`).inputValue());
+    const step = Number(await page.getByTestId(`sim-fit-${key}`).getAttribute('step'));
+    expect(Math.abs(dom - fitted0[key]), `${key}: slider ${dom} vs fitted ${fitted0[key]}`).toBeLessThanOrEqual(step / 2 + 1e-6);
+  }
+  const lapFitted = await lab<number>(`(st) => st.simFit.lapTimeS`);
+  const slide = page.getByTestId('sim-fit-slideOut');
+  await slide.focus();
+  for (let i = 0; i < 60; i++) await page.keyboard.press('ArrowRight');
+  await expect(page.getByTestId(`sim-fit-slide-${kSlide}`)).not.toHaveText('–');
+  await expect.poll(() => lab<number>(`(st) => st.fitSettings[${kSlide}].slideOut`)).toBeGreaterThan(0.3);
+  const after = await lab<{ set: Record<string, number | boolean>; fitted: Record<string, number | boolean>; lap: number; others: boolean }>(
+    `(st) => ({ set: st.fitSettings[${kSlide}], fitted: st.fitModel.fitted[${kSlide}], lap: st.simFit.lapTimeS,
+      others: st.fitSettings.every((x, j) => j === ${kSlide} || JSON.stringify(x) === JSON.stringify(st.fitModel.fitted[j])) })`,
+  );
+  for (const key of [...keys, 'coast']) if (key !== 'slideOut') expect(after.set[key], key).toBe(after.fitted[key]);
+  expect(after.others).toBe(true);
+  expect(Math.abs(after.lap - lapFitted)).toBeGreaterThan(0.005);
+  console.log(`${slideName} slide out ${Number(after.set.slideOut).toFixed(2)}: lap ${lapFitted.toFixed(3)} → ${after.lap.toFixed(3)} s`);
+  await page.getByTestId('sim-fit-reset-corner').click();
+  await expect(page.getByTestId(`sim-fit-slide-${kSlide}`)).toHaveText(Number(fitted0.slideOut) > 0 ? Number(fitted0.slideOut).toFixed(2) : '–');
+  expect(await lab<number>(`(st) => st.simFit.lapTimeS`)).toBeCloseTo(lapFitted, 6);
 });

@@ -104,6 +104,8 @@ const BRAKE_RATE_ITERS = 4;
  * 0.005 g.
  */
 const BRAKE_ON_MARGIN = 0.05;
+/** Ceiling on the slide scrub (`caps.scrubCoef`), m/s²: 0.3 g. */
+const SCRUB_MAX_MS2 = 0.3 * G;
 
 /**
  * Longitudinal share available for BRAKING, which is not the same as the raw
@@ -575,6 +577,10 @@ export function solve(line: Line, params: SimParams, caps?: EnvelopeCaps): Envel
   /** `lossDecelMs2` for this machine. */
   const aLoss = (vv: number): number => lossDecelMs2(p.machine, vv);
   const accelMaxArr = caps?.accelMaxMs2;
+  /** Slide scrub at station i and speed vv, m/s² (0 without `caps.scrubCoef`). */
+  const scrubArr = caps?.scrubCoef;
+  const aScrub = (i: number, vv: number): number =>
+    scrubArr && scrubArr[i] > 0 ? Math.min(SCRUB_MAX_MS2, scrubArr[i] * vv * vv * Math.abs(line.curvature[i])) : 0;
 
   // ---- pass 3: forward (acceleration) ----------------------------------
   //
@@ -591,7 +597,7 @@ export function solve(line: Line, params: SimParams, caps?: EnvelopeCaps): Envel
         const ds = dsAt(i);
         const vv = Math.max(V_MIN, v[j]);
         // grade: uphill (gs > 0) costs drive
-        const aNet = driveCap(j, vv) - aLoss(vv) - gs[j];
+        const aNet = driveCap(j, vv) - aLoss(vv) - gs[j] - aScrub(j, vv);
         const a = accelMaxArr ? Math.min(aNet, accelMaxArr[j]) : aNet;
         const vMax = Math.sqrt(Math.max(V_MIN * V_MIN, vv * vv + 2 * a * ds));
         if (v[i] > vMax) v[i] = Math.max(V_MIN, vMax);
@@ -633,7 +639,7 @@ export function solve(line: Line, params: SimParams, caps?: EnvelopeCaps): Envel
         const ds = dsAt(j);
         const aTyre = Math.min(brakeCap(j, v[j]), jerk * tOn[i]);
         // grade: uphill (gs > 0) helps braking
-        const vMax = Math.sqrt(v[j] * v[j] + 2 * (aTyre + aLoss(v[j]) + gs[j]) * ds);
+        const vMax = Math.sqrt(v[j] * v[j] + 2 * (aTyre + aLoss(v[j]) + gs[j] + aScrub(j, v[j])) * ds);
         if (v[i] > vMax) v[i] = Math.max(V_MIN, vMax);
       }
     }
@@ -647,7 +653,7 @@ export function solve(line: Line, params: SimParams, caps?: EnvelopeCaps): Envel
       const j = (i + 1) % n;
       const ds = dsAt(j);
       const need = (v[i] * v[i] - v[j] * v[j]) / (2 * ds);
-      onBrake[i] = need > aLoss(v[i]) + gs[j] + BRAKE_ON_MARGIN ? 1 : 0;
+      onBrake[i] = need > aLoss(v[i]) + gs[j] + aScrub(j, v[i]) + BRAKE_ON_MARGIN ? 1 : 0;
     }
     // Twice round, so a zone that straddles the start line gets its clock from
     // before it rather than from zero.

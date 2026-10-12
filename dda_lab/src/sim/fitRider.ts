@@ -354,13 +354,23 @@ export function fitRider(line: Line, params: SimParams, ref: Reference, opts: Fi
       driveOwner[i] = bestD < 0 ? bestB : bestD;
     }
   }
-  // zone membership (lateral): inside a zone → that corner; else the two neighbours
+  // zone membership (lateral): inside a zone → that corner; else the two
+  // neighbours. Where zones overlap (a corner pair like K1 / K1+, one zone
+  // inside the other) the station goes to the corner whose apex is nearer, so
+  // the inner corner keeps its own stretch (it once owned none: lat g 0.00
+  // and a dead corner-grip slider).
   const zoneOwner = new Int16Array(n).fill(-1);
+  const zoneD = new Float64Array(n).fill(Infinity);
   for (let k = 0; k < K; k++) {
     const [a, b] = zone[k];
     for (let i = 0; i < n; i++) {
       const inside = a <= b ? s[i] >= a && s[i] <= b : s[i] >= a || s[i] <= b;
-      if (inside) zoneOwner[i] = k;
+      if (!inside) continue;
+      const d = Math.min(cyclicDist(s[i], s[iA[k]], L), cyclicDist(s[iA[k]], s[i], L));
+      if (d <= zoneD[i]) {
+        zoneD[i] = d;
+        zoneOwner[i] = k;
+      }
     }
   }
 

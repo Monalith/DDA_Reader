@@ -16,6 +16,7 @@ import {
   fitRows,
   fitSession,
   MIN_SPEED_OFF_KMH,
+  slideEntry,
   tunedCaps,
   tunedOffsets,
   type CornerSetting,
@@ -83,7 +84,7 @@ describe.skipIf(!HAS_DUCATI)('fit model on the Ducati Run036 best lap (measured 
     const e = cornerErrors(model, r.line, r.env).reduce((a, b) => a + b, 0);
     expect(Math.abs(e - model.stats.errorAfter)).toBeLessThan(1e-6);
     // the fitted κ is the base line's own (path trusted: κ is not refined), no apex shift
-    const neutral: CornerSetting[] = model.corners.map((c, k) => ({ ...model.fitted[k], kappa: c.kappaBase, apexShiftM: 0, latScale: 1, brakeScale: 1, exitScale: 1, runScale: 1 }));
+    const neutral: CornerSetting[] = model.corners.map((c, k) => ({ ...model.fitted[k], kappa: c.kappaBase, apexShiftM: 0, latScale: 1, brakeScale: 1, exitScale: 1, runScale: 1, slideOut: 0 }));
     const off = tunedOffsets(model, neutral);
     expect(Array.from(off)).toEqual(Array.from(model.baseOffsetsM));
   });
@@ -139,6 +140,53 @@ describe.skipIf(!HAS_DUCATI)('fit model on the Ducati Run036 best lap (measured 
       expect(r.env.v[c.iMin] * 3.6).toBeLessThanOrEqual(c.vMinRefMs * 3.6 - 10 + 0.5);
       const off = tunedCaps(model, set({ minSpeedDeltaKmh: MIN_SPEED_OFF_KMH }));
       expect(off.vMaxMs![c.iMin]).toBe(Infinity);
+    });
+  });
+
+  describe('slide out', () => {
+    // a braking corner (K5 on serres.pist.json: a slow apex after a long stop)
+    const pick = (): number => {
+      // the corner with the lowest reference apex speed: always a braked corner
+      let kb = 0;
+      model.corners.forEach((c, k) => {
+        if (c.vApexRefMs < model.corners[kb].vApexRefMs) kb = k;
+      });
+      return kb;
+    };
+    const withSlide = (k: number, s: number): CornerSetting[] => model.fitted.map((x, j) => ({ ...x, slideOut: j === k ? s : 0 }));
+
+    it('slideOut 0 everywhere is exactly the plain lap (no scrub array, same offsets and speeds)', () => {
+      const zero = withSlide(0, 0);
+      const caps = tunedCaps(model, zero);
+      expect(caps.scrubCoef).toBeUndefined();
+      const plain = { ...caps };
+      delete (plain as { scrubCoef?: unknown }).scrubCoef;
+      const r0 = applyFit(track, model, zero);
+      const line = lineFromOffsets(track, tunedOffsets(model, zero));
+      const r1 = solve(line, model.params, plain);
+      expect(Array.from(r0.env.v)).toEqual(Array.from(r1.v));
+      // and the solver without scrubCoef ≡ with an all-zero scrubCoef
+      const r2 = solve(line, model.params, { ...plain, scrubCoef: new Float32Array(line.points.length) });
+      expect(Array.from(r2.v)).toEqual(Array.from(r1.v));
+    });
+
+    it('slideOut 1: faster on the entry (braking ends later), wide before the apex, apex speed close to the plain lap', () => {
+      const k = pick();
+      const c = model.corners[k];
+      const base = applyFit(track, model, withSlide(k, 0));
+      const slid = applyFit(track, model, withSlide(k, 1));
+      const entry = slideEntry(model, k);
+      expect(entry.length).toBeGreaterThan(5);
+      // speed carried into the entry: higher at its start
+      const i0 = entry[0].i;
+      expect(slid.env.v[i0]).toBeGreaterThan(base.env.v[i0] + 0.3);
+      // outward (−dir) offset before the apex, peaking mid-entry; the apex point unchanged
+      const im = entry[Math.floor(entry.length / 2)].i;
+      const dOff = (i: number): number => (slid.line.offsetM![i] - base.line.offsetM![i]) * -c.dir;
+      expect(dOff(im)).toBeGreaterThan(0.2);
+      expect(Math.abs(dOff(c.iApex))).toBeLessThan(0.05);
+      // the scrub takes the extra speed off: apex within 2 km/h
+      expect(Math.abs(slid.env.v[c.iApex] - base.env.v[c.iApex]) * 3.6).toBeLessThan(2);
     });
   });
 

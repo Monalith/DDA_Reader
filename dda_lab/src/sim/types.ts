@@ -86,6 +86,13 @@ export interface EnvelopeCaps {
    * per-corner minimum, fitModel.ts — a flick taken at κ ≈ 0).
    */
   vMaxMs?: Float32Array;
+  /**
+   * Slide scrub per station (dimensionless): an extra deceleration of
+   * scrubCoef·|a_lat| (v²·|κ|), a sliding tyre's slip-angle drag (fitModel's
+   * per-corner "slide out" on the entry). Not rate-limited (no brake lever),
+   * helps the braking pass and costs the drive pass like the losses do.
+   */
+  scrubCoef?: Float32Array;
   /** Skip the roll-rate pass: a fitted rider's transitions are already in its lateral caps. */
   skipRollRate?: boolean;
 }

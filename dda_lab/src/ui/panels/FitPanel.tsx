@@ -58,6 +58,14 @@ const SLIDERS: SliderDef[] = [
     format: (v, c) => (v >= MIN_SPEED_OFF_KMH ? 'off' : `${(c.vMinRefKmh + v).toFixed(1)} km/h`),
   },
   {
+    key: 'slideOut',
+    label: 'Slide out',
+    step: 0.01,
+    ends: ['0', '1'],
+    help: 'Enter fast and let the bike slide out wide before the apex: the line drifts toward the outside on the entry (back on the apex at the apex), the sliding tyre scrubs speed (≈ 0.15 × lateral g at max) so the braking ends later and more speed is carried in, and the lateral grip may run a few % over while sliding. 0 = off.',
+    format: (v) => (v <= 0 ? 'off' : v.toFixed(2)),
+  },
+  {
     key: 'latScale',
     label: 'Corner grip',
     step: 0.01,
@@ -216,7 +224,7 @@ export function FitCornerPanel() {
             aria-selected={j === k}
             className={`sim-fit-chip${j === k ? ' sel' : ''}${changed(j) ? ' tuned' : ''}${r && r.vRmsKmh > 3 ? ' warn' : ''}`}
             data-testid={`sim-fit-chip-${j}`}
-            title={r ? `${c.name} ${c.dir > 0 ? 'left' : 'right'}: apex ${r.apexSimKmh.toFixed(1)} vs ref ${r.apexRefKmh.toFixed(1)} km/h, speed error ${r.vRmsKmh.toFixed(1)} km/h rms${changed(j) ? ' · tuned' : ''}` : c.name}
+            title={r ? `${c.name} ${c.dir > 0 ? 'left' : 'right'}: apex ${r.apexSimKmh.toFixed(1)} vs ref ${r.apexRefKmh.toFixed(1)} km/h, speed error ${r.vRmsKmh.toFixed(1)} km/h rms${settings[j].slideOut > 0 ? ` · slide out ${settings[j].slideOut.toFixed(2)}` : ''}${changed(j) ? ' · tuned' : ''}` : c.name}
             onClick={() => setSel(j === k ? null : j)}
           >
             {c.name}
@@ -291,6 +299,7 @@ export function FitCornerPanel() {
               <th title="RMS longitudinal-g error over the corner's stretch">a rms</th>
               <th title="Peak lateral g in the zone">Lat g</th>
               <th title="Lean the peak lateral g needs (ideal lean)">Lean °</th>
+              <th title="Slide out on the entry (0 = off)">Slide</th>
               <th title={`Margin to the preset's lateral ceiling min(μ, tan(maxLean·leanUsage)) = ${simFit.ceilingG.toFixed(2)} g (${simFit.ceilingLeanDeg.toFixed(1)}°)`}>Margin %</th>
             </tr>
           </thead>
@@ -311,6 +320,7 @@ export function FitCornerPanel() {
                   <td className="num">{r.aRmsG.toFixed(2)}</td>
                   <td className="num">{r.aLatPeakG.toFixed(2)}</td>
                   <td className="num">{r.leanDeg.toFixed(1)}</td>
+                  <td className="num" data-testid={`sim-fit-slide-${j}`}>{settings[j].slideOut > 0 ? settings[j].slideOut.toFixed(2) : '–'}</td>
                   <td className="num">{r.marginPct.toFixed(0)}</td>
                 </tr>
               );

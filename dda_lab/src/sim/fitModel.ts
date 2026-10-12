@@ -16,6 +16,23 @@
 //   caps     fitRider's per-station caps, scaled per corner: lateral in its
 //            zone, braking into it, drive on its exit and on the run after,
 //            the roll-on time after its apex, and the coast before it.
+//   slide    "slide out" (owner, 2026-10-13): enter the corner fast and let
+//            the bike slide out wide, the tyre's slip scrubbing the speed off
+//            before the apex. Per corner slideOut s ∈ [0, 1] (0 = off) over the
+//            entry (SLIDE_LEAD_M before the zone start → the apex), shaped by
+//            sin(π·t), t = 0 at the entry start, 1 at the apex:
+//              line   offset toward the outside, s·A·sin²(π·t) (A ≤ SLIDE_OFFSET_M,
+//                     less on a short entry: SLIDE_CURV_MAX),
+//                     back on the normal apex point at the apex;
+//              scrub  extra deceleration s·SLIDE_SCRUB_K·sin(π·t)·|a_lat|
+//                     (slip-angle drag: F_y·sin α, α ≈ 9° at K 0.15; solver
+//                     `caps.scrubCoef`, ≤ 0.3 g), which lets the rider brake
+//                     later and carry more speed in;
+//              grip   the lateral cap × (1 + s·SLIDE_LAT_EXCESS·sin(π·t)):
+//                     the tyre past its grip peak while sliding, entry only.
+//            The fit uses it only where it pays: a penalty SLIDE_REG·s², and
+//            only on corners the reference brakes into (SLIDE_FIT_MIN_DROP_MS),
+//            and only on a measured (GPS) path.
 //   refine   a pattern search on those per-corner settings (and κ_k where the
 //            path is not measured) that minimises, per corner, the space-mean
 //            of ((v − v_ref)/1 m/s)² + ((a − a_ref)/0.1 g)² over the corner's
@@ -61,6 +78,8 @@ export interface CornerSetting {
    * line that is slower there anyway ignores it; ≥ +40 = off).
    */
   minSpeedDeltaKmh: number;
+  /** Slide out on the entry: 0 = off … 1 = in fast, wide before the apex, the slide scrubs the speed. */
+  slideOut: number;
 }
 
 export const SETTING_BOUNDS: Record<Exclude<keyof CornerSetting, 'coast'>, [number, number]> = {
@@ -72,6 +91,7 @@ export const SETTING_BOUNDS: Record<Exclude<keyof CornerSetting, 'coast'>, [numb
   runScale: [0.3, 2.5],
   rollOnS: [0, 4],
   minSpeedDeltaKmh: [-30, 40],
+  slideOut: [0, 1],
 };
 /** A minimum-speed delta at or above this is off (no ceiling). */
 export const MIN_SPEED_OFF_KMH = 40;
@@ -146,6 +166,28 @@ const TAPER_M = 25;
 const ROLL_ON_RATE = Math.log(10);
 const DRIVE_MAX_MS2 = 2.0 * G;
 const LONG_MIN_MS2 = 0.1 * G;
+/** Slide out (see the header): the entry starts this far before the zone start, metres. */
+const SLIDE_LEAD_M = 20;
+/** Peak outward line offset at slideOut 1, metres. */
+const SLIDE_OFFSET_M = 1.5;
+/**
+ * Ceiling on the curvature the outward drift itself adds (its sin² bump over
+ * an entry of length L peaks at 2π²·A/L²), 1/m: 1/250 m, so a short entry
+ * drifts less than SLIDE_OFFSET_M rather than kinking the line.
+ */
+const SLIDE_CURV_MAX = 1 / 250;
+/** Scrub deceleration per lateral g at slideOut 1 (≈ sin of a 9° slip angle). */
+const SLIDE_SCRUB_K = 0.15;
+/** Lateral-cap excess at slideOut 1 (sliding past the grip peak), entry only. */
+const SLIDE_LAT_EXCESS = 0.06;
+/** Fit penalty per slideOut², in the per-corner error's units. */
+const SLIDE_REG = 0.3;
+/**
+ * The fit tries a slide out only where the reference slows by at least this
+ * much over the corner's entry (m/s, ≈ 11 km/h): a braked-into corner, not
+ * a fast sweeper where a scrub would only stand in for other errors.
+ */
+const SLIDE_FIT_MIN_DROP_MS = 3;
 
 const clamp = (x: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, x));
 
@@ -172,14 +214,30 @@ function windowWeights(n: number, stepM: number, zone: [number, number]): Float3
 
 /** The fitted settings as neutral values: scales 1, the base line's κ, the fitted roll-on. */
 function neutral(kappaBase: number, rollOnS: number): CornerSetting {
-  return { kappa: kappaBase, apexShiftM: 0, latScale: 1, brakeScale: 1, exitScale: 1, runScale: 1, rollOnS, coast: true, minSpeedDeltaKmh: 0 };
+  return { kappa: kappaBase, apexShiftM: 0, latScale: 1, brakeScale: 1, exitScale: 1, runScale: 1, rollOnS, coast: true, minSpeedDeltaKmh: 0, slideOut: 0 };
+}
+
+/**
+ * Corner k's entry for the slide out: stations from SLIDE_LEAD_M before its
+ * zone start to its apex, each with sin(π·t) (t 0 → 1 along the entry).
+ */
+export function slideEntry(model: FitModel, k: number): Array<{ i: number; w: number }> {
+  const n = model.baseOffsetsM.length;
+  const c = model.corners[k];
+  const lead = Math.round(SLIDE_LEAD_M / model.vertexStepM);
+  const a = (c.zone[0] - lead + n) % n;
+  const len = cyc(a, c.iApex, n);
+  if (len < 2 || len > n / 2) return [];
+  const out: Array<{ i: number; w: number }> = [];
+  for (let d = 0; d <= len; d++) out.push({ i: (a + d) % n, w: Math.sin((Math.PI * d) / len) });
+  return out;
 }
 
 /** Offsets of the tuned line (per centreline vertex). */
 export function tunedOffsets(model: FitModel, settings: CornerSetting[]): Float32Array {
   const n = model.baseOffsetsM.length;
   const d = Float32Array.from(model.baseOffsetsM);
-  const any = settings.some((s, k) => Math.abs(s.kappa - model.corners[k].kappaBase) > 1e-6 || s.apexShiftM !== 0);
+  const any = settings.some((s, k) => Math.abs(s.kappa - model.corners[k].kappaBase) > 1e-6 || s.apexShiftM !== 0 || s.slideOut > 0);
   if (!any) return d;
   const vertexStep = model.vertexStepM;
   for (let k = 0; k < model.corners.length; k++) {
@@ -195,6 +253,15 @@ export function tunedOffsets(model: FitModel, settings: CornerSetting[]): Float3
     const w = windowWeights(n, vertexStep, model.corners[k].zone);
     const src = Float32Array.from(d);
     for (let i = 0; i < n; i++) if (w[i] > 0) d[i] = src[i] + w[i] * (src[(i - sh + n) % n] - src[i]);
+  }
+  // slide out: wide (toward the corner's outside, −dir) before the apex
+  for (let k = 0; k < model.corners.length; k++) {
+    const s = settings[k].slideOut;
+    if (!(s > 0)) continue;
+    const entry = slideEntry(model, k);
+    const L = entry.length * vertexStep;
+    const amp = -model.corners[k].dir * s * Math.min(SLIDE_OFFSET_M, (SLIDE_CURV_MAX * L * L) / (2 * Math.PI * Math.PI));
+    for (const { i, w } of entry) d[i] += amp * w * w;
   }
   // inside the box (or the measured path, where it rode past the box)
   for (let i = 0; i < n; i++) {
@@ -240,7 +307,19 @@ export function tunedCaps(model: FitModel, settings: CornerSetting[]): EnvelopeC
     const R = settings[kd].rollOnS;
     scale[i] = Number.isFinite(t) && R > 0 && t < R ? 1 - Math.exp((-t * ROLL_ON_RATE) / R) : 1;
   }
-  return { aLatMs2: lat, latAxisMs2: axis, brakeMs2: brake, driveMs2: drive, driveScale: scale, accelMaxMs2: accel, vMaxMs: vMax, skipRollRate: true };
+  // slide out: scrub and a little lateral excess over the entry
+  let scrub: Float32Array | undefined;
+  model.corners.forEach((_, k) => {
+    const s = settings[k].slideOut;
+    if (!(s > 0)) return;
+    scrub ??= new Float32Array(n);
+    for (const { i, w } of slideEntry(model, k)) {
+      scrub[i] = Math.max(scrub[i], s * SLIDE_SCRUB_K * w);
+      lat[i] *= 1 + s * SLIDE_LAT_EXCESS * w;
+      axis[i] = Math.max(lat[i], model.muLatPeakMs2);
+    }
+  });
+  return { aLatMs2: lat, latAxisMs2: axis, brakeMs2: brake, driveMs2: drive, driveScale: scale, accelMaxMs2: accel, vMaxMs: vMax, skipRollRate: true, ...(scrub ? { scrubCoef: scrub } : {}) };
 }
 
 export interface AppliedFit {
@@ -455,15 +534,28 @@ function refine(track: TrackModel, model: FitModel, budgetMs: number, now: () =>
     { key: 'runScale', step: 0.1, mult: true, min: 0.005 },
     { key: 'rollOnS', step: 0.3, mult: false, min: 0.02 },
     { key: 'minSpeedDeltaKmh', step: 3, mult: false, min: 0.2 },
+    { key: 'slideOut', step: 0.25, mult: false, min: 0.02 },
   ];
   // the line is a fit parameter only where the path was not measured
   if (!model.pathTrusted) keys.push({ key: 'kappa', step: 0.2, mult: false, min: 0.02 });
   let cur = model.fitted.map((s) => ({ ...s }));
   let solves = 0;
+  // where the slide out may be fitted at all (see SLIDE_FIT_MIN_DROP_MS)
+  const slideOk = model.corners.map((c, k) => {
+    const e = slideEntry(model, k);
+    // only on a measured path: on a rider's / hand-placed line the fit cannot
+    // tell a slide from the line style and trades one for the other (the BMW
+    // lap: κ dragged to a 1.2 s slower line)
+    return model.pathTrusted && e.length > 0 && model.vRefMs[e[0].i] - model.vRefMs[c.iApex] >= SLIDE_FIT_MIN_DROP_MS;
+  });
+  const frozen = (key: NumKey, k: number): boolean => key === 'slideOut' && !slideOk[k];
+  // the objective: the per-corner error plus the slide-out penalty
   const evalAt = (set: CornerSetting[]): Float64Array => {
     solves++;
     const r = applyFit(track, model, set);
-    return cornerErrors(model, r.line, r.env);
+    const err = cornerErrors(model, r.line, r.env);
+    for (let k = 0; k < K; k++) err[k] += SLIDE_REG * set[k].slideOut * set[k].slideOut;
+    return err;
   };
   const total = (e: Float64Array): number => e.reduce((a, b) => a + b, 0);
   let e = evalAt(cur);
@@ -474,13 +566,17 @@ function refine(track: TrackModel, model: FitModel, budgetMs: number, now: () =>
     let movedAny = false;
     let live = false;
     for (const kd of keys) {
-      if (kd.step < kd.min) continue;
+      // the slide out waits for phase 2 (corner by corner): moved in every
+      // corner at once it drags the line style (κ, path not measured) into
+      // another, slower minimum
+      if (kd.step < kd.min || kd.key === 'slideOut') continue;
       live = true;
       let improved = false;
       for (const sign of [1, -1]) {
         if (now() - t0 >= budgetMs) break;
         const [lo, hi] = SETTING_BOUNDS[kd.key];
-        const trial = cur.map((s) => {
+        const trial = cur.map((s, k) => {
+          if (frozen(kd.key, k)) return s;
           const v = s[kd.key];
           const nv = kd.mult ? v * (1 + sign * kd.step) : v + sign * kd.step;
           return { ...s, [kd.key]: clamp(nv, lo, hi) };
@@ -509,13 +605,13 @@ function refine(track: TrackModel, model: FitModel, budgetMs: number, now: () =>
     }
     progress({ frac: 0.1 + 0.88 * Math.min(1, (now() - t0) / budgetMs), stage: `refining (round ${rounds + 1})`, error: total(e) });
     if (!live) break;
-    if (!movedAny && keys.every((k) => k.step < k.min)) break;
+    if (!movedAny && keys.every((k) => k.key === 'slideOut' || k.step < k.min)) break;
   }
   // Phase 2: corner by corner (one solve per try, judged on the corner's own
   // stretch AND the lap total, so the coupling between neighbours is
   // respected), each corner with its own steps; when every step has shrunk
   // below its floor and time is left, the steps open up again once.
-  const steps = cur.map(() => keys.map((kd) => Math.max(kd.step * 4, kd.min * 8)));
+  const steps = cur.map(() => keys.map((kd) => (kd.key === 'slideOut' ? kd.step : Math.max(kd.step * 4, kd.min * 8))));
   let restarts = 0;
   const coastTried = new Uint8Array(K);
   while (now() - t0 < budgetMs) {
@@ -523,7 +619,7 @@ function refine(track: TrackModel, model: FitModel, budgetMs: number, now: () =>
     for (let r = 0; r < K && now() - t0 < budgetMs; r++) {
       const k = r;
       keys.forEach((kd, q) => {
-        if (steps[k][q] < kd.min || now() - t0 >= budgetMs) return;
+        if (steps[k][q] < kd.min || now() - t0 >= budgetMs || frozen(kd.key, k)) return;
         live = true;
         const [lo, hi] = SETTING_BOUNDS[kd.key];
         for (const sign of [1, -1]) {
@@ -565,7 +661,9 @@ function refine(track: TrackModel, model: FitModel, budgetMs: number, now: () =>
   model.fitted = cur;
   model.stats.refineRounds = rounds;
   model.stats.refineSolves = solves;
-  model.stats.errorAfter = total(e);
+  // the reported error is the fit error alone (no penalty), as cornerErrors gives it
+  const rEnd = applyFit(track, model, cur);
+  model.stats.errorAfter = total(cornerErrors(model, rEnd.line, rEnd.env));
 }
 
 export interface FitCornerRow {

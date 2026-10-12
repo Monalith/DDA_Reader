@@ -80,6 +80,12 @@ export interface EnvelopeCaps {
    * ellipse at lean, so a hold stays a hold in a corner.
    */
   accelMaxMs2?: Float32Array;
+  /**
+   * Speed ceiling per station, m/s (Infinity = none): a rider's own chosen
+   * minimum speed where the line does not limit it (the fitted rider's
+   * per-corner minimum, fitModel.ts — a flick taken at κ ≈ 0).
+   */
+  vMaxMs?: Float32Array;
   /** Skip the roll-rate pass: a fitted rider's transitions are already in its lateral caps. */
   skipRollRate?: boolean;
 }

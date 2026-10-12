@@ -89,7 +89,8 @@ test('optimise line: worker run, progress, the rider rides it, the fit runs on i
   // the fit-to-reference mode runs on that line
   await page.getByTestId('sim-mode-fit').click();
   await page.getByTestId('sim-fit-run').click();
-  await expect(page.getByTestId('sim-fit-table').locator('tbody tr')).toHaveCount(16);
+  // the fit runs in a Worker (~7 s, ≤ 30 s)
+  await expect(page.getByTestId('sim-fit-table').locator('tbody tr')).toHaveCount(16, { timeout: 60_000 });
   console.log(`fit: ${await page.getByTestId('sim-fit-status').textContent()}`);
   const fitRows = await page.evaluate(() => {
     type St = { simFit?: { rows: Array<{ name: string; aLatG: number; aLatPeakG: number }> }; simLineOptInfo?: unknown };

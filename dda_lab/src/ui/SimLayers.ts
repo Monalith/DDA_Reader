@@ -152,3 +152,39 @@ export function pistGeoJson(p: PistPackage | undefined): FeatureCollection<LineS
   }
   return { type: 'FeatureCollection', features };
 }
+
+export type FitCornerProps =
+  | { kind: 'zone'; k: number; name: string; sel: boolean }
+  | { kind: 'apex'; k: number; name: string; sel: boolean }
+  | { kind: 'min'; k: number; name: string; sel: boolean };
+
+/**
+ * The fitted corners on the fit's (tuned) line: each corner's zone as a line,
+ * its apex as a clickable point with its name, and the selected corner's
+ * minimum-speed point (where its speed ceiling sits). Picking on the map
+ * selects the corner whose sliders the sim panel shows.
+ */
+export function fitCornersGeoJson(
+  line: Line,
+  corners: ReadonlyArray<{ name: string; iApex: number; zone: [number, number]; iMin: number }>,
+  selected: number | null,
+): FeatureCollection<LineString | Point, FitCornerProps> {
+  const n = line.points.length;
+  const features: Array<Feature<LineString | Point, FitCornerProps>> = [];
+  corners.forEach((c, k) => {
+    const sel = k === selected;
+    const coords: LngLat[] = [];
+    const len = (((c.zone[1] - c.zone[0]) % n) + n) % n;
+    for (let d = 0; d <= len; d++) coords.push(line.points[(c.zone[0] + d) % n]);
+    if (coords.length >= 2) {
+      features.push({ type: 'Feature', properties: { kind: 'zone', k, name: c.name, sel }, geometry: { type: 'LineString', coordinates: coords } });
+    }
+    if (c.iApex >= 0 && c.iApex < n) {
+      features.push({ type: 'Feature', properties: { kind: 'apex', k, name: c.name, sel }, geometry: { type: 'Point', coordinates: line.points[c.iApex] } });
+    }
+    if (sel && c.iMin >= 0 && c.iMin < n) {
+      features.push({ type: 'Feature', properties: { kind: 'min', k, name: c.name, sel }, geometry: { type: 'Point', coordinates: line.points[c.iMin] } });
+    }
+  });
+  return { type: 'FeatureCollection', features };
+}

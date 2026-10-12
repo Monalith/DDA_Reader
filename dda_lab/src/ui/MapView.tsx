@@ -21,7 +21,7 @@ import type { Gate, Lap, LngLat, SchemaLayer, Session, TrackModel, TurnMetrics }
 import { lapX, selectedLapEntries } from '../state/selectors';
 import { activeTrack, useLab, lapMetaOf } from '../state/store';
 import { backgroundColorByZoom, inRangeSegments, rasterOpacityByZoom, zoomRadius, zoomWidth } from './focus';
-import { cornerEventsGeoJson, corridorGeoJson, idealLineGeoJson, pistGeoJson } from './SimLayers';
+import { cornerEventsGeoJson, corridorGeoJson, fitCornersGeoJson, idealLineGeoJson, pistGeoJson } from './SimLayers';
 import { fetchTrackModel, parsePistPackage, TRACK_MODELS } from '../core/pistPackage';
 import {
   IMAGE_CORNERS,
@@ -180,6 +180,11 @@ export default function MapView() {
   const corridor = useLab((s) => s.corridor);
   const simLine = useLab((s) => s.simLine);
   const simCorners = useLab((s) => s.simCorners);
+  const solverMode = useLab((s) => s.solverMode);
+  const fitLine = useLab((s) => s.fitLine);
+  const fitModel = useLab((s) => s.fitModel);
+  const fitCorner = useLab((s) => s.fitCorner);
+  const fitActive = solverMode === 'fit' && !!fitLine && !!fitModel;
   const trackPackage = useLab((s) => s.trackPackage);
   const applyTrackPackage = useLab((s) => s.applyTrackPackage);
   const pistFileRef = useRef<HTMLInputElement>(null);
@@ -422,6 +427,13 @@ export default function MapView() {
     setData(map, 'cornerEvents', simLine ? cornerEventsGeoJson(simLine, simCorners) : EMPTY);
     setData(map, 'pist', pistGeoJson(trackPackage));
   }, [ready, track, entries, metrics, preview, lapMeta, corridor, simLine, simCorners, trackPackage]);
+
+  // ---------- fitted corners (Fit to reference): pick a corner on the map ----------
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    setData(map, 'fitCorners', fitActive ? fitCornersGeoJson(fitLine!, fitModel!.corners, fitCorner) : EMPTY);
+  }, [ready, fitActive, fitLine, fitModel, fitCorner]);
 
   // ---------- layer toggles ----------
   useEffect(() => {
@@ -691,6 +703,21 @@ export default function MapView() {
         return;
       }
       if (gateEdit) return;
+      if (map.getLayer('fit-apex')) {
+        const pad = 8;
+        const feats = map.queryRenderedFeatures(
+          [
+            [ev.point.x - pad, ev.point.y - pad],
+            [ev.point.x + pad, ev.point.y + pad],
+          ],
+          { layers: ['fit-apex', 'fit-zone'] },
+        );
+        const f = feats.find((x) => x.layer.id === 'fit-apex') ?? feats[0];
+        if (f && typeof f.properties?.k === 'number') {
+          useLab.getState().setFitCorner(f.properties.k as number);
+          return;
+        }
+      }
       const hit = nearestSample(entries, p);
       if (hit) {
         setCursor({ sessionId: hit.sessionId, idx: hit.idx });
@@ -708,6 +735,22 @@ export default function MapView() {
     if (!map || !ready) return;
     const canvas = map.getCanvas();
     canvas.style.cursor = armed || measure || startLineMode ? 'crosshair' : '';
+    const enter = (): void => {
+      if (!armed && !measure && !startLineMode) canvas.style.cursor = 'pointer';
+    };
+    const leave = (): void => {
+      canvas.style.cursor = armed || measure || startLineMode ? 'crosshair' : '';
+    };
+    map.on('mouseenter', 'fit-apex', enter);
+    map.on('mouseleave', 'fit-apex', leave);
+    map.on('mouseenter', 'fit-zone', enter);
+    map.on('mouseleave', 'fit-zone', leave);
+    return () => {
+      map.off('mouseenter', 'fit-apex', enter);
+      map.off('mouseleave', 'fit-apex', leave);
+      map.off('mouseenter', 'fit-zone', enter);
+      map.off('mouseleave', 'fit-zone', leave);
+    };
   }, [ready, armed, measure, startLineMode]);
 
   // ---------- gate editing ----------
@@ -1101,7 +1144,7 @@ function syncSchemaImage(map: maplibregl.Map, schema: SchemaLayer | null): void 
 
 /** One-time creation of the empty data sources and their layers. */
 function addDataLayers(map: maplibregl.Map): void {
-  for (const id of ['centerline', 'gates', 'markers', 'schema', 'measure', 'turn-deltas', 'corridor', 'idealLine', 'cornerEvents', 'pist']) {
+  for (const id of ['centerline', 'gates', 'markers', 'schema', 'measure', 'turn-deltas', 'corridor', 'idealLine', 'cornerEvents', 'pist', 'fitCorners']) {
     if (!map.getSource(id)) map.addSource(id, { type: 'geojson', data: EMPTY });
   }
 
@@ -1206,6 +1249,49 @@ function addDataLayers(map: maplibregl.Map): void {
       'text-allow-overlap': true,
     },
     paint: { 'text-color': '#ffffff', 'text-halo-color': '#000000', 'text-halo-width': 1 },
+  });
+  // Fit to reference: the fitted corners, picked on the map (sim panel sliders)
+  map.addLayer({
+    id: 'fit-zone',
+    type: 'line',
+    source: 'fitCorners',
+    filter: ['==', ['get', 'kind'], 'zone'],
+    layout: { 'line-cap': 'round' },
+    paint: {
+      'line-color': ['case', ['get', 'sel'], '#ffd166', '#ff4d6d'],
+      'line-width': ['interpolate', ['linear'], ['zoom'], 13, ['case', ['get', 'sel'], 7, 5], 18, ['case', ['get', 'sel'], 12, 9]],
+      'line-opacity': ['case', ['get', 'sel'], 0.9, 0.35],
+    },
+  });
+  map.addLayer({
+    id: 'fit-apex',
+    type: 'circle',
+    source: 'fitCorners',
+    filter: ['!=', ['get', 'kind'], 'zone'],
+    paint: {
+      'circle-radius': [
+        'interpolate', ['linear'], ['zoom'],
+        13, ['case', ['==', ['get', 'kind'], 'min'], 3, ['get', 'sel'], 7, 5],
+        18, ['case', ['==', ['get', 'kind'], 'min'], 5, ['get', 'sel'], 10, 8],
+      ],
+      'circle-color': ['case', ['==', ['get', 'kind'], 'min'], '#3da5ff', ['get', 'sel'], '#ffd166', '#ff4d6d'],
+      'circle-stroke-color': '#000000',
+      'circle-stroke-width': 1.5,
+    },
+  });
+  map.addLayer({
+    id: 'fit-apex-label',
+    type: 'symbol',
+    source: 'fitCorners',
+    filter: ['==', ['get', 'kind'], 'apex'],
+    layout: {
+      'text-field': ['get', 'name'],
+      'text-size': 12,
+      'text-offset': [0, -1.4],
+      'text-allow-overlap': true,
+      'text-font': TEXT_FONT,
+    },
+    paint: { 'text-color': ['case', ['get', 'sel'], '#ffd166', '#ffffff'], 'text-halo-color': '#000000', 'text-halo-width': 1.5 },
   });
   map.addLayer({
     id: 'gates-line',

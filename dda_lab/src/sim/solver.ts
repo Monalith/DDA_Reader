@@ -555,7 +555,7 @@ export function solve(line: Line, params: SimParams, caps?: EnvelopeCaps): Envel
       const num = (aLatI * Math.cos(sig) * Math.cos(bet) + G * Math.cos(sig) * Math.sin(bet)) * r;
       vLat = den <= 0 ? Infinity : Math.sqrt(Math.max(0, num / den));
     }
-    v[i] = Math.max(V_MIN, Math.min(vTop, vLat));
+    v[i] = Math.max(V_MIN, Math.min(vTop, vLat, caps?.vMaxMs?.[i] ?? Infinity));
   }
 
   // ---- pass 1b: roll-rate limit (spec v2 §2.5) --------------------------

@@ -59,6 +59,17 @@ table.lap-table td {
   border-bottom: 1px solid rgba(38, 45, 55, 0.6);
   white-space: nowrap;
 }
+/* "file name · L6": a long file name is cut with an ellipsis (full name in the tooltip), the lap number always shows */
+table.lap-table td.lap-name { max-width: 240px; }
+table.lap-table td.lap-name .lap-file {
+  display: inline-block;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  color: var(--fg-dim);
+}
+table.lap-table td.lap-name .lap-no { font-weight: 600; }
 table.lap-table tbody tr { cursor: pointer; }
 table.lap-table tbody { user-select: none; } /* shift+click toggles laps, never selects text */
 table.lap-table tbody tr:hover { background: rgba(255, 255, 255, 0.04); }

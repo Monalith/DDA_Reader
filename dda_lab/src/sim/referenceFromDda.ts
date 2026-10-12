@@ -491,8 +491,33 @@ export function referenceFromDda(trace: DdaLapTrace, corners: TrackCorner[], nam
     // zone must hold the apex, in lap order
     if (cyc(e, best, N) > N / 2) e = (best - 30 + N) % N;
     if (cyc(best, x, N) > N / 2) x = (best + 30) % N;
-    return { c, dir, apex: best, entry: e, exit: x };
+    return { c, dir, apex: best, entry: e, exit: x, s0 };
   });
+  // two corners on one |κ| peak (a pist apex 40 m off the lap's: K11/K12 at
+  // Serres): the one whose own apex lies further from it re-searches its
+  // zone, away from the other's apex
+  const SEP_M = 15;
+  for (let a = 0; a < raw.length; a++) {
+    for (let b = 0; b < raw.length; b++) {
+      if (a === b) continue;
+      const A = raw[a];
+      const B = raw[b];
+      const dist = Math.min(cyc(A.apex, B.apex, N), cyc(B.apex, A.apex, N));
+      if (dist >= SEP_M) continue;
+      const offA = Math.min(cyc(A.s0, A.apex, N), cyc(A.apex, A.s0, N));
+      const offB = Math.min(cyc(B.s0, B.apex, N), cyc(B.apex, B.s0, N));
+      const mv = offA >= offB ? A : B;
+      const keep = mv === A ? B : A;
+      const len = cyc(mv.entry, mv.exit, N);
+      let best = -1;
+      for (let d = 0; d <= len; d++) {
+        const i = at(mv.entry + d);
+        if (Math.min(cyc(i, keep.apex, N), cyc(keep.apex, i, N)) < SEP_M) continue;
+        if (best < 0 || mv.dir * trace.kappa[i] > mv.dir * trace.kappa[best]) best = i;
+      }
+      if (best >= 0) mv.apex = best;
+    }
+  }
   for (const r of raw) {
     // brake point: the LAST speed peak before the corner's minimum (walk back
     // while the speed rises; stop once it falls 3 km/h below the peak, i.e.

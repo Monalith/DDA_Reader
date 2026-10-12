@@ -65,7 +65,7 @@
 // event profile: brake/tps from the sign of longG — the event template would
 // re-shape the fitted speed, which is the one thing that must not move).
 import type { Session, TrackModel } from '../core/types';
-import { alignReference, smoothedCurvature, type Alignment } from './alignRef';
+import { alignReference, smoothedCurvature, type AlignOptions, type Alignment } from './alignRef';
 import { buildLine } from './line';
 import { clampParams } from './presets';
 import type { Reference } from './reference';
@@ -150,6 +150,52 @@ export interface RiderFit {
   /** The current preset's lateral ceiling: min(μ_lat, tan(maxLean·leanUsage)). */
   ceiling: { aLatG: number; leanDeg: number };
   notes: string[];
+  /**
+   * Which corner owns every station (for per-corner tuning of the fitted
+   * caps, fitModel.ts): the zone it lies in (−1 between zones), the corner it
+   * brakes into, the corner it drives out of, whether it is that corner's
+   * exit (apex → zone end), whether the rider coasts there, and the
+   * reference's clock since the drive-owner's apex on the roll-on stretch
+   * (NaN elsewhere).
+   */
+  stations: {
+    zoneOwner: Int16Array;
+    brakeOwner: Int16Array;
+    driveOwner: Int16Array;
+    inExit: Uint8Array;
+    coast: Uint8Array;
+    tFromApexS: Float32Array;
+    /** Reference longitudinal g on the line, d(v²/2)/ds over ±10 m. */
+    aRefG: Float32Array;
+  };
+  /** The params the fit solved with (the preset's, trail-brake depth 1). */
+  params: SimParams;
+  /** The tyre's peak lateral axis, m/s² (the ellipse floor of `latAxisMs2`). */
+  muLatPeakMs2: number;
+}
+
+/** The params the fitted rider solves with: the preset's, brakes carried to full lean. */
+export function fitParams(params: SimParams): SimParams {
+  const p0 = clampParams(params);
+  return { ...p0, rider: { ...p0.rider, trailBrakeDepth: 1 } };
+}
+
+/** d(v²/2)/ds over ±halfM on a closed line, g. */
+export function longGOnLine(line: Line, v: ArrayLike<number>, halfM = 10): Float32Array {
+  const n = line.points.length;
+  const L = line.lengthM;
+  const s = line.cumDistM;
+  const out = new Float32Array(n);
+  const cd = (a: number, b: number): number => (((s[b] - s[a]) % L) + L) % L;
+  // the stations are near-uniform (centreline vertices): a fixed index half-width
+  const h = Math.max(1, Math.round(halfM / (L / n)));
+  for (let i = 0; i < n; i++) {
+    const a = (i - h + n) % n;
+    const b = (i + h) % n;
+    const ds = cd(a, b);
+    out[i] = ds > 1 ? (v[b] * v[b] - v[a] * v[a]) / (2 * ds * G) : 0;
+  }
+  return out;
 }
 
 export interface FitOptions {
@@ -160,6 +206,8 @@ export interface FitOptions {
   lapTolS?: number;
   /** Lateral model, see fitRider: 'segments' (default) or the literal one-cap-per-zone 'zone'. */
   lateral?: 'segments' | 'zone';
+  /** Passed to `alignReference` (a recorded lap's own path: `pathOnLine`). */
+  align?: AlignOptions;
 }
 
 /**
@@ -249,15 +297,14 @@ export function fitRider(line: Line, params: SimParams, ref: Reference, opts: Fi
   // The fitted rider carries the brakes to full lean (trail-brake depth 1):
   // the reference riders brake right after an apex while still leaned (K9 →
   // K10 on the BMW). The taper's courage (`trailBrakeProfile`) stays the preset's.
-  const p0 = clampParams(params);
-  const p: SimParams = { ...p0, rider: { ...p0.rider, trailBrakeDepth: 1 } };
+  const p = fitParams(params);
   const n = line.points.length;
   const L = line.lengthM;
   const s = line.cumDistM;
   const maxIter = opts.maxIter ?? DEFAULT_MAX_ITER;
   const apexTol = (opts.apexTolKmh ?? 1) / 3.6;
   const lapTol = opts.lapTolS ?? 0.3;
-  const al = alignReference(ref, line, p);
+  const al = alignReference(ref, line, p, opts.align);
   const notes = [...al.notes];
   const vRef = al.vRefMs;
   const K = ref.corners.length;
@@ -651,6 +698,7 @@ export function fitRider(line: Line, params: SimParams, ref: Reference, opts: Fi
   };
   const rollOnS = new Float64Array(K);
   const rollOnRamp = new Float32Array(n).fill(1);
+  const tFromApexS = new Float32Array(n).fill(Number.NaN);
   const coast = new Uint8Array(n);
   const coastFrac = new Float64Array(K);
 
@@ -671,6 +719,7 @@ export function fitRider(line: Line, params: SimParams, ref: Reference, opts: Fi
     const uRun: number[] = [];
     const uAt = new Map<number, number>();
     for (let j = i0, d = 0; d < n; j = (j + 1) % n, d++) {
+      tFromApexS[j] = dtRef(i0, j);
       const capG = driveCapMs2(line, p, j, Math.max(1, vRef[j])) / G;
       const u = capG > 0.01 ? (aRef[j] + loss(vRef[j])) / capG : 0;
       uRun.push(u);
@@ -978,6 +1027,9 @@ export function fitRider(line: Line, params: SimParams, ref: Reference, opts: Fi
     alignment: al,
     ceiling: { aLatG: ceilingG, leanDeg: (Math.atan(ceilingG) * 180) / Math.PI },
     notes,
+    stations: { zoneOwner, brakeOwner, driveOwner, inExit, coast, tFromApexS, aRefG: aRef },
+    params: p,
+    muLatPeakMs2: muLatPeak * G,
   };
 }
 

@@ -207,9 +207,12 @@ export default function LapTable() {
                     <td className="l">
                       <span className="lap-sw" style={{ background: r.color }} />
                     </td>
-                    <td className="l">
-                      {r.lap.n}
-                      {r.lap.isBest ? ' 🏆' : ''}
+                    <td className="l lap-name" data-testid={`lap-name-${r.sessionId}-${r.lap.n}`}>
+                      <span className="lap-file" title={`${r.sessionName} · L${r.lap.n}`}>{r.sessionName}</span>
+                      <span className="lap-no">
+                        {' · '}L{r.lap.n}
+                        {r.lap.isBest ? ' 🏆' : ''}
+                      </span>
                     </td>
                     <td className="l">
                       <span className={`lap-kind ${r.lap.kind === 'flying' && !plausible.has(r.lap) ? 'dim' : ''}`} title={r.lap.kind === 'flying' && !plausible.has(r.lap) ? 'Implausible lap time (cut lap, pit or merged-run gap)' : undefined}>

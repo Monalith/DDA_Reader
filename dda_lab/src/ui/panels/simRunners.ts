@@ -10,7 +10,8 @@
 //   ocp            — the LOCAL bridge's job (`submitOcp` + `waitForOcp`): the
 //                    solve runs on this computer (owner decision 2026-10-11),
 //                    so the user must be running the DDA Lab bridge locally.
-import type { OptimalMode, OptimalRunner } from '../../state/store';
+import type { FitRunner, OptimalMode, OptimalRunner } from '../../state/store';
+import type { FitModel } from '../../sim/fitModel';
 import { idealParams } from '../../sim/freeTrajectory';
 import { lineFromOffsets } from '../../sim/line';
 import { buildOcpRequest, ocpBase, submitOcp, waitForOcp } from '../../sim/ocpClient';
@@ -188,3 +189,46 @@ export async function optimalAvailability(mode: OptimalMode): Promise<Availabili
     return { ok: false, reason: 'Full OCP runs on this computer: start the DDA Lab bridge (desktop app) on 127.0.0.1:8777 first.' };
   }
 }
+
+/** Wall-clock budget of the per-corner refinement in the worker (owner: ~30 s is fine). */
+const FIT_BUDGET_MS = 25_000;
+let fitWorker: Worker | null = null;
+let fitSeq = 0;
+
+type FitOut =
+  | { type: 'progress'; id: number; frac: number; stage: string; error?: number }
+  | { type: 'done'; id: number; model: FitModel }
+  | { type: 'error'; id: number; message: string };
+
+/**
+ * "Fit to reference" in a Worker (fitModel.worker.ts): one worker per run; a
+ * newer run terminates the running one (the fit is one synchronous call).
+ * Without Worker support the store's inline fit (short budget) is used.
+ */
+export const fitRunner: FitRunner | undefined =
+  typeof Worker === 'undefined'
+    ? undefined
+    : (track, corridor, params, lapRef, onProgress) =>
+        new Promise((resolve, reject) => {
+          fitWorker?.terminate();
+          const w = new Worker(new URL('../../sim/fitModel.worker.ts', import.meta.url), { type: 'module' });
+          fitWorker = w;
+          const id = ++fitSeq;
+          w.onmessage = (e: MessageEvent<FitOut>) => {
+            const m = e.data;
+            if (!m || m.id !== id) return;
+            if (m.type === 'progress') onProgress({ frac: m.frac, stage: m.stage, error: m.error });
+            else {
+              w.terminate();
+              if (fitWorker === w) fitWorker = null;
+              if (m.type === 'done') resolve(m.model);
+              else reject(new Error(m.message));
+            }
+          };
+          w.onerror = (e) => {
+            w.terminate();
+            if (fitWorker === w) fitWorker = null;
+            reject(new Error(e.message || 'fit worker failed'));
+          };
+          w.postMessage({ type: 'fit', id, track, corridor, params, lapRef, budgetMs: FIT_BUDGET_MS });
+        });

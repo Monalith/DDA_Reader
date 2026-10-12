@@ -15,7 +15,9 @@ import { deserializeCorridor, serializeCorridor } from '../sim/corridorCache';
 import { corridorFromPist, parsePistPackage, trackFromPist, type PistPackage } from '../core/pistPackage';
 import { buildMosaic, SAT_ZOOM, tileRangeFor } from '../sim/tiles';
 import { simulate } from '../sim';
-import { fitToReference, latMargin } from '../sim/fitRider';
+import { lateralCeilingG } from '../sim/fitRider';
+import { applyFit, buildFitModel, fitRows, fitSession, refTimeOnLine, type CornerSetting, type FitCornerRow, type FitModel, type FitProgress } from '../sim/fitModel';
+import { lapReferenceProblem, referenceFromLap, type LapReference } from '../sim/lapReference';
 import { ownerOffsets } from '../sim/ownerOffsets';
 import type { Reference } from '../sim/reference';
 import { DERIVED_KEYS, deriveRider } from '../sim/derive';
@@ -23,36 +25,29 @@ import { DEFAULT_SIM_PARAMS, presetById } from '../sim/presets';
 import { gripRiskMessage } from '../sim/risk';
 import type { Corner, Corridor, DerivedRiderKey, Line, SimParams, SolverMode } from '../sim/types';
 
-/** One row of the fit table in the sim panel. */
-export interface FitRow {
-  name: string;
-  dir: 1 | -1;
-  apexRefKmh: number;
-  apexSimKmh: number;
-  aLatG: number;
-  aLatPeakG: number;
-  /** Ideal lean for aLatG, degrees. */
-  leanDeg: number;
-  /** (ceiling − aLat)/ceiling, % (apex / zone peak). */
-  marginPct: number;
-  peakMarginPct: number;
-  zoneRefS: number;
-  zoneSimS: number;
-}
-
 export interface FitSummary {
   refName: string;
   lapTimeS: number;
   refLapTimeS: number;
-  /** The reference speed integrated over the sim line, s. */
+  /** The reference speed integrated over the ridden (tuned) fit line, s. */
   alignedRefLapS: number;
-  iterations: number;
-  converged: boolean;
   ceilingG: number;
   ceilingLeanDeg: number;
-  rows: FitRow[];
+  rows: FitCornerRow[];
   notes: string[];
+  /** The fit's own run: refinement rounds, error before → after, wall time. */
+  stats: FitModel['stats'];
+  pathTrusted: boolean;
 }
+
+/** Runs `buildFitModel` (the browser passes a Worker wrapper; tests run it inline). */
+export type FitRunner = (
+  track: TrackModel,
+  corridor: Corridor | undefined,
+  params: SimParams,
+  lapRef: LapReference,
+  onProgress: (p: FitProgress) => void,
+) => Promise<FitModel>;
 
 /** The two optimal solver modes (spec v2 §2.10). */
 export type OptimalMode = Exclude<SolverMode, 'rider' | 'fit'>;
@@ -251,10 +246,29 @@ export interface LabState {
   optimiseLine(runner: OptimalRunner): Promise<void>;
   /** Load a machine preset: machine, tyre and the kappa default together. */
   applyMachinePreset(id: string): void;
-  /** Result of the last "Fit to reference" run, for the sim panel's table. */
+  /** Result of the last "Fit to reference" run (with the current corner settings), for the sim panel's table. */
   simFit?: FitSummary;
-  /** Fit the per-corner rider to the loaded reference lap and add its session. */
-  runFit(): void;
+  /** The fitted per-corner model (fitModel.ts) and the corner settings it is ridden with. */
+  fitModel?: FitModel;
+  fitSettings?: CornerSetting[];
+  /** Track the model was fitted on (a different active track invalidates it). */
+  fitTrackId?: string;
+  /** The fit's line (the tuned one), for the map. */
+  fitLine?: Line;
+  /** The corner picked on the map / in the corner bar, or null. */
+  fitCorner: number | null;
+  fitBusy: boolean;
+  fitProgress?: FitProgress;
+  /** The lap the fit is fitted to; unset = the reference lap, else the first usable. */
+  fitRefLap?: { sessionId: string; lap: number };
+  setFitRefLap(sel: { sessionId: string; lap: number } | undefined): void;
+  /** Fit the per-corner rider to the chosen lap and add its session (inline without a runner). */
+  runFit(runner?: FitRunner): Promise<void>;
+  setFitCorner(k: number | null): void;
+  /** Change one corner's settings and re-ride the fitted lap (no re-fit). */
+  setCornerSetting(k: number, patch: Partial<CornerSetting>): void;
+  /** Back to the fitted settings: one corner, or all. */
+  resetCornerSettings(k?: number): void;
 
   addSession(s: Session): void;
   removeSession(id: string): void;
@@ -488,6 +502,8 @@ export const useLab = create<LabState>((set, get) => ({
   simOptStale: { freeTrajectory: false, ocp: false },
   simLineOptBusy: false,
   simLineOptProgress: 0,
+  fitCorner: null,
+  fitBusy: false,
   simLineOptLapTimeS: undefined,
 
   addSession(s) {
@@ -1045,6 +1061,10 @@ export const useLab = create<LabState>((set, get) => ({
         simOptLines: {},
         simOptStale: { freeTrajectory: false, ocp: false },
         simFit: undefined,
+        fitModel: undefined,
+        fitSettings: undefined,
+        fitLine: undefined,
+        fitCorner: null,
         sessions: st.sessions.filter((s) => !ALL_SIM_IDS.has(s.id)),
         selectedLaps: st.selectedLaps.filter((l) => !ALL_SIM_IDS.has(l.sessionId)),
         refLap: st.refLap && ALL_SIM_IDS.has(st.refLap.sessionId) ? undefined : st.refLap,
@@ -1184,59 +1204,62 @@ export const useLab = create<LabState>((set, get) => ({
       set({ simLineOptBusy: false, simLineOptStage: undefined });
     }
   },
-  runFit() {
+  setFitRefLap(sel) {
+    set({ fitRefLap: sel });
+  },
+  async runFit(runner) {
     const st0 = get();
+    if (st0.fitBusy) return;
     const track = activeTrack(st0);
     if (!track) {
       set({ statusMessage: 'The simulator needs a track — open a session first.' });
       return;
     }
-    // the reference: the reference lap's session when it carries one, else the first that does
-    const refSession =
-      (st0.refLap && st0.sessions.find((x) => x.id === st0.refLap!.sessionId && x.reference)) ??
-      st0.sessions.find((x) => x.reference);
-    if (!refSession?.reference) {
-      set({ statusMessage: 'Fit to reference needs a reference lap: open a lap JSON with a corner summary (viraj_ozeti).' });
+    const pick = fitReferenceLap(st0, track);
+    if (!pick) {
+      set({ statusMessage: 'Fit to reference needs a lap: open a lap JSON with a corner summary (viraj_ozeti), or any recorded lap with GPS on a track with turns.' });
+      return;
+    }
+    let lapRef: LapReference;
+    try {
+      lapRef = referenceFromLap(pick.session, pick.lap, track);
+    } catch (e) {
+      set({ statusMessage: `Fit to reference: ${(e as Error).message}` });
       return;
     }
     if (!st0.simEnabled) get().setSimEnabled(true);
-    const st = get();
+    const { corridor, simParams } = get();
+    set({ fitBusy: true, fitProgress: { frac: 0, stage: 'starting' } });
     try {
-      const { session, fit } = fitToReference(track, st.corridor, st.simParams, refSession.reference, SIM_FIT_SESSION_ID, SIM_FIT_COLOR);
-      const ceil = fit.ceiling.aLatG;
-      const summary: FitSummary = {
-        refName: fit.reference,
-        lapTimeS: fit.lapTimeS,
-        refLapTimeS: fit.refLapTimeS,
-        alignedRefLapS: fit.alignedRefLapS,
-        iterations: fit.iterations,
-        converged: fit.converged,
-        ceilingG: ceil,
-        ceilingLeanDeg: fit.ceiling.leanDeg,
-        rows: fit.corners.map((c) => ({
-          name: c.name,
-          dir: c.dir,
-          apexRefKmh: c.vApexRefMs * 3.6,
-          apexSimKmh: c.vApexMs * 3.6,
-          aLatG: c.aLatG,
-          aLatPeakG: c.aLatPeakG,
-          leanDeg: (Math.atan(c.aLatG) * 180) / Math.PI,
-          marginPct: 100 * latMargin(c.aLatG, ceil),
-          peakMarginPct: 100 * latMargin(c.aLatPeakG, ceil),
-          zoneRefS: c.zoneTimeRefS,
-          zoneSimS: c.zoneTimeSimS,
-        })),
-        notes: fit.notes,
-      };
-      const others = st.sessions.filter((x) => x.id !== SIM_FIT_SESSION_ID);
-      const next = { ...st, sessions: [...others, session] };
-      const selectedLaps = st.selectedLaps.some((l) => l.sessionId === SIM_FIT_SESSION_ID)
-        ? st.selectedLaps
-        : [...st.selectedLaps, { sessionId: SIM_FIT_SESSION_ID, lap: 1 }];
-      set({ sessions: refreshAll(next), selectedLaps, simFit: summary });
+      const onProgress = (p: FitProgress): void => set({ fitProgress: p });
+      const model = runner
+        ? await runner(track, corridor, simParams, lapRef, onProgress)
+        : buildFitModel(track, corridor, simParams, lapRef, { budgetMs: 2000, onProgress });
+      if (activeTrack(get())?.id !== track.id) return; // the track changed meanwhile
+      set({ fitModel: model, fitSettings: model.fitted.map((x) => ({ ...x })), fitTrackId: track.id, fitCorner: get().fitCorner ?? null });
+      rideFit(set, get);
     } catch (e) {
       set({ statusMessage: `Fit to reference failed: ${(e as Error).message}` });
+    } finally {
+      set({ fitBusy: false });
     }
+  },
+  setFitCorner(k) {
+    set({ fitCorner: k });
+  },
+  setCornerSetting(k, patch) {
+    const st = get();
+    if (!st.fitSettings || k < 0 || k >= st.fitSettings.length) return;
+    const fitSettings = st.fitSettings.map((x, j) => (j === k ? { ...x, ...patch } : x));
+    set({ fitSettings });
+    rideFit(set, get);
+  },
+  resetCornerSettings(k) {
+    const st = get();
+    if (!st.fitModel || !st.fitSettings) return;
+    const fitted = st.fitModel.fitted;
+    set({ fitSettings: st.fitSettings.map((x, j) => (k === undefined || j === k ? { ...fitted[j] } : x)) });
+    rideFit(set, get);
   },
   applyMachinePreset(id) {
     const preset = presetById(id);
@@ -1306,6 +1329,70 @@ function staleAfter(
     freeTrajectory: st.simOptStale.freeTrajectory || (touches && st.simOptLapTimeS.freeTrajectory !== undefined),
     ocp: st.simOptStale.ocp || (touches && st.simOptLapTimeS.ocp !== undefined),
   };
+}
+
+/**
+ * The lap "Fit to reference" fits to: the chosen one (`fitRefLap`), else the
+ * reference lap when it can be one, else the first session with a corner
+ * summary, else the best flying lap of the first recorded session with GPS.
+ */
+export function fitReferenceLap(
+  st: Pick<LabState, 'sessions' | 'refLap' | 'fitRefLap'>,
+  track: TrackModel | undefined,
+): { session: Session; lap: Lap } | undefined {
+  const find = (sel: { sessionId: string; lap: number } | undefined): { session: Session; lap: Lap } | undefined => {
+    if (!sel) return undefined;
+    const session = st.sessions.find((x) => x.id === sel.sessionId && !x.isSim);
+    const lap = session?.laps.find((l) => l.n === sel.lap);
+    return session && lap && !lapReferenceProblem(session, lap, track) ? { session, lap } : undefined;
+  };
+  const best = (session: Session): Lap | undefined =>
+    session.laps.find((l) => l.isBest) ?? session.laps.find((l) => l.kind === 'flying') ?? session.laps[0];
+  const chosen = find(st.fitRefLap) ?? find(st.refLap);
+  if (chosen) return chosen;
+  const withRef = st.sessions.find((x) => x.reference && x.laps.length);
+  if (withRef) return { session: withRef, lap: best(withRef)! };
+  for (const session of st.sessions) {
+    if (session.isSim) continue;
+    const lap = best(session);
+    if (lap && !lapReferenceProblem(session, lap, track)) return { session, lap };
+  }
+  return undefined;
+}
+
+/** Ride the fitted model with the current corner settings: session, line, table. */
+function rideFit(set: (partial: Partial<LabState>) => void, get: () => LabState): void {
+  const st = get();
+  const track = activeTrack(st);
+  const model = st.fitModel;
+  const settings = st.fitSettings;
+  if (!track || !model || !settings || st.fitTrackId !== track.id) return;
+  try {
+    const applied = applyFit(track, model, settings);
+    const session = fitSession(model, applied, SIM_FIT_SESSION_ID, SIM_FIT_COLOR);
+    const ceil = lateralCeilingG(model.params);
+    const summary: FitSummary = {
+      refName: model.reference,
+      lapTimeS: applied.env.lapTimeS,
+      refLapTimeS: model.refLapTimeS,
+      // the reference speed on the line actually ridden (the tuned C↔V line)
+      alignedRefLapS: refTimeOnLine(applied.line, model.vRefMs),
+      ceilingG: ceil,
+      ceilingLeanDeg: (Math.atan(ceil) * 180) / Math.PI,
+      rows: fitRows(model, applied.line, applied.env, ceil),
+      notes: model.notes,
+      stats: model.stats,
+      pathTrusted: model.pathTrusted,
+    };
+    const others = st.sessions.filter((x) => x.id !== SIM_FIT_SESSION_ID);
+    const next = { ...st, sessions: [...others, session] };
+    const selectedLaps = st.selectedLaps.some((l) => l.sessionId === SIM_FIT_SESSION_ID)
+      ? st.selectedLaps
+      : [...st.selectedLaps, { sessionId: SIM_FIT_SESSION_ID, lap: 1 }];
+    set({ sessions: refreshAll(next), selectedLaps, simFit: summary, fitLine: applied.line });
+  } catch (e) {
+    set({ statusMessage: `Fit: ${(e as Error).message}` });
+  }
 }
 
 /**

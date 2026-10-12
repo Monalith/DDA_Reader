@@ -173,7 +173,8 @@ export interface TrackModelEntry {
 }
 
 export const TRACK_MODELS: TrackModelEntry[] = [
-  { id: 'serres', label: 'Serres Racing Circuit (pist, Esri z18)', file: 'serres.pist.json' },
+  { id: 'serres-v6', label: 'Serres Racing Circuit (pist-6, 16 corners)', file: 'serres-v6.pist.json' },
+  { id: 'serres', label: 'Serres Racing Circuit (pist, Esri z18, 16 corners)', file: 'serres.pist.json' },
 ];
 
 export async function fetchTrackModel(entry: TrackModelEntry, fetchImpl: typeof fetch = fetch): Promise<PistPackage> {

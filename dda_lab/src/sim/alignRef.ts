@@ -304,7 +304,21 @@ function dpMatch(expected: number[], dirs: Array<1 | -1>, groups: PeakGroup[]): 
 export interface AlignOptions {
   /** Apply the MERGE_GAP_M / MERGE_DIP_FRAC peak merge in the |κ| matching (default `alignDefaults.mergePeaks`). */
   mergePeaks?: boolean;
+  /**
+   * The reference's lat/lon IS the line (a recorded lap's GPS, ridden as the
+   * sim line): warp on its own path, a knot every PATH_KNOT_M projected onto
+   * the line, and every apex where its position projects. No corner matching
+   * (on a track model detected from GPS it pairs 10 turns with the wrong
+   * |κ| peaks and maps T4…T10 onto one reference point).
+   */
+  pathOnLine?: boolean;
 }
+
+/** Knot spacing of the `pathOnLine` warp, metres of the reference path. */
+const PATH_KNOT_M = 20;
+/** A `pathOnLine` knot further than this from the line, or from the uniform scale, is skipped. */
+const PATH_KNOT_MAX_OFF_M = 40;
+const PATH_KNOT_MAX_SLIP_M = 150;
 
 /**
  * Process-wide defaults for callers that cannot pass options (fitRider).
@@ -317,7 +331,7 @@ export interface AlignOptions {
  * kerb 0 at exactly 60 m), which takes the kerb-side peak away from K12 and
  * sends K12 back to the exit peak (2127 / 2147) the v2 correction removed.
  */
-export const alignDefaults: Required<AlignOptions> = { mergePeaks: false };
+export const alignDefaults: Required<Pick<AlignOptions, 'mergePeaks'>> = { mergePeaks: false };
 
 /**
  * Align a reference to a sim line. `params` only feeds the QSS solve that
@@ -326,7 +340,6 @@ export const alignDefaults: Required<AlignOptions> = { mergePeaks: false };
 export function alignReference(ref: Reference, line: Line, params: SimParams, opts: AlignOptions = {}): Alignment {
   const mergePeaks = opts.mergePeaks ?? alignDefaults.mergePeaks;
   const notes: string[] = [];
-  const n = line.points.length;
   const L = line.lengthM;
   const scale = L / Math.max(1, ref.lengthIntM);
   const kS = smoothedCurvature(line);
@@ -350,6 +363,8 @@ export function alignReference(ref: Reference, line: Line, params: SimParams, op
     return refInt[k] * scale;
   });
   if (geoUsed) notes.push(`apex prior: the reference's map position for ${geoUsed}/${K} corners`);
+
+  if (opts.pathOnLine && ref.lon && ref.lat) return alignOnPath(ref, line, refInt, expected, scale, notes);
 
   let apexIdx: number[] | null = null;
   let method: Alignment['method'] = 'curvature';
@@ -404,7 +419,51 @@ export function alignReference(ref: Reference, line: Line, params: SimParams, op
   }
   knotsInt.push(ref.lengthIntM);
   knotsSim.push(L);
+  return resampled(ref, line, { apexIdx, method, knotsInt, knotsSim, scale, expected, notes });
+}
 
+/** `pathOnLine`: the warp from the reference's own path projected onto the line. */
+function alignOnPath(ref: Reference, line: Line, refInt: number[], expected: number[], scale: number, notes: string[]): Alignment {
+  const L = line.lengthM;
+  const knotsInt: number[] = [0];
+  const knotsSim: number[] = [0];
+  const lastM = ref.lon!.length - 1;
+  let skipped = 0;
+  for (let sT = PATH_KNOT_M; sT < lastM - PATH_KNOT_M / 2; sT += PATH_KNOT_M) {
+    const a = intAtTemplate(ref, sT);
+    const pr = projectOnLine(line, ref.lon![sT], ref.lat![sT]);
+    const b = line.cumDistM[pr.i];
+    if (
+      pr.distM > PATH_KNOT_MAX_OFF_M ||
+      Math.abs(b - a * scale) > PATH_KNOT_MAX_SLIP_M ||
+      a <= knotsInt[knotsInt.length - 1] + 1 ||
+      b <= knotsSim[knotsSim.length - 1] + 1 ||
+      a >= ref.lengthIntM - 1 ||
+      b >= L - 1
+    ) {
+      skipped++;
+      continue;
+    }
+    knotsInt.push(a);
+    knotsSim.push(b);
+  }
+  knotsInt.push(ref.lengthIntM);
+  knotsSim.push(L);
+  notes.push(`aligned on the reference's own path: ${knotsInt.length - 2} knots every ${PATH_KNOT_M} m${skipped ? `, ${skipped} skipped` : ''}`);
+  // every apex where the warp puts it (its own path position)
+  const toSimInt = (x: number): number => interp(knotsInt, knotsSim, x);
+  const apexIdx = refInt.map((x) => nearestSample(line, toSimInt(x)));
+  return resampled(ref, line, { apexIdx, method: 'curvature', knotsInt, knotsSim, scale, expected, notes });
+}
+
+/** The reference resampled onto the line through the warp, and its residuals. */
+function resampled(
+  ref: Reference,
+  line: Line,
+  w: { apexIdx: number[]; method: Alignment['method']; knotsInt: number[]; knotsSim: number[]; scale: number; expected: number[]; notes: string[] },
+): Alignment {
+  const { apexIdx, method, knotsInt, knotsSim, scale, expected, notes } = w;
+  const n = line.points.length;
   const toSim = (sT: number): number => interp(knotsInt, knotsSim, intAtTemplate(ref, sT));
   const toTemplate = (sS: number): number => templateAtInt(ref, interp(knotsSim, knotsInt, sS));
 

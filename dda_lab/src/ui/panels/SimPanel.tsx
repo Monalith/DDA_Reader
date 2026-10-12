@@ -6,7 +6,8 @@ import { DEFAULT_KERB_M, MACHINE_PRESETS } from '../../sim/presets';
 import type { DerivedRiderKey, LineMode, SimParams, SolverMode } from '../../sim/types';
 import { fmtDelta, fmtLapTime } from '../../state/selectors';
 import { lapTimeLineRunner, optimalAvailability, optimalRunner, type Availability } from './simRunners';
-import { rangeValue } from './simRange';
+import { RangeInput } from './RangeInput';
+import { FitControls, FitCornerPanel } from './FitPanel';
 import './SimPanel.css';
 
 type SimPatch = { machine?: Partial<SimParams['machine']>; tyre?: Partial<SimParams['tyre']>; rider?: Partial<SimParams['rider']> };
@@ -23,57 +24,6 @@ interface SliderProps {
   /** One sentence saying what the slider means, shown as a tooltip. */
   help?: string;
   onChange: (v: number) => void;
-}
-
-interface RangeProps {
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  testId: string;
-  unit?: string;
-  decimals?: number;
-  onChange: (v: number) => void;
-}
-
-/**
- * A range input that follows the user immediately. The store update behind it
- * is debounced, and React restores a controlled input to its prop after every
- * change event — so bound straight to the store, each arrow-key press started
- * again from the stale value and twenty presses moved it one step. The local
- * value carries the edit (thumb AND readout) until the store catches up, then
- * the prop wins again.
- */
-function RangeInput({ value, min, max, step, testId, unit, decimals = 2, onChange }: RangeProps) {
-  const [local, setLocal] = useState<number | null>(null);
-  const [seen, setSeen] = useState(value);
-  if (seen !== value) {
-    // the store moved (debounce flushed, or a slider elsewhere re-derived it)
-    setSeen(value);
-    setLocal(null);
-  }
-  const shown = local ?? value;
-  return (
-    <>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={rangeValue(shown, min, max, step)}
-        data-testid={testId}
-        onChange={(e) => {
-          const v = Number(e.target.value);
-          setLocal(v);
-          onChange(v);
-        }}
-      />
-      <span className="sim-slider-value num">
-        {shown.toFixed(decimals)}
-        {unit ? ` ${unit}` : ''}
-      </span>
-    </>
-  );
 }
 
 function Slider({ label, value, min, max, step, unit, decimals = 2, testId, help, onChange }: SliderProps) {
@@ -105,7 +55,7 @@ const MODES: Array<{ mode: SolverMode; label: string; help: string }> = [
   { mode: 'rider', label: 'Sürücü', help: 'Human rider driven by Aggressiveness and Risk. Live on every slider.' },
   { mode: 'freeTrajectory', label: 'Serbest yörünge', help: 'Line and speed optimised together for the ideal rider. Runs in the background on "Hesapla".' },
   { mode: 'ocp', label: 'Tam OCP', help: 'Full minimum-time optimal control, solved by the DDA Lab bridge on THIS computer (seconds on Serres). Runs on "Hesapla".' },
-  { mode: 'fit', label: 'Fit to reference', help: 'Fit a per-corner rider (lateral, braking, drive g) to a loaded reference lap (a lap JSON with viraj_ozeti) and derive every channel from it. Runs on "Fit".' },
+  { mode: 'fit', label: 'Fit to reference', help: 'Fit a per-corner rider to any loaded lap (its line, longitudinal g and speed in every corner), then set each corner by hand: pick it on the map, sliders here. Runs on "Fit" (≤ 30 s).' },
 ];
 
 function LockIcon({ locked }: { locked: boolean }) {
@@ -155,7 +105,6 @@ export default function SimPanel() {
   const setSolverMode = useLab((s) => s.setSolverMode);
   const runOptimal = useLab((s) => s.runOptimal);
   const applyPreset = useLab((s) => s.applyMachinePreset);
-  const runFit = useLab((s) => s.runFit);
   const lineOptBusy = useLab((s) => s.simLineOptBusy);
   const lineOptProgress = useLab((s) => s.simLineOptProgress);
   const lineOptLap = useLab((s) => s.simLineOptLapTimeS);
@@ -165,8 +114,6 @@ export default function SimPanel() {
   const track = useLab((s) => activeTrack(s));
   // re-read on every render: the status depends on a module cache the store does not hold
   const ltStatus = track ? lapTimeLineStatus(track, params) : 'none';
-  const simFit = useLab((s) => s.simFit);
-  const refSessionName = useLab((s) => s.sessions.find((x) => x.reference)?.reference?.name);
   const workspace = useLab((s) => s.workspace);
   const setWorkspace = useLab((s) => s.setWorkspace);
 
@@ -367,26 +314,7 @@ export default function SimPanel() {
             </span>
           </>
         )}
-        {solverMode === 'fit' && (
-          <>
-            <button
-              className="btn primary"
-              data-testid="sim-fit-run"
-              disabled={!refSessionName}
-              title={refSessionName ? `Fit the rider to ${refSessionName}` : 'Open a reference lap first (a lap JSON with a corner summary, viraj_ozeti)'}
-              onClick={() => runFit()}
-            >
-              Fit
-            </button>
-            <span className="sim-fit-status num" data-testid="sim-fit-status" role="status">
-              {simFit
-                ? `Fit: ${simFit.refName} ${fmtLapTime(simFit.lapTimeS)} · ref ${fmtLapTime(simFit.refLapTimeS)} (${fmtDelta(simFit.lapTimeS - simFit.refLapTimeS)})`
-                : refSessionName
-                  ? `Reference: ${refSessionName}`
-                  : 'No reference lap loaded'}
-            </span>
-          </>
-        )}
+        {solverMode === 'fit' && <FitControls />}
         {(['freeTrajectory', 'ocp'] as const).map((m) =>
           optLap[m] != null ? (
             <span key={m} className={`sim-opt-time num${optStale[m] ? ' stale' : ''}`} data-testid={`sim-opt-time-${m}`}
@@ -398,43 +326,7 @@ export default function SimPanel() {
         )}
       </div>
 
-      {solverMode === 'fit' && simFit && (
-        <div className="sim-fit" data-testid="sim-fit">
-          <table className="sim-fit-table" data-testid="sim-fit-table">
-            <thead>
-              <tr>
-                <th>Corner</th>
-                <th title="Reference apex speed (aligned onto the sim line)">Apex ref</th>
-                <th title="Fitted rider's apex speed">Apex sim</th>
-                <th>Δ</th>
-                <th title="Fitted lateral g at the apex">Lat g</th>
-                <th title="Lean the apex lateral g needs (ideal lean, atan of lat g)">Lean °</th>
-                <th title={`Margin to the preset's lateral ceiling min(μ, tan(maxLean·leanUsage)) = ${simFit.ceilingG.toFixed(2)} g (${simFit.ceilingLeanDeg.toFixed(1)}°): apex / tightest point of the zone`}>Margin %</th>
-              </tr>
-            </thead>
-            <tbody>
-              {simFit.rows.map((r) => {
-                const d = r.apexSimKmh - r.apexRefKmh;
-                const tight = Math.min(r.marginPct, r.peakMarginPct);
-                return (
-                  <tr key={r.name} className={tight < 0 ? 'over' : tight < 10 ? 'near' : ''}>
-                    <td>{r.name} {r.dir > 0 ? 'L' : 'R'}</td>
-                    <td className="num">{r.apexRefKmh.toFixed(1)}</td>
-                    <td className="num">{r.apexSimKmh.toFixed(1)}</td>
-                    <td className="num">{d >= 0 ? '+' : ''}{d.toFixed(1)}</td>
-                    <td className="num">{r.aLatG.toFixed(2)}{r.aLatPeakG > r.aLatG + 0.005 ? ` (${r.aLatPeakG.toFixed(2)})` : ''}</td>
-                    <td className="num">{r.leanDeg.toFixed(1)}</td>
-                    <td className="num">{r.marginPct.toFixed(0)}{r.peakMarginPct < r.marginPct - 0.5 ? ` / ${r.peakMarginPct.toFixed(0)}` : ''}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          <p className="sim-fit-note">
-            Ceiling {simFit.ceilingG.toFixed(2)} g = {simFit.ceilingLeanDeg.toFixed(1)}° lean. The reference speed ridden on this line: {fmtLapTime(simFit.alignedRefLapS)}. {simFit.iterations} iterations{simFit.converged ? '' : ' (stopped at the cap)'}.
-          </p>
-        </div>
-      )}
+      {solverMode === 'fit' && <FitCornerPanel />}
 
       {risk && (
         <p className="sim-risk" data-testid="sim-risk" role="status">

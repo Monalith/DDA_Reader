@@ -204,6 +204,9 @@ export function clampParams(p: SimParams): SimParams {
       lineMode: p.rider.lineMode === 'min-curvature' || p.rider.lineMode === 'lap-time' ? p.rider.lineMode : 'min-time',
       trailBrakeDepth: clamp(p.rider.trailBrakeDepth, 0, 1),
       trailBrakeProfile: clamp(p.rider.trailBrakeProfile, 0, 1),
+      // per-corner overrides (cornerRider.ts clamps each value where it is read)
+      ...(p.rider.slideOut !== undefined ? { slideOut: clamp(p.rider.slideOut, 0, 1) } : {}),
+      ...(p.rider.corners ? { corners: p.rider.corners } : {}),
     },
   };
 }

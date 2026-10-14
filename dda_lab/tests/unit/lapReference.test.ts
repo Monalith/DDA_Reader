@@ -2,7 +2,7 @@
 // on a track model built from the session itself (`buildTrackFromSession`, the
 // app's "auto track"), the corners the track model misses (`missedCorners`),
 // the `pathOnLine` alignment (src/sim/alignRef.ts) and the end-to-end fit
-// (src/sim/fitModel.ts) on the auto track and the pist Serres model.
+// ("Fit to lap", src/sim/riderFit.ts) on the auto track and the pist Serres model.
 // The Ducati Run036 file is gitignored (_inbox): those tests skip when absent.
 import { existsSync, readFileSync } from 'node:fs';
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -12,11 +12,11 @@ import { detectLaps } from '../../src/core/laps';
 import { sessionFromDdaReaderJson } from '../../src/core/sessionLoader';
 import type { Lap, LngLat, Session, TrackModel } from '../../src/core/types';
 import { alignReference, projectOnLine } from '../../src/sim/alignRef';
-import { applyFit, buildFitModel } from '../../src/sim/fitModel';
 import { missedCorners, referenceFromLap, trackCornersFromTurns, type LapReference } from '../../src/sim/lapReference';
 import { lineFromOffsets } from '../../src/sim/line';
 import { ownerOffsets } from '../../src/sim/ownerOffsets';
 import { clampParams, DEFAULT_SIM_PARAMS } from '../../src/sim/presets';
+import { fitRiderToLap } from '../../src/sim/riderFit';
 import { nearestOnPath, pathCurvature, type DdaLapTrace, type TrackCorner } from '../../src/sim/referenceFromDda';
 import { buildTrackFromSession } from '../../src/state/trackActions';
 import { loadPistModel } from '../../scripts/lib/fitLines';
@@ -116,19 +116,17 @@ describe.skipIf(!HAS_DUCATI)('referenceFromLap on the auto track (built from the
     expect(sum / cnt).toBeLessThan(3);
   });
 
-  it('end to end on the auto track: fitted lap within 1.0 s of 95.80, the refine lowers the error', () => {
-    const m = buildFitModel(auto, undefined, P, lr, { budgetMs: 4000 });
-    const r = applyFit(auto, m, m.fitted);
-    expect(Math.abs(r.env.lapTimeS - BEST_LAP_S)).toBeLessThan(1.0);
-    expect(m.stats.errorAfter).toBeLessThan(m.stats.errorBefore);
+  it('end to end on the auto track: fitted lap within 1.0 s of 95.80, the fit lowers the error', () => {
+    const r = fitRiderToLap(auto, undefined, P, lr, { budgetMs: 4000 });
+    expect(Math.abs(r.lapTimeS - BEST_LAP_S)).toBeLessThan(1.0);
+    expect(r.stats.errorAfter).toBeLessThan(r.stats.errorBefore);
   }, 120_000);
 
-  it('end to end on the pist Serres model: fitted lap within 1.0 s of 95.80, the refine lowers the error', () => {
+  it('end to end on the pist Serres model: fitted lap within 1.0 s of 95.80, the fit lowers the error', () => {
     const lrP = referenceFromLap(session, lap, pist.track);
-    const m = buildFitModel(pist.track, pist.corridor ?? undefined, P, lrP, { budgetMs: 4000 });
-    const r = applyFit(pist.track, m, m.fitted);
-    expect(Math.abs(r.env.lapTimeS - BEST_LAP_S)).toBeLessThan(1.0);
-    expect(m.stats.errorAfter).toBeLessThan(m.stats.errorBefore);
+    const r = fitRiderToLap(pist.track, pist.corridor ?? undefined, P, lrP, { budgetMs: 4000 });
+    expect(Math.abs(r.lapTimeS - BEST_LAP_S)).toBeLessThan(1.0);
+    expect(r.stats.errorAfter).toBeLessThan(r.stats.errorBefore);
   }, 120_000);
 });
 

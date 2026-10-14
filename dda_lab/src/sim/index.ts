@@ -3,9 +3,15 @@
 // EXTENSION SEAM: everything that turns a track into a lap sits behind this
 // call, chosen by the SOLVER MODE (spec v2 §2.10):
 //
-//   rider           buildLine → solve (QSS upper bound) → findCorners →
+//   rider           riderLine → solve (QSS upper bound) → findCorners →
 //                   eventProfile → riderChannels → toSession. The human rider,
-//                   live on every slider (< 50 ms).
+//                   live on every slider (< 50 ms). Per-corner overrides of
+//                   the rider's own keys (`params.rider.corners`, filled by
+//                   "Fit to lap", riderFit.ts) ride through `riderLine` (κ,
+//                   slide out), `riderCapsForLine` (sLat/leanUsage/sBrake/
+//                   sDrive/slide scrub) and `riderAt` (trail braking, roll
+//                   rate, brake build, throttle delay, roll-on); without any
+//                   the lap is the plain lap-wide rider bit for bit.
 //   freeTrajectory  the line comes from the optimiser's offsets (W2 worker),
 //   ocp             or from the OCP's offsets and speed (W5 bridge). Both are
 //                   the IDEAL rider (`idealParams`) and are only ever run from
@@ -14,15 +20,16 @@
 // The line generator, the corridor extractor, toSession, the store and the UI
 // do not change with the mode.
 import type { Session, TrackModel } from '../core/types';
+import { cornerZones, hasCornerOverrides, riderAccessor, riderCapsForLine, riderLine, type CornerZone } from './cornerRider';
 import { findCorners } from './corners';
 import { DERIVED_KEYS } from './derive';
 import { eventProfile, type EventCaps, type EventProfile } from './events';
 import { buildLine, lineFromOffsets } from './line';
 import { clampParams } from './presets';
 import { riderChannels } from './rider';
-import { brakeCapMs2, driveCapMs2, G, lossDecelMs2, solve } from './solver';
+import { brakeCapMs2, driveCapMs2, G, lossDecelMs2, solve, solverCaps, type RiderAt } from './solver';
 import { toSession } from './toSession';
-import type { Corner, Corridor, Envelope, Line, SimParams, SolverMode } from './types';
+import type { Corner, Corridor, Envelope, EnvelopeCaps, Line, SimParams, SolverMode } from './types';
 
 export interface SimResult {
   session: Session;
@@ -33,6 +40,8 @@ export interface SimResult {
   mode: SolverMode;
   /** Corner sections (rider mode only). */
   corners?: Corner[];
+  /** The track model's turns on `line` (rider mode only): where the per-corner overrides apply. */
+  zones?: CornerZone[];
 }
 
 /** What an optimal solver hands back: offsets off the centerline, and optionally its own speed. */
@@ -80,8 +89,13 @@ export function idealParams(params: SimParams): SimParams {
  * roll-dependent stoppie/wheelie limits), WITHOUT drag — the template adds
  * `lossDecelMs2` itself.
  */
-export function eventCaps(line: Line, params: SimParams): EventCaps {
+export function eventCaps(line: Line, params: SimParams, caps?: EnvelopeCaps, riderAt?: RiderAt): EventCaps {
   const p = clampParams(params);
+  if (caps || riderAt) {
+    // per-corner rider: the caps of `solve(line, p, caps, riderAt)`
+    const sc = solverCaps(line, p, caps, riderAt);
+    return { brakeCapMs2: sc.brakeCapMs2, driveCapMs2: sc.driveCapMs2, lossDecelMs2: (v) => lossDecelMs2(p.machine, v) };
+  }
   return {
     brakeCapMs2: (i, v) => brakeCapMs2(line, p, i, v),
     driveCapMs2: (i, v) => driveCapMs2(line, p, i, v),
@@ -156,6 +170,35 @@ export function envelopeFromEvent(line: Line, env: Envelope, ev: EventProfile): 
   return envelopeFromSpeed(line, ev.v, env, ev.tS, ev.lapTimeS);
 }
 
+/** The rider-mode lap without the session packaging (riderFit.ts rides it too). */
+export interface RiderRide {
+  line: Line;
+  zones: CornerZone[];
+  qss: Envelope;
+  ev: EventProfile;
+  env: Envelope;
+}
+
+/**
+ * Ride the rider mode on the rider's line (`riderLine` / `riderLineOn`) and
+ * its zones. `p` must already be clamped.
+ */
+export function rideOn(line: Line, zones: CornerZone[], p: SimParams): RiderRide {
+  const over = hasCornerOverrides(p);
+  const caps = over ? riderCapsForLine(line, p, zones) : undefined;
+  const ra = over && p.rider.corners ? riderAccessor(p, zones) : undefined;
+  const qss = solve(line, p, caps, ra);
+  const corners = findCorners(line, qss.v, p);
+  const ev = eventProfile(line, qss, corners, p, eventCaps(line, p, caps, ra), ra);
+  return { line, zones, qss, ev, env: envelopeFromEvent(line, qss, ev) };
+}
+
+/** `rideOn` on the rider's own line (`riderLine`). */
+export function rideRider(track: TrackModel, corridor: Corridor | undefined, p: SimParams): RiderRide {
+  const { line, zones } = riderLine(track, corridor, p);
+  return rideOn(line, zones, p);
+}
+
 export function simulate(
   track: TrackModel,
   corridor: Corridor | undefined,
@@ -168,10 +211,6 @@ export function simulate(
 ): SimResult {
   const p = clampParams(params);
 
-  if (mode === 'fit') {
-    // the fit needs a reference lap: fitRider.ts `fitToReference`
-    throw new Error("simulate(): mode 'fit' needs a reference lap — call fitToReference() (src/sim/fitRider.ts)");
-  }
   if (mode !== 'rider') {
     const ip = idealParams(p);
     const n = track.centerline.length;
@@ -191,11 +230,7 @@ export function simulate(
     return { session: toSession(line, env, ch, ip, id, name, color), line, envelope: env, lapTimeS: env.lapTimeS, mode };
   }
 
-  const line = buildLine(track, corridor, p);
-  const qss = solve(line, p);
-  const corners = findCorners(line, qss.v, p);
-  const ev = eventProfile(line, qss, corners, p, eventCaps(line, p));
-  const env = envelopeFromEvent(line, qss, ev);
+  const { line, env, ev, zones } = rideRider(track, corridor, p);
   const ch = riderChannels(line, env, p, ev);
   return {
     session: toSession(line, env, ch, p, id, name, color),
@@ -204,10 +239,12 @@ export function simulate(
     lapTimeS: env.lapTimeS,
     mode,
     corners: ev.corners,
+    zones,
   };
 }
 
 export { buildLine } from './line';
+export { cornerZones };
 export { solve, topSpeedMs } from './solver';
 export { riderChannels } from './rider';
 export * from './types';

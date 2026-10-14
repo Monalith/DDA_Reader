@@ -15,42 +15,77 @@ import { deserializeCorridor, serializeCorridor } from '../sim/corridorCache';
 import { corridorFromPist, parsePistPackage, trackFromPist, type PistPackage } from '../core/pistPackage';
 import { buildMosaic, SAT_ZOOM, tileRangeFor } from '../sim/tiles';
 import { simulate } from '../sim';
-import { lateralCeilingG } from '../sim/fitRider';
-import { applyFit, buildFitModel, fitRows, fitSession, refTimeOnLine, type CornerSetting, type FitCornerRow, type FitModel, type FitProgress } from '../sim/fitModel';
+import { fitRiderToLap, refTimeOnLine, riderFitRows, type RiderFitReference, type RiderFitResult, type RiderFitRow, type RiderFitStats } from '../sim/riderFit';
+import { cornerZones, type CornerRiderKey, type CornerRiders } from '../sim/cornerRider';
 import { lapReferenceProblem, referenceFromLap, type LapReference } from '../sim/lapReference';
+import { riderFitRunner } from '../ui/panels/simRunners';
 import { ownerOffsets } from '../sim/ownerOffsets';
 import type { Reference } from '../sim/reference';
 import { DERIVED_KEYS, deriveRider } from '../sim/derive';
 import { DEFAULT_SIM_PARAMS, presetById } from '../sim/presets';
 import { gripRiskMessage } from '../sim/risk';
-import type { Corner, Corridor, DerivedRiderKey, Line, SimParams, SolverMode } from '../sim/types';
+import type { Corner, Corridor, DerivedRiderKey, Line, RiderParams, SimParams, SolverMode } from '../sim/types';
 
-export interface FitSummary {
-  refName: string;
-  lapTimeS: number;
-  refLapTimeS: number;
-  /** The reference speed integrated over the ridden (tuned) fit line, s. */
-  alignedRefLapS: number;
-  ceilingG: number;
-  ceilingLeanDeg: number;
-  rows: FitCornerRow[];
-  notes: string[];
-  /** The fit's own run: refinement rounds, error before → after, wall time. */
-  stats: FitModel['stats'];
-  pathTrusted: boolean;
+/** "Fit to lap" progress, as the worker reports it. */
+export interface RiderFitProgress {
+  frac: number;
+  stage: string;
+  error?: number;
 }
 
-/** Runs `buildFitModel` (the browser passes a Worker wrapper; tests run it inline). */
-export type FitRunner = (
+/** Runs `fitRiderToLap` (the browser passes a Worker wrapper; tests run it inline). */
+export type RiderFitRunner = (
   track: TrackModel,
   corridor: Corridor | undefined,
   params: SimParams,
   lapRef: LapReference,
-  onProgress: (p: FitProgress) => void,
-) => Promise<FitModel>;
+  onProgress: (p: RiderFitProgress) => void,
+) => Promise<RiderFitResult>;
+
+/**
+ * "Fit to lap" (spec 2026-10-14): the virtual rider's OWN parameters fitted to
+ * a ridden lap. The fitted rider lives in `simParams.rider`; this holds the
+ * reference it was fitted to and the per-corner comparison, refreshed on every
+ * rider re-solve so the sliders show their effect live.
+ */
+export interface RiderFitState {
+  /** The reference the last fit used (null before the first fit). */
+  ref: RiderFitReference | null;
+  /** The lap picked to fit to; null = auto (reference lap, else the first usable). */
+  refLap: { sessionId: string; lapN: number } | null;
+  busy: boolean;
+  progress: { frac: number; stage: string; error?: number } | null;
+  /** Per-corner comparison of the current rider lap with the reference. */
+  rows: RiderFitRow[];
+  /** The current rider-mode lap time (live after a fit), s. */
+  lapTimeS: number | null;
+  /** The reference speed integrated over the current rider line, s. */
+  refOnLineS: number | null;
+  error: string | null;
+  /** The rider exactly as the fit returned it ("Reset corner" goes back to it). */
+  fittedRider: RiderParams | null;
+  /** The fit's own run: evaluations, error before → after, wall time. */
+  stats: RiderFitStats | null;
+  /** Track the fit belongs to (a different active track hides the rows). */
+  trackId: string | null;
+}
+
+const RIDER_FIT_IDLE: RiderFitState = {
+  ref: null,
+  refLap: null,
+  busy: false,
+  progress: null,
+  rows: [],
+  lapTimeS: null,
+  refOnLineS: null,
+  error: null,
+  fittedRider: null,
+  stats: null,
+  trackId: null,
+};
 
 /** The two optimal solver modes (spec v2 §2.10). */
-export type OptimalMode = Exclude<SolverMode, 'rider' | 'fit'>;
+export type OptimalMode = Exclude<SolverMode, 'rider'>;
 
 /**
  * An optimal solver, injected so a node test can drive `runOptimal` without a
@@ -241,34 +276,28 @@ export interface LabState {
   /**
    * Run the direct lap-time line optimiser (the runner stores its result in
    * lapTimeLine.ts), then switch `lineMode` to 'lap-time' and re-simulate, so
-   * the rider mode and "Fit to reference" run on that line.
+   * the rider mode and "Fit to lap" run on that line.
    */
   optimiseLine(runner: OptimalRunner): Promise<void>;
   /** Load a machine preset: machine, tyre and the kappa default together. */
   applyMachinePreset(id: string): void;
-  /** Result of the last "Fit to reference" run (with the current corner settings), for the sim panel's table. */
-  simFit?: FitSummary;
-  /** The fitted per-corner model (fitModel.ts) and the corner settings it is ridden with. */
-  fitModel?: FitModel;
-  fitSettings?: CornerSetting[];
-  /** Track the model was fitted on (a different active track invalidates it). */
-  fitTrackId?: string;
-  /** The fit's line (the tuned one), for the map. */
-  fitLine?: Line;
-  /** The corner picked on the map / in the corner bar, or null. */
+  /** "Fit to lap" state (Rider mode). */
+  riderFit: RiderFitState;
+  /** The corner (track-model turn n) picked on the map / in the corner bar, or null. */
   fitCorner: number | null;
-  fitBusy: boolean;
-  fitProgress?: FitProgress;
-  /** The lap the fit is fitted to; unset = the reference lap, else the first usable. */
-  fitRefLap?: { sessionId: string; lap: number };
-  setFitRefLap(sel: { sessionId: string; lap: number } | undefined): void;
-  /** Fit the per-corner rider to the chosen lap and add its session (inline without a runner). */
-  runFit(runner?: FitRunner): Promise<void>;
-  setFitCorner(k: number | null): void;
-  /** Change one corner's settings and re-ride the fitted lap (no re-fit). */
-  setCornerSetting(k: number, patch: Partial<CornerSetting>): void;
-  /** Back to the fitted settings: one corner, or all. */
-  resetCornerSettings(k?: number): void;
+  /** Pick the lap "Fit to lap" fits to. */
+  setFitRefLap(sessionId: string, lapN: number): void;
+  /** Fit the virtual rider to the picked lap (Worker in the browser, inline without one). */
+  runRiderFit(runner?: RiderFitRunner): Promise<void>;
+  setFitCorner(n: number | null): void;
+  /** Override rider keys in one corner (turn n) and re-ride. */
+  setCornerRider(n: number, patch: Partial<Record<CornerRiderKey, number>>): void;
+  /** Drop one key of a corner's overrides (back to the lap-wide value). */
+  clearCornerRiderKey(n: number, key: CornerRiderKey): void;
+  /** Back to the fitted corner values (or no overrides when there is no fit): corner n, or all. */
+  clearCornerRider(n?: number): void;
+  /** The whole rider back to what the fit returned. */
+  resetRiderToFit(): void;
 
   addSession(s: Session): void;
   removeSession(id: string): void;
@@ -454,9 +483,7 @@ const OPT_SESSION: Record<OptimalMode, { id: string; name: string; color: string
   freeTrajectory: { id: SIM_OPT_SESSION_ID, name: 'Ideal line', color: '#2ec4b6' },
   ocp: { id: SIM_OCP_SESSION_ID, name: 'Physics limit', color: '#ff9f1c' },
 };
-export const SIM_FIT_SESSION_ID = 'sim-fit';
-const SIM_FIT_COLOR = '#ff4d6d';
-const ALL_SIM_IDS = new Set([SIM_SESSION_ID, SIM_OPT_SESSION_ID, SIM_OCP_SESSION_ID, SIM_FIT_SESSION_ID]);
+const ALL_SIM_IDS = new Set([SIM_SESSION_ID, SIM_OPT_SESSION_ID, SIM_OCP_SESSION_ID]);
 
 export function defaultLapMeta(st: Pick<LabState, 'sessions'>, sessionId: string, lap: number): LapMeta {
   const s = st.sessions.find((x) => x.id === sessionId);
@@ -503,7 +530,7 @@ export const useLab = create<LabState>((set, get) => ({
   simLineOptBusy: false,
   simLineOptProgress: 0,
   fitCorner: null,
-  fitBusy: false,
+  riderFit: RIDER_FIT_IDLE,
   simLineOptLapTimeS: undefined,
 
   addSession(s) {
@@ -1060,11 +1087,8 @@ export const useLab = create<LabState>((set, get) => ({
         simOptLapTimeS: {},
         simOptLines: {},
         simOptStale: { freeTrajectory: false, ocp: false },
-        simFit: undefined,
-        fitModel: undefined,
-        fitSettings: undefined,
-        fitLine: undefined,
         fitCorner: null,
+        riderFit: { ...st.riderFit, rows: [], lapTimeS: null, refOnLineS: null },
         sessions: st.sessions.filter((s) => !ALL_SIM_IDS.has(s.id)),
         selectedLaps: st.selectedLaps.filter((l) => !ALL_SIM_IDS.has(l.sessionId)),
         refLap: st.refLap && ALL_SIM_IDS.has(st.refLap.sessionId) ? undefined : st.refLap,
@@ -1204,62 +1228,106 @@ export const useLab = create<LabState>((set, get) => ({
       set({ simLineOptBusy: false, simLineOptStage: undefined });
     }
   },
-  setFitRefLap(sel) {
-    set({ fitRefLap: sel });
+  setFitRefLap(sessionId, lapN) {
+    set({ riderFit: { ...get().riderFit, refLap: { sessionId, lapN }, error: null } });
   },
-  async runFit(runner) {
+  async runRiderFit(runner) {
     const st0 = get();
-    if (st0.fitBusy) return;
+    if (st0.riderFit.busy) return;
     const track = activeTrack(st0);
     if (!track) {
-      set({ statusMessage: 'The simulator needs a track — open a session first.' });
+      set({ riderFit: { ...st0.riderFit, error: 'The simulator needs a track — open a session first.' } });
       return;
     }
-    const pick = fitReferenceLap(st0, track);
+    const pick = riderFitLap(st0, track);
     if (!pick) {
-      set({ statusMessage: 'Fit to reference needs a lap: open a lap JSON with a corner summary (viraj_ozeti), or any recorded lap with GPS on a track with turns.' });
+      set({ riderFit: { ...st0.riderFit, error: 'Fit to lap needs a recorded lap with GPS on a track with turns (or a lap JSON with a corner summary).' } });
       return;
     }
     let lapRef: LapReference;
     try {
       lapRef = referenceFromLap(pick.session, pick.lap, track);
     } catch (e) {
-      set({ statusMessage: `Fit to reference: ${(e as Error).message}` });
+      set({ riderFit: { ...st0.riderFit, error: `Fit to lap: ${(e as Error).message}` } });
       return;
     }
     if (!st0.simEnabled) get().setSimEnabled(true);
     const { corridor, simParams } = get();
-    set({ fitBusy: true, fitProgress: { frac: 0, stage: 'starting' } });
+    set({ riderFit: { ...get().riderFit, busy: true, progress: { frac: 0, stage: 'starting' }, error: null } });
     try {
-      const onProgress = (p: FitProgress): void => set({ fitProgress: p });
-      const model = runner
-        ? await runner(track, corridor, simParams, lapRef, onProgress)
-        : buildFitModel(track, corridor, simParams, lapRef, { budgetMs: 2000, onProgress });
+      const onProgress = (p: RiderFitProgress): void => set({ riderFit: { ...get().riderFit, progress: { frac: p.frac, stage: p.stage, error: p.error } } });
+      const run = runner ?? riderFitRunner;
+      const result = run
+        ? await run(track, corridor, simParams, lapRef, onProgress)
+        : fitRiderToLap(track, corridor, simParams, lapRef, { budgetMs: 2000, onProgress });
       if (activeTrack(get())?.id !== track.id) return; // the track changed meanwhile
-      set({ fitModel: model, fitSettings: model.fitted.map((x) => ({ ...x })), fitTrackId: track.id, fitCorner: get().fitCorner ?? null });
-      rideFit(set, get);
+      const st = get();
+      // the fitted rider replaces the rider; machine and tyre are not fitted
+      set({
+        simParams: { ...st.simParams, rider: result.rider },
+        riderFit: {
+          ...st.riderFit,
+          ref: result.ref,
+          rows: result.rows,
+          lapTimeS: result.lapTimeS,
+          refOnLineS: result.refOnLineS,
+          fittedRider: result.rider,
+          stats: result.stats,
+          trackId: track.id,
+          error: null,
+        },
+      });
+      runSim(set, get);
     } catch (e) {
-      set({ statusMessage: `Fit to reference failed: ${(e as Error).message}` });
+      set({ riderFit: { ...get().riderFit, error: `Fit to lap failed: ${(e as Error).message}` } });
     } finally {
-      set({ fitBusy: false });
+      set({ riderFit: { ...get().riderFit, busy: false, progress: null } });
     }
   },
-  setFitCorner(k) {
-    set({ fitCorner: k });
+  setFitCorner(n) {
+    set({ fitCorner: n });
   },
-  setCornerSetting(k, patch) {
+  setCornerRider(n, patch) {
     const st = get();
-    if (!st.fitSettings || k < 0 || k >= st.fitSettings.length) return;
-    const fitSettings = st.fitSettings.map((x, j) => (j === k ? { ...x, ...patch } : x));
-    set({ fitSettings });
-    rideFit(set, get);
+    const rider = st.simParams.rider;
+    const corners: CornerRiders = { ...(rider.corners ?? {}), [n]: { ...(rider.corners?.[n] ?? {}), ...patch } };
+    set({ simParams: { ...st.simParams, rider: { ...rider, corners } } });
+    if (get().simEnabled) runSim(set, get);
   },
-  resetCornerSettings(k) {
+  clearCornerRiderKey(n, key) {
     const st = get();
-    if (!st.fitModel || !st.fitSettings) return;
-    const fitted = st.fitModel.fitted;
-    set({ fitSettings: st.fitSettings.map((x, j) => (k === undefined || j === k ? { ...fitted[j] } : x)) });
-    rideFit(set, get);
+    const rider = st.simParams.rider;
+    const cur = rider.corners?.[n];
+    if (!cur || !(key in cur)) return;
+    const nextCorner = { ...cur };
+    delete nextCorner[key];
+    const corners: CornerRiders = { ...(rider.corners ?? {}) };
+    if (Object.keys(nextCorner).length) corners[n] = nextCorner;
+    else delete corners[n];
+    set({ simParams: { ...st.simParams, rider: { ...rider, corners } } });
+    if (get().simEnabled) runSim(set, get);
+  },
+  clearCornerRider(n) {
+    const st = get();
+    const rider = st.simParams.rider;
+    const fitted = st.riderFit.fittedRider?.corners;
+    let corners: CornerRiders;
+    if (n === undefined) {
+      corners = fitted ? structuredCloneCorners(fitted) : {};
+    } else {
+      corners = { ...(rider.corners ?? {}) };
+      if (fitted?.[n]) corners[n] = { ...fitted[n] };
+      else delete corners[n];
+    }
+    set({ simParams: { ...st.simParams, rider: { ...rider, corners } } });
+    if (get().simEnabled) runSim(set, get);
+  },
+  resetRiderToFit() {
+    const st = get();
+    const fitted = st.riderFit.fittedRider;
+    if (!fitted) return;
+    set({ simParams: { ...st.simParams, rider: { ...fitted, corners: fitted.corners ? structuredCloneCorners(fitted.corners) : undefined } } });
+    if (get().simEnabled) runSim(set, get);
   },
   applyMachinePreset(id) {
     const preset = presetById(id);
@@ -1278,7 +1346,7 @@ export const useLab = create<LabState>((set, get) => ({
 /**
  * The lap-time line's extras from the loaded sessions (pist-line note §9):
  *   reference  the reference lap's session when it carries a corner summary,
- *              else the first that does (the same rule as "Fit to reference");
+ *              else the first that does (the same rule as "Fit to lap");
  *   warm start the owner's GPS path: the reference lap when it is a recorded
  *              lap with GPS, else the best lap of the first recorded session
  *              with GPS, mapped into the corridor (`ownerOffsets`).
@@ -1331,13 +1399,20 @@ function staleAfter(
   };
 }
 
+/** A copy of a corner-override map (one level of objects). */
+function structuredCloneCorners(c: CornerRiders): CornerRiders {
+  const out: CornerRiders = {};
+  for (const [k, v] of Object.entries(c)) out[Number(k)] = { ...v };
+  return out;
+}
+
 /**
- * The lap "Fit to reference" fits to: the chosen one (`fitRefLap`), else the
+ * The lap "Fit to lap" fits to: the picked one (`riderFit.refLap`), else the
  * reference lap when it can be one, else the first session with a corner
  * summary, else the best flying lap of the first recorded session with GPS.
  */
-export function fitReferenceLap(
-  st: Pick<LabState, 'sessions' | 'refLap' | 'fitRefLap'>,
+export function riderFitLap(
+  st: Pick<LabState, 'sessions' | 'refLap' | 'riderFit'>,
   track: TrackModel | undefined,
 ): { session: Session; lap: Lap } | undefined {
   const find = (sel: { sessionId: string; lap: number } | undefined): { session: Session; lap: Lap } | undefined => {
@@ -1348,7 +1423,8 @@ export function fitReferenceLap(
   };
   const best = (session: Session): Lap | undefined =>
     session.laps.find((l) => l.isBest) ?? session.laps.find((l) => l.kind === 'flying') ?? session.laps[0];
-  const chosen = find(st.fitRefLap) ?? find(st.refLap);
+  const picked = st.riderFit.refLap ? { sessionId: st.riderFit.refLap.sessionId, lap: st.riderFit.refLap.lapN } : undefined;
+  const chosen = find(picked) ?? find(st.refLap);
   if (chosen) return chosen;
   const withRef = st.sessions.find((x) => x.reference && x.laps.length);
   if (withRef) return { session: withRef, lap: best(withRef)! };
@@ -1358,41 +1434,6 @@ export function fitReferenceLap(
     if (lap && !lapReferenceProblem(session, lap, track)) return { session, lap };
   }
   return undefined;
-}
-
-/** Ride the fitted model with the current corner settings: session, line, table. */
-function rideFit(set: (partial: Partial<LabState>) => void, get: () => LabState): void {
-  const st = get();
-  const track = activeTrack(st);
-  const model = st.fitModel;
-  const settings = st.fitSettings;
-  if (!track || !model || !settings || st.fitTrackId !== track.id) return;
-  try {
-    const applied = applyFit(track, model, settings);
-    const session = fitSession(model, applied, SIM_FIT_SESSION_ID, SIM_FIT_COLOR);
-    const ceil = lateralCeilingG(model.params);
-    const summary: FitSummary = {
-      refName: model.reference,
-      lapTimeS: applied.env.lapTimeS,
-      refLapTimeS: model.refLapTimeS,
-      // the reference speed on the line actually ridden (the tuned C↔V line)
-      alignedRefLapS: refTimeOnLine(applied.line, model.vRefMs),
-      ceilingG: ceil,
-      ceilingLeanDeg: (Math.atan(ceil) * 180) / Math.PI,
-      rows: fitRows(model, applied.line, applied.env, ceil),
-      notes: model.notes,
-      stats: model.stats,
-      pathTrusted: model.pathTrusted,
-    };
-    const others = st.sessions.filter((x) => x.id !== SIM_FIT_SESSION_ID);
-    const next = { ...st, sessions: [...others, session] };
-    const selectedLaps = st.selectedLaps.some((l) => l.sessionId === SIM_FIT_SESSION_ID)
-      ? st.selectedLaps
-      : [...st.selectedLaps, { sessionId: SIM_FIT_SESSION_ID, lap: 1 }];
-    set({ sessions: refreshAll(next), selectedLaps, simFit: summary, fitLine: applied.line });
-  } catch (e) {
-    set({ statusMessage: `Fit: ${(e as Error).message}` });
-  }
 }
 
 /**
@@ -1426,6 +1467,20 @@ function runSim(
   const selectedLaps = st.selectedLaps.some((l) => l.sessionId === SIM_SESSION_ID)
     ? st.selectedLaps
     : [...st.selectedLaps, { sessionId: SIM_SESSION_ID, lap: 1 }];
+  // after a fit, the per-corner comparison and the lap delta follow every re-solve
+  let riderFit = st.riderFit;
+  if (riderFit.ref && riderFit.trackId === track.id) {
+    try {
+      riderFit = {
+        ...riderFit,
+        rows: riderFitRows(riderFit.ref, cornerZones(line, track), line, envelope, st.simParams),
+        lapTimeS,
+        refOnLineS: refTimeOnLine(line, riderFit.ref.vRefMs),
+      };
+    } catch (e) {
+      riderFit = { ...riderFit, lapTimeS, error: `Fit rows: ${(e as Error).message}` };
+    }
+  }
   set({
     sessions: refreshAll(next),
     selectedLaps,
@@ -1433,6 +1488,7 @@ function runSim(
     simLapTimeS: lapTimeS,
     simCorners: corners,
     simRisk: gripRiskMessage(envelope.gripUse, envelope.gripUsePeak),
+    riderFit,
   });
 }
 

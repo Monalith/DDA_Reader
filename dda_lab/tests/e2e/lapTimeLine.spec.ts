@@ -4,8 +4,8 @@ import { expect, test, type Page } from '@playwright/test';
 // pist Serres: the free-trajectory worker descends the rider's own QSS lap from
 // the fastest κ-line and — with the owner's Ducati lap (Run036, gitignored
 // _inbox) loaded — from his GPS path too, with the BMW v2 reference pricing
-// lateral g over the ceiling; the rider mode then rides the stored line, and
-// "Fit to reference" runs on it. The map shows the owner's path next to the
+// lateral g over the ceiling; the rider mode then rides the stored line
+// ("Fit to lap" is covered by riderFit.spec.ts). The map shows the owner's path next to the
 // optimised line; SIM_SHOTS_DIR saves the views.
 const BMW_V2 = new URL('../../public/examples/serres_BMW_1-19-81_v2.json', import.meta.url).pathname;
 const OWNER = '/Users/macbookmini/projects/DDA_Reader/_inbox/Run036-219926-00.00.dda';
@@ -30,7 +30,7 @@ async function fitMap(page: Page, b: Bounds): Promise<void> {
   await page.waitForTimeout(2500); // satellite tiles
 }
 
-test('optimise line: worker run, progress, the rider rides it, the fit runs on it', async ({ page }) => {
+test('optimise line: worker run, progress, the rider rides it', async ({ page }) => {
   test.setTimeout(240_000);
   await page.setViewportSize({ width: 1600, height: 1100 });
   await page.goto('/');
@@ -85,21 +85,6 @@ test('optimise line: worker run, progress, the rider rides it, the fit runs on i
   });
   console.log(`setSimParams on the stored lap-time line: ${simMs.toFixed(0)} ms`);
   await shot(page, 'lt-02-done');
-
-  // the fit-to-reference mode runs on that line
-  await page.getByTestId('sim-mode-fit').click();
-  await page.getByTestId('sim-fit-run').click();
-  // the fit runs in a Worker (~7 s, ≤ 30 s)
-  await expect(page.getByTestId('sim-fit-table').locator('tbody tr')).toHaveCount(16, { timeout: 60_000 });
-  console.log(`fit: ${await page.getByTestId('sim-fit-status').textContent()}`);
-  const fitRows = await page.evaluate(() => {
-    type St = { simFit?: { rows: Array<{ name: string; aLatG: number; aLatPeakG: number }> }; simLineOptInfo?: unknown };
-    const st = (window as unknown as { __lab: { getState: () => St } }).__lab.getState();
-    return { info: st.simLineOptInfo, rows: (st.simFit?.rows ?? []).filter((r) => ['K2', 'K4', 'K6', 'K12'].includes(r.name)) };
-  });
-  console.log(`run: ${JSON.stringify(fitRows.info)}`);
-  console.log(`fit g: ${fitRows.rows.map((r) => `${r.name} ${r.aLatG.toFixed(2)}${r.name === 'K12' ? ` (zone ${r.aLatPeakG.toFixed(2)})` : ''}`).join(', ')}`);
-  await shot(page, 'lt-03-fit');
 
   // map views: the owner's lap (Ducati best, lap 6) + the optimised line (the
   // sim session's trace and the ideal-line layer); labels and other laps off

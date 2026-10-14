@@ -152,7 +152,7 @@ export interface RiderFit {
   notes: string[];
   /**
    * Which corner owns every station (for per-corner tuning of the fitted
-   * caps, fitModel.ts): the zone it lies in (−1 between zones), the corner it
+   * caps): the zone it lies in (−1 between zones), the corner it
    * brakes into, the corner it drives out of, whether it is that corner's
    * exit (apex → zone end), whether the rider coasts there, and the
    * reference's clock since the drive-owner's apex on the roll-on stretch

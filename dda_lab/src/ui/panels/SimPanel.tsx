@@ -7,7 +7,8 @@ import type { DerivedRiderKey, LineMode, SimParams, SolverMode } from '../../sim
 import { fmtDelta, fmtLapTime } from '../../state/selectors';
 import { lapTimeLineRunner, optimalAvailability, optimalRunner, type Availability } from './simRunners';
 import { RangeInput } from './RangeInput';
-import { FitControls, FitCornerPanel } from './FitPanel';
+import { ADVANCED } from './riderSliders';
+import { CornerSection, FitToLapRow } from './RiderFit';
 import './SimPanel.css';
 
 type SimPatch = { machine?: Partial<SimParams['machine']>; tyre?: Partial<SimParams['tyre']>; rider?: Partial<SimParams['rider']> };
@@ -35,27 +36,10 @@ function Slider({ label, value, min, max, step, unit, decimals = 2, testId, help
   );
 }
 
-/** Slider range, unit and help for every derived rider key (advanced panel). */
-const ADVANCED: Record<DerivedRiderKey, { label: string; min: number; max: number; step: number; unit?: string; decimals?: number; help: string }> = {
-  sBrake: { label: 'Brake slip', min: 0.1, max: 1, step: 0.01, help: 'Front-tyre slip the rider allows on the brakes, as a fraction of the slip at peak grip (Risk).' },
-  sDrive: { label: 'Drive slip', min: 0.1, max: 1, step: 0.01, help: 'Rear-tyre slip the rider allows on the way out (Risk).' },
-  sLat: { label: 'Lateral slip', min: 0.1, max: 1, step: 0.01, help: 'Side slip the rider allows at lean (Risk).' },
-  brakingG: { label: 'Braking', min: 0.2, max: 1.8, step: 0.01, unit: 'g', help: 'Peak braking asked of the FRONT TYRE: μx · grip(brake slip). Aero and rolling losses add to it on the charts.' },
-  brakeRiseGps: { label: 'Brake build', min: 0.5, max: 8, step: 0.1, unit: 'g/s', decimals: 1, help: 'How fast braking builds once the lever moves (Aggressiveness). Both reference Serres laps build at about 2.8 g/s.' },
-  throttleDelayS: { label: 'Throttle delay', min: 0, max: 2, step: 0.01, unit: 's', help: 'Time from the apex to picking up the throttle (Aggressiveness).' },
-  rollOnS: { label: 'Roll-on', min: 0.1, max: 3, step: 0.01, unit: 's', help: 'Throttle 20 → 90 % time (Aggressiveness).' },
-  rollRateFrac: { label: 'Roll rate', min: 0.1, max: 1, step: 0.01, help: 'Share of the Biniewicz roll-rate bound the rider uses when flicking the bike (Aggressiveness).' },
-  trailBrakeDepth: { label: 'Trail depth', min: 0, max: 1, step: 0.01, help: 'How deep into the corner the brakes are carried. 0 = off before the bike leans; 1 = on at full lean (Risk).' },
-  trailBrakeProfile: { label: 'Trail at lean', min: 0, max: 1, step: 0.01, help: 'How hard the rider brakes once leaned. 0 = timid, 1 = nearly all the grip left (Risk).' },
-  leanUsage: { label: 'Lean usage', min: 0.5, max: 1, step: 0.01, help: 'Share of the tyre lean limit the rider uses: grip(lateral slip) (Risk).' },
-  tcThreshold: { label: 'Traction control', min: 0, max: 1, step: 0.01, help: 'Slip traction control allows before cutting torque.' },
-};
-
 const MODES: Array<{ mode: SolverMode; label: string; help: string }> = [
   { mode: 'rider', label: 'Sürücü', help: 'Human rider driven by Aggressiveness and Risk. Live on every slider.' },
   { mode: 'freeTrajectory', label: 'Serbest yörünge', help: 'Line and speed optimised together for the ideal rider. Runs in the background on "Hesapla".' },
   { mode: 'ocp', label: 'Tam OCP', help: 'Full minimum-time optimal control, solved by the DDA Lab bridge on THIS computer (seconds on Serres). Runs on "Hesapla".' },
-  { mode: 'fit', label: 'Fit to reference', help: 'Fit a per-corner rider to any loaded lap (its line, longitudinal g and speed in every corner), then set each corner by hand: pick it on the map, sliders here. Runs on "Fit" (≤ 30 s).' },
 ];
 
 function LockIcon({ locked }: { locked: boolean }) {
@@ -179,7 +163,7 @@ export default function SimPanel() {
   );
 
   const brakeCount = corners?.filter((c) => c.hasBrake).length ?? 0;
-  const optimal = solverMode === 'rider' || solverMode === 'fit' ? null : solverMode;
+  const optimal = solverMode === 'rider' ? null : solverMode;
   const pinned = new Set(params.rider.overrides);
   const hesapla = () => {
     if (!optimal) return;
@@ -280,7 +264,7 @@ export default function SimPanel() {
       <div className="sim-modebar">
         <div className="seg" role="radiogroup" aria-label="Solver mode" data-testid="sim-mode">
           {MODES.map(({ mode, label, help }) => {
-            const a = mode === 'rider' || mode === 'fit' ? { ok: true } : avail[mode];
+            const a = mode === 'rider' ? { ok: true } : avail[mode];
             return (
               <button
                 key={mode}
@@ -314,7 +298,6 @@ export default function SimPanel() {
             </span>
           </>
         )}
-        {solverMode === 'fit' && <FitControls />}
         {(['freeTrajectory', 'ocp'] as const).map((m) =>
           optLap[m] != null ? (
             <span key={m} className={`sim-opt-time num${optStale[m] ? ' stale' : ''}`} data-testid={`sim-opt-time-${m}`}
@@ -326,8 +309,6 @@ export default function SimPanel() {
         )}
       </div>
 
-      {solverMode === 'fit' && <FitCornerPanel />}
-
       {risk && (
         <p className="sim-risk" data-testid="sim-risk" role="status">
           ⚠ {risk}
@@ -337,6 +318,7 @@ export default function SimPanel() {
       <div className="sim-groups">
         <fieldset disabled={optimal !== null}>
           <legend>Rider</legend>
+          {!optimal && <FitToLapRow />}
           <div className="sim-top-sliders">
             <Slider label="Aggressiveness" value={params.rider.aggressiveness} min={0} max={1} step={0.01}
               help="How fast the rider makes transitions: roll rate, brake build, throttle pick-up and roll-on. Timing, not force."
@@ -427,6 +409,7 @@ export default function SimPanel() {
               );
             })}
           </details>
+          {!optimal && <CornerSection />}
         </fieldset>
 
         <fieldset>

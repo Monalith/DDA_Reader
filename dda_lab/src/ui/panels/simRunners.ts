@@ -10,8 +10,8 @@
 //   ocp            — the LOCAL bridge's job (`submitOcp` + `waitForOcp`): the
 //                    solve runs on this computer (owner decision 2026-10-11),
 //                    so the user must be running the DDA Lab bridge locally.
-import type { FitRunner, OptimalMode, OptimalRunner } from '../../state/store';
-import type { FitModel } from '../../sim/fitModel';
+import type { OptimalMode, OptimalRunner, RiderFitRunner } from '../../state/store';
+import type { RiderFitResult } from '../../sim/riderFit';
 import { idealParams } from '../../sim/freeTrajectory';
 import { lineFromOffsets } from '../../sim/line';
 import { buildOcpRequest, ocpBase, submitOcp, waitForOcp } from '../../sim/ocpClient';
@@ -190,28 +190,28 @@ export async function optimalAvailability(mode: OptimalMode): Promise<Availabili
   }
 }
 
-/** Wall-clock budget of the per-corner refinement in the worker (owner: ~30 s is fine). */
+/** Wall-clock budget of "Fit to lap" in the worker (spec: ≤ 30 s). */
 const FIT_BUDGET_MS = 25_000;
 let fitWorker: Worker | null = null;
 let fitSeq = 0;
 
 type FitOut =
   | { type: 'progress'; id: number; frac: number; stage: string; error?: number }
-  | { type: 'done'; id: number; model: FitModel }
+  | { type: 'done'; id: number; result: RiderFitResult }
   | { type: 'error'; id: number; message: string };
 
 /**
- * "Fit to reference" in a Worker (fitModel.worker.ts): one worker per run; a
- * newer run terminates the running one (the fit is one synchronous call).
- * Without Worker support the store's inline fit (short budget) is used.
+ * "Fit to lap" in a Worker (riderFit.worker.ts): one worker per run; a newer
+ * run terminates the running one (the fit is one synchronous call). Without
+ * Worker support the store fits inline with a short budget.
  */
-export const fitRunner: FitRunner | undefined =
+export const riderFitRunner: RiderFitRunner | undefined =
   typeof Worker === 'undefined'
     ? undefined
     : (track, corridor, params, lapRef, onProgress) =>
         new Promise((resolve, reject) => {
           fitWorker?.terminate();
-          const w = new Worker(new URL('../../sim/fitModel.worker.ts', import.meta.url), { type: 'module' });
+          const w = new Worker(new URL('../../sim/riderFit.worker.ts', import.meta.url), { type: 'module' });
           fitWorker = w;
           const id = ++fitSeq;
           w.onmessage = (e: MessageEvent<FitOut>) => {
@@ -221,7 +221,7 @@ export const fitRunner: FitRunner | undefined =
             else {
               w.terminate();
               if (fitWorker === w) fitWorker = null;
-              if (m.type === 'done') resolve(m.model);
+              if (m.type === 'done') resolve(m.result);
               else reject(new Error(m.message));
             }
           };

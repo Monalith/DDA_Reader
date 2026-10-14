@@ -41,10 +41,11 @@ export interface Line {
 }
 
 /**
- * Which solver produces the lap (spec v2 §2.10). `fit` is the reference-fit
- * rider (`fitRider.ts`): per-corner caps fitted to a reference lap's speed.
+ * Which solver produces the lap (spec v2 §2.10). "Fit to lap" is not a mode:
+ * it calibrates the rider's own parameters (`riderFit.ts`) and the rider
+ * mode rides them.
  */
-export type SolverMode = 'rider' | 'freeTrajectory' | 'ocp' | 'fit';
+export type SolverMode = 'rider' | 'freeTrajectory' | 'ocp';
 
 /** The racing line's κ = 0 objective (`RiderParams.lineMode`). */
 export type LineMode = 'min-curvature' | 'min-time' | 'lap-time';
@@ -83,12 +84,12 @@ export interface EnvelopeCaps {
   /**
    * Speed ceiling per station, m/s (Infinity = none): a rider's own chosen
    * minimum speed where the line does not limit it (the fitted rider's
-   * per-corner minimum, fitModel.ts — a flick taken at κ ≈ 0).
+   * per-corner minimum — a flick taken at κ ≈ 0).
    */
   vMaxMs?: Float32Array;
   /**
    * Slide scrub per station (dimensionless): an extra deceleration of
-   * scrubCoef·|a_lat| (v²·|κ|), a sliding tyre's slip-angle drag (fitModel's
+   * scrubCoef·|a_lat| (v²·|κ|), a sliding tyre's slip-angle drag (cornerRider's
    * per-corner "slide out" on the entry). Not rate-limited (no brake lever),
    * helps the braking pass and costs the drive pass like the losses do.
    */
@@ -307,6 +308,18 @@ export interface RiderParams {
    * stops, this one HOW HARD it is until then.
    */
   trailBrakeProfile: number;
+  /**
+   * Slide out on a corner's entry, 0 = off … 1 = in fast, wide before the
+   * apex, the slide scrubs the speed (`cornerRider.ts`). Lap-wide default;
+   * per-corner values live in `corners`.
+   */
+  slideOut?: number;
+  /**
+   * Per-corner overrides of the rider's OWN parameters, keyed by
+   * `TrackModel.turns[].n` (`cornerRider.ts`). "Fit to lap" fills them; the
+   * user moves the same sliders from there. Absent = the lap-wide values.
+   */
+  corners?: import('./cornerRider').CornerRiders;
 }
 
 export interface SimParams {

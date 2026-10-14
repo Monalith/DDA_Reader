@@ -33,7 +33,7 @@
 // envelopes (asserted in simSolver.test.ts).
 import { clampParams } from './presets';
 import { effectiveMu } from './tyre';
-import type { Envelope, EnvelopeCaps, Line, SimParams } from './types';
+import type { Envelope, EnvelopeCaps, Line, RiderParams, SimParams } from './types';
 import {
   AIR_DENSITY,
   bikeLeanFn,
@@ -220,9 +220,18 @@ interface SolverCtx {
   bikeRoll(i: number, vv: number): number;
   brakeCap(i: number, vv: number): number;
   driveCap(i: number, vv: number): number;
+  /** Per-station rider values where a corner overrides them (`riderAt`), else undefined. */
+  rollFrac?: Float64Array;
+  jerkGps?: Float64Array;
 }
 
-function prepare(line: Line, params: SimParams, caps?: EnvelopeCaps): SolverCtx {
+/**
+ * The rider in force at a station (cornerRider.ts `riderAccessor`): per-corner
+ * trail braking, roll rate and brake build. Absent = the lap-wide rider.
+ */
+export type RiderAt = (i: number) => RiderParams;
+
+function prepare(line: Line, params: SimParams, caps?: EnvelopeCaps, riderAt?: RiderAt): SolverCtx {
   const p = clampParams(params);
   const n = line.points.length;
   const m = p.machine;
@@ -312,10 +321,31 @@ function prepare(line: Line, params: SimParams, caps?: EnvelopeCaps): SolverCtx 
   // would bind. Same result, a fraction of the cost.
   const stoppieUpright = stoppieLimitMs2(m, 0, G);
 
+  // per-corner rider values (cornerRider.ts), read once per station
+  let tbDepth: Float64Array | undefined;
+  let tbProfile: Float64Array | undefined;
+  let rollFrac: Float64Array | undefined;
+  let jerkGps: Float64Array | undefined;
+  if (riderAt) {
+    tbDepth = new Float64Array(n);
+    tbProfile = new Float64Array(n);
+    rollFrac = new Float64Array(n);
+    jerkGps = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      const r = riderAt(i);
+      tbDepth[i] = r.trailBrakeDepth;
+      tbProfile[i] = r.trailBrakeProfile;
+      rollFrac[i] = r.rollRateFrac;
+      jerkGps[i] = r.brakeRiseGps;
+    }
+  }
+
   /** Tyre braking deceleration available, m/s^2: ellipse·brakeShare, stoppie, pinned brakingG. No drag, no rate limit. */
   const brakeCap = (i: number, vv: number): number => {
     const gr = gRatio(i, vv);
-    const share = brakeShare(latUse(vv, i), p.rider.trailBrakeDepth, p.rider.trailBrakeProfile);
+    const share = tbDepth
+      ? brakeShare(latUse(vv, i), tbDepth[i], tbProfile![i])
+      : brakeShare(latUse(vv, i), p.rider.trailBrakeDepth, p.rider.trailBrakeProfile);
     const aGrip = (brakeArr ? Math.max(0.1, brakeArr[i]) : aBrakeMax) * gr * share;
     if (aGrip <= stoppieUpright * gr) return aGrip;
     return Math.min(aGrip, stoppieLimitMs2(m, bikeRoll(i, vv), G * gr));
@@ -349,7 +379,7 @@ function prepare(line: Line, params: SimParams, caps?: EnvelopeCaps): SolverCtx 
     return Math.max(0.1, aw * Math.min(1, Math.max(0, driveScaleArr[i])));
   };
 
-  return { p, n, muEff, muPeak, aLatMax, vTop, gs, gRatio, aY, dsAt, latUse, bikeRoll, brakeCap, driveCap };
+  return { p, n, muEff, muPeak, aLatMax, vTop, gs, gRatio, aY, dsAt, latUse, bikeRoll, brakeCap, driveCap, rollFrac, jerkGps };
 }
 
 /**
@@ -393,6 +423,21 @@ export function brakeCapMs2(line: Line, params: SimParams, i: number, vMs: numbe
  */
 export function driveCapMs2(line: Line, params: SimParams, i: number, vMs: number): number {
   return ctxFor(line, params).driveCap(i, vMs);
+}
+
+/**
+ * `brakeCapMs2` / `driveCapMs2` for a solve with per-station caps and a
+ * per-corner rider (cornerRider.ts): one prepared context, the exact caps
+ * `solve(line, params, caps, riderAt)` uses.
+ */
+export function solverCaps(
+  line: Line,
+  params: SimParams,
+  caps?: EnvelopeCaps,
+  riderAt?: RiderAt,
+): { brakeCapMs2(i: number, vMs: number): number; driveCapMs2(i: number, vMs: number): number } {
+  const ctx = prepare(line, params, caps, riderAt);
+  return { brakeCapMs2: (i, v) => ctx.brakeCap(i, v), driveCapMs2: (i, v) => ctx.driveCap(i, v) };
 }
 
 /**
@@ -479,7 +524,7 @@ function rollRateCap(ctx: SolverCtx, i: number, vLat: Float32Array, st: RollSten
   const ip = st.ip[i];
   const ds = st.span[i];
   const vUpper = vLat[i];
-  const frac = ctx.p.rider.rollRateFrac;
+  const frac = ctx.rollFrac ? ctx.rollFrac[i] : ctx.p.rider.rollRateFrac;
   const excess = (vv: number): number => {
     const phiP = ctx.bikeRoll(ip, Math.min(vv, vLat[ip]));
     const phiM = ctx.bikeRoll(im, Math.min(vv, vLat[im]));
@@ -522,7 +567,7 @@ function rollRateCap(ctx: SolverCtx, i: number, vLat: Float32Array, st: RollSten
  * give every corner its own lateral, braking and drive g without forking the
  * passes. Without `caps` the solve is exactly the v2 one.
  */
-export function solve(line: Line, params: SimParams, caps?: EnvelopeCaps): Envelope {
+export function solve(line: Line, params: SimParams, caps?: EnvelopeCaps, riderAt?: RiderAt): Envelope {
   const n = line.points.length;
   const v = new Float32Array(n);
   const longG = new Float32Array(n);
@@ -533,7 +578,7 @@ export function solve(line: Line, params: SimParams, caps?: EnvelopeCaps): Envel
   const tS = new Float64Array(n);
   if (n < 2) return { v, longG, latG, leanDeg, gripUse, gripUsePeak, tS, lapTimeS: 0 };
 
-  const ctx = prepare(line, params, caps);
+  const ctx = prepare(line, params, caps, riderAt);
   const { p, aLatMax, vTop, gs, gRatio, aY, dsAt, brakeCap, driveCap, muEff, muPeak } = ctx;
 
   // ---- pass 1: lateral limit -------------------------------------------
@@ -629,6 +674,7 @@ export function solve(line: Line, params: SimParams, caps?: EnvelopeCaps): Envel
   const tOn = new Float64Array(n).fill(Number.POSITIVE_INFINITY);
   const onBrake = new Uint8Array(n);
   const jerk = p.rider.brakeRiseGps * G;
+  const jerkArr = ctx.jerkGps;
   for (let iter = 0; iter < BRAKE_RATE_ITERS; iter++) {
     v.set(vFree);
     // two laps of the loop so braking carries across the start line
@@ -637,7 +683,7 @@ export function solve(line: Line, params: SimParams, caps?: EnvelopeCaps): Envel
         const i = step;
         const j = (i + 1) % n;
         const ds = dsAt(j);
-        const aTyre = Math.min(brakeCap(j, v[j]), jerk * tOn[i]);
+        const aTyre = Math.min(brakeCap(j, v[j]), (jerkArr ? jerkArr[i] * G : jerk) * tOn[i]);
         // grade: uphill (gs > 0) helps braking
         const vMax = Math.sqrt(v[j] * v[j] + 2 * (aTyre + aLoss(v[j]) + gs[j] + aScrub(j, v[j])) * ds);
         if (v[i] > vMax) v[i] = Math.max(V_MIN, vMax);

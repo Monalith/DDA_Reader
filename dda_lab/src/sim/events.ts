@@ -30,7 +30,7 @@
 import { PROM_FRAC, PROM_MIN_MS } from './corners';
 import { clampParams } from './presets';
 import { G } from './solver';
-import type { Corner, Envelope, Line, SimParams } from './types';
+import type { Corner, Envelope, Line, RiderParams, SimParams } from './types';
 
 export interface EventProfile {
   /** Speed along the line, m/s; `min(v_event, env.v)`. */
@@ -147,6 +147,12 @@ export function eventProfile(
   corners: Corner[],
   params: SimParams,
   caps: EventCaps,
+  /**
+   * Per-corner rider (cornerRider.ts `riderAccessor`): a section's brake
+   * build is read at its turn-in (the approach), its throttle delay and
+   * roll-on at its exit. Absent = the lap-wide rider for every section.
+   */
+  riderAt?: (i: number) => RiderParams,
 ): EventProfile {
   const p = clampParams(params);
   const n = Math.min(line.points.length, env.v.length);
@@ -183,9 +189,9 @@ export function eventProfile(
     return finish(corners.map((c) => ({ ...c, flips: [...c.flips] })));
   }
 
-  const J = Math.max(0.1, p.rider.brakeRiseGps * G);
-  const delayS = p.rider.throttleDelayS;
-  const rollOnS = Math.max(0.05, p.rider.rollOnS);
+  const J0 = Math.max(0.1, p.rider.brakeRiseGps * G);
+  const delay0 = p.rider.throttleDelayS;
+  const rollOn0 = Math.max(0.05, p.rider.rollOnS);
   const loss = (vv: number): number => caps.lossDecelMs2(vv);
 
   // the brake channel's 100 %: the largest tyre braking the caps allow on the lap
@@ -226,12 +232,18 @@ export function eventProfile(
     // H: the last apex — the throttle delay counts from here
     let h = c.iA;
     for (let s = 0, i = c.iA; s <= fwd(c.iA, c.iE); s++, i = idx(i + 1)) if (atApex(i)) h = i;
-    return { c, vT, a1, h };
+    // the section's own rider values (per-corner overrides), else the lap-wide ones
+    const rb = riderAt?.(c.iT);
+    const rd = riderAt?.(c.iE);
+    const J = rb ? Math.max(0.1, rb.brakeRiseGps * G) : J0;
+    const delayS = rd ? rd.throttleDelayS : delay0;
+    const rollOnS = rd ? Math.max(0.05, rd.rollOnS) : rollOn0;
+    return { c, vT, a1, h, J, delayS, rollOnS };
   });
 
   // ---- drive curve of section c: hold from A1, pick-up, roll-on, full -------
   const drive = (c: number, vH: number): Drive => {
-    const { a1, h } = sec[c];
+    const { a1, h, delayS, rollOnS } = sec[c];
     const L = K === 1 ? n : fwd(a1, sec[(c + 1) % K].a1) || n;
     const pos = new Float64Array(L + 1);
     const vv = new Float64Array(L + 1);
@@ -263,7 +275,7 @@ export function eventProfile(
   // ---- shooting the brake point of section c on the previous drive curve ----
   interface Shot { s0: number; vEnd: number; mode: Mode }
   const shootSection = (c: number, D: Drive): Shot & { rec: (D: Drive) => number } => {
-    const { vT, c: corner } = sec[c];
+    const { vT, c: corner, J } = sec[c];
     const L = D.L;
     const kLo = Math.min(D.kP, L - 1);
     /**

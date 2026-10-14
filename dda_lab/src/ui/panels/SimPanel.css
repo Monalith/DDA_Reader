@@ -28,56 +28,46 @@
 .sim-panel .sim-adv-row .sim-slider-label { font-size: 12px; color: #9aa7b8; }
 .sim-panel .sim-adv-row.pinned .sim-slider-label { color: var(--fg); }
 .sim-panel .sim-adv-row .sim-slider-value { font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
-/* Fit to reference (solver mode `fit`) */
+/* Fit to lap (Rider mode) */
+.sim-panel .sim-fit-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 2px 0 8px; }
 .sim-panel .sim-fit-status { font-size: 13px; font-variant-numeric: tabular-nums; }
-.sim-panel .sim-fit-table { border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+.sim-panel .sim-fit-error { font-size: 12px; color: #ff6b6b; flex-basis: 100%; }
+.sim-panel .sim-fit-table { border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; margin-top: 6px; }
 .sim-panel .sim-fit-table th { font-weight: 600; color: var(--fg-dim); text-align: right; padding: 2px 6px; border-bottom: 1px solid var(--border); white-space: nowrap; }
 .sim-panel .sim-fit-table th:first-child, .sim-panel .sim-fit-table td:first-child { text-align: left; }
 .sim-panel .sim-fit-table td { padding: 1px 6px; text-align: right; white-space: nowrap; }
-.sim-panel .sim-fit-table tr.near td:last-child { color: #f4b400; }
-.sim-panel .sim-fit-table tr.over td:last-child { color: #ff6b6b; font-weight: 600; }
-.sim-panel .sim-fit-note { font-size: 11px; color: var(--fg-dim); margin: 4px 0 0; }
+.sim-panel .sim-fit-table tr.grade-good .sim-grade { color: var(--good, #3ddc84); }
+.sim-panel .sim-fit-table tr.grade-fair .sim-grade { color: #f4b400; }
+.sim-panel .sim-fit-table tr.grade-poor .sim-grade { color: #ff6b6b; font-weight: 600; }
 .sim-panel .sim-line-opt { display: flex; align-items: center; gap: 8px; margin: 2px 0 6px; flex-wrap: wrap; }
 .sim-panel .sim-line-opt-status { font-size: 11px; color: var(--fg-dim); }
-/* Fit to reference: lap picker, corner bar, corner editor */
+/* Fit to lap: lap picker, corner chips, corner editor */
 .sim-panel .sim-fit-ref { max-width: 280px; }
+.sim-panel .sim-corners { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; }
+.sim-panel .sim-corners-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
 .sim-panel .sim-fit-corners { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 6px; }
 .sim-panel .sim-fit-chip {
-  padding: 2px 8px; font-size: 12px; border-radius: 10px; border: 1px solid var(--border);
+  position: relative; padding: 2px 8px; font-size: 12px; border-radius: 10px; border: 1px solid var(--border);
   background: var(--panel-2); color: var(--fg); cursor: pointer; font-variant-numeric: tabular-nums;
 }
-.sim-panel .sim-fit-chip.warn { border-color: #f4b400; }
-.sim-panel .sim-fit-chip.tuned { box-shadow: inset 0 -2px 0 var(--accent-2); }
+.sim-panel .sim-fit-chip.grade-good { border-color: var(--good, #3ddc84); }
+.sim-panel .sim-fit-chip.grade-fair { border-color: #f4b400; }
+.sim-panel .sim-fit-chip.grade-poor { border-color: #ff6b6b; }
 .sim-panel .sim-fit-chip.sel { background: #ffd166; color: #111; border-color: #ffd166; font-weight: 600; }
+.sim-panel .sim-corner-dot {
+  display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent-2);
+  margin-left: 4px; vertical-align: middle;
+}
 .sim-panel .sim-fit-table tbody tr { cursor: pointer; }
 .sim-panel .sim-fit-table tbody tr:hover td { background: var(--panel-2); }
 .sim-panel .sim-fit-table tbody tr.sel td { background: rgba(255, 209, 102, 0.18); }
 .sim-panel .linkish { background: none; border: none; padding: 0; color: var(--accent-2); cursor: pointer; font-size: 11px; text-decoration: underline; }
-/* Fit to reference, two columns: LEFT = the selected corner's slider column
-   (picked on the map or in the corner bar), RIGHT = corner bar + table. */
-.sim-panel .sim-fit {
-  display: grid; grid-template-columns: minmax(340px, 440px) minmax(0, 1fr); gap: 14px;
-  align-items: start; margin: 4px 0 8px;
-}
-.sim-panel .sim-fit-left { min-width: 0; }
-.sim-panel .sim-fit-right { min-width: 0; max-height: 320px; overflow: auto; }
-.sim-panel .sim-fit-editor {
+.sim-panel .sim-corner-editor {
   border: 1px solid var(--border); border-left: 3px solid #ffd166; border-radius: var(--radius);
-  background: var(--panel-2); padding: 6px 10px 8px;
+  background: var(--panel-2); padding: 6px 10px 8px; margin-bottom: 6px;
 }
-.sim-panel .sim-fit-editor-head { display: flex; align-items: center; gap: 6px; }
+.sim-panel .sim-corner-editor .sim-lock:disabled { cursor: default; }
+.sim-panel .sim-fit-editor-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .sim-panel .sim-fit-editor-head .btn { padding: 1px 7px; }
-.sim-panel .sim-fit-corner-name { font-size: 14px; min-width: 56px; text-align: center; color: #ffd166; }
-.sim-panel .sim-fit-editor-stats { font-size: 11px; color: var(--fg-dim); margin: 3px 0 4px; line-height: 1.35; }
-.sim-panel .sim-fit-slider { grid-template-columns: 88px minmax(0, 1fr); gap: 8px; margin: 5px 0; }
-.sim-panel .sim-fit-range { display: flex; align-items: center; gap: 5px; min-width: 0; }
-.sim-panel .sim-fit-range input[type='range'] { flex: 1; min-width: 0; height: 20px; margin: 0; }
-.sim-panel .sim-fit-range .sim-slider-value { flex: 0 0 80px; }
-.sim-panel .sim-fit-end { font-size: 11px; font-weight: 700; color: var(--fg-dim); width: 9px; text-align: center; }
-.sim-panel .sim-fit-slider .sim-slider-label { color: var(--fg); }
-.sim-panel .sim-fit-slider.moved .sim-slider-label { color: #ffd166; }
-.sim-panel .sim-fit-check { display: flex; align-items: center; gap: 6px; font-size: 12px; margin-top: 6px; }
-.sim-panel .sim-fit-hint {
-  font-size: 12px; color: var(--fg-dim); margin: 0; padding: 14px 10px;
-  border: 1px dashed var(--border); border-radius: var(--radius);
-}
+.sim-panel .sim-fit-corner-name { font-size: 14px; color: #ffd166; }
+.sim-panel .sim-fit-editor-stats { font-size: 11px; color: var(--fg-dim); }

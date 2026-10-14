@@ -40,10 +40,10 @@
 }
 
 .bp-body { overflow: auto; padding: 8px; }
-/* Fit to reference: the bottom panel grows so the corner's whole slider column
-   is on screen (the charts above give up the room). */
-.left-pane:has(.bottom-panels .sim-fit) { grid-template-rows: auto minmax(160px, 1fr) min(500px, 60%); }
-.bottom-panels:has(.sim-fit) { height: 100%; }
+/* Fit to lap: while a corner is being edited the bottom panel grows so its
+   slider column is on screen (the charts above give up the room). */
+.left-pane:has(.bottom-panels .sim-corner-editor) { grid-template-rows: auto minmax(160px, 1fr) min(500px, 60%); }
+.bottom-panels:has(.sim-corner-editor) { height: 100%; }
 .bp-empty { color: var(--fg-dim); padding: 12px; }
 
 /* ---- generic small controls ------------------------------------------- */

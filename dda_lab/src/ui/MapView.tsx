@@ -22,6 +22,7 @@ import { lapX, selectedLapEntries } from '../state/selectors';
 import { activeTrack, useLab, lapMetaOf } from '../state/store';
 import { backgroundColorByZoom, inRangeSegments, rasterOpacityByZoom, zoomRadius, zoomWidth } from './focus';
 import { cornerEventsGeoJson, corridorGeoJson, fitCornersGeoJson, idealLineGeoJson, pistGeoJson } from './SimLayers';
+import { cornerZones } from '../sim/cornerRider';
 import { fetchTrackModel, parsePistPackage, TRACK_MODELS } from '../core/pistPackage';
 import {
   IMAGE_CORNERS,
@@ -181,16 +182,16 @@ export default function MapView() {
   const simLine = useLab((s) => s.simLine);
   const simCorners = useLab((s) => s.simCorners);
   const solverMode = useLab((s) => s.solverMode);
-  const fitLine = useLab((s) => s.fitLine);
-  const fitModel = useLab((s) => s.fitModel);
   const fitCorner = useLab((s) => s.fitCorner);
-  const fitActive = solverMode === 'fit' && !!fitLine && !!fitModel;
   const trackPackage = useLab((s) => s.trackPackage);
   const applyTrackPackage = useLab((s) => s.applyTrackPackage);
   const pistFileRef = useRef<HTMLInputElement>(null);
   const dataMarkerRefs = useRef<Map<string, maplibregl.Marker>>(new Map());
 
   const track = useMemo(() => activeTrack({ tracks, activeTrackId }), [tracks, activeTrackId]);
+  // "Fit to lap" (Rider mode): the track model's corners on the rider's line, picked on the map
+  const fitActive = solverMode === 'rider' && !!simLine && !!track?.turns.length;
+  const fitZones = useMemo(() => (fitActive && simLine && track ? cornerZones(simLine, track) : []), [fitActive, simLine, track]);
   const entries = useMemo(() => selectedLapEntries({ sessions, selectedLaps }), [sessions, selectedLaps]);
 
   // Unsaved schema preview pushed by SchemaImport.
@@ -428,12 +429,12 @@ export default function MapView() {
     setData(map, 'pist', pistGeoJson(trackPackage));
   }, [ready, track, entries, metrics, preview, lapMeta, corridor, simLine, simCorners, trackPackage]);
 
-  // ---------- fitted corners (Fit to reference): pick a corner on the map ----------
+  // ---------- track-model corners (Fit to lap): pick a corner on the map ----------
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready) return;
-    setData(map, 'fitCorners', fitActive ? fitCornersGeoJson(fitLine!, fitModel!.corners, fitCorner) : EMPTY);
-  }, [ready, fitActive, fitLine, fitModel, fitCorner]);
+    setData(map, 'fitCorners', fitActive && simLine ? fitCornersGeoJson(simLine, fitZones, fitCorner) : EMPTY);
+  }, [ready, fitActive, simLine, fitZones, fitCorner]);
 
   // ---------- layer toggles ----------
   useEffect(() => {
@@ -1250,7 +1251,7 @@ function addDataLayers(map: maplibregl.Map): void {
     },
     paint: { 'text-color': '#ffffff', 'text-halo-color': '#000000', 'text-halo-width': 1 },
   });
-  // Fit to reference: the fitted corners, picked on the map (sim panel sliders)
+  // Fit to lap: the track model's corners on the rider's line, picked on the map (sim panel sliders)
   map.addLayer({
     id: 'fit-zone',
     type: 'line',
@@ -1271,10 +1272,10 @@ function addDataLayers(map: maplibregl.Map): void {
     paint: {
       'circle-radius': [
         'interpolate', ['linear'], ['zoom'],
-        13, ['case', ['==', ['get', 'kind'], 'min'], 3, ['get', 'sel'], 7, 5],
-        18, ['case', ['==', ['get', 'kind'], 'min'], 5, ['get', 'sel'], 10, 8],
+        13, ['case', ['get', 'sel'], 7, 5],
+        18, ['case', ['get', 'sel'], 10, 8],
       ],
-      'circle-color': ['case', ['==', ['get', 'kind'], 'min'], '#3da5ff', ['get', 'sel'], '#ffd166', '#ff4d6d'],
+      'circle-color': ['case', ['get', 'sel'], '#ffd166', '#ff4d6d'],
       'circle-stroke-color': '#000000',
       'circle-stroke-width': 1.5,
     },

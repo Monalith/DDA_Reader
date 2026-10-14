@@ -1,14 +1,15 @@
-// Browser-only Web Worker around `buildFitModel` (fitModel.ts): the per-corner
-// fit runs up to ~30 s, off the main thread. Not imported by any test.
+// Browser-only Web Worker around `fitRiderToLap` (riderFit.ts): "Fit to lap"
+// runs up to ~25 s, off the main thread. Not imported by any test.
 //
 //   in : { type:'fit', id, track, corridor, params, lapRef, budgetMs }
-//   out: { type:'progress', id, frac, stage, error? } | { type:'done', id, model } | { type:'error', id, message }
+//   out: { type:'progress', id, frac, stage, error? } | { type:'done', id, result } | { type:'error', id, message }
 //
-// The fit is synchronous inside the worker; a newer request terminates this
-// worker (fitRunner in ui/panels/simRunners.ts) instead of cancelling it.
+// `result` is a RiderFitResult (plain data: typed arrays and numbers). The fit
+// is synchronous inside the worker; a newer request terminates this worker
+// instead of cancelling it.
 import type { TrackModel } from '../core/types';
-import { buildFitModel } from './fitModel';
 import type { LapReference } from './lapReference';
+import { fitRiderToLap } from './riderFit';
 import type { Corridor, SimParams } from './types';
 
 interface FitMsg {
@@ -26,8 +27,8 @@ self.onmessage = (e: MessageEvent<FitMsg>): void => {
   if (m.type !== 'fit') return;
   try {
     let last = 0;
-    const model = buildFitModel(m.track, m.corridor, m.params, m.lapRef, {
-      budgetMs: m.budgetMs,
+    const result = fitRiderToLap(m.track, m.corridor, m.params, m.lapRef, {
+      budgetMs: m.budgetMs ?? 25_000,
       onProgress: (p) => {
         const t = Date.now();
         if (p.frac < 1 && t - last < 150) return;
@@ -35,7 +36,7 @@ self.onmessage = (e: MessageEvent<FitMsg>): void => {
         self.postMessage({ type: 'progress', id: m.id, ...p });
       },
     });
-    self.postMessage({ type: 'done', id: m.id, model });
+    self.postMessage({ type: 'done', id: m.id, result });
   } catch (err) {
     self.postMessage({ type: 'error', id: m.id, message: (err as Error).message });
   }

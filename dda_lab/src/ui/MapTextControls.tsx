@@ -32,7 +32,7 @@ export default function MapTextControls({ turnLabels: t, setTurnLabels, deltas =
             per kind
           </button>
         ) : undefined)}
-      {row('Rider B/T/A/P/E', t.eventSize ?? 11, 8, 28, 'map-text-event-size', (v) => setTurnLabels({ eventSize: v }), t.eventColor ?? '#ffffff', 'map-text-event-color', (v) => setTurnLabels({ eventColor: v }))}
+      {row('Rider B/T/A/P/E', t.eventSize ?? D.eventSize!, 8, 28, 'map-text-event-size', (v) => setTurnLabels({ eventSize: v }), t.eventColor ?? D.eventColor, 'map-text-event-color', (v) => setTurnLabels({ eventColor: v }))}
       {deltas && (
         <>
           <div className="ps-row">
@@ -52,7 +52,7 @@ export default function MapTextControls({ turnLabels: t, setTurnLabels, deltas =
         </>
       )}
       <div className="ps-row">
-        <button className="btn-mini" data-testid="map-text-reset" onClick={() => setTurnLabels({ turnSize: D.turnSize, turnColor: D.turnColor, pointSize: D.pointSize, pointColor: undefined, eventSize: undefined, eventColor: undefined })}>
+        <button className="btn-mini" data-testid="map-text-reset" onClick={() => setTurnLabels({ turnSize: D.turnSize, turnColor: D.turnColor, pointSize: D.pointSize, pointColor: D.pointColor, eventSize: D.eventSize, eventColor: D.eventColor, size: D.size, gain: D.gain, loss: D.loss, best: D.best })}>
           Reset map text
         </button>
       </div>

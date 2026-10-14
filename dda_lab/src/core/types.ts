@@ -212,7 +212,14 @@ export interface TurnLabelStyle {
   eventColor?: string;
 }
 
-export const DEFAULT_TURN_LABELS: TurnLabelStyle = { show: false, onMap: true, speed: true, size: 16, gain: '#00e676', loss: '#ff3d57', best: '#ffffff', turnSize: 15, turnColor: '#ffd166', pointSize: 13 };
+// Owner's preferred map text (2026-10-14): small Δ labels, pink for lost time, every km/h point white.
+export const DEFAULT_TURN_LABELS: TurnLabelStyle = {
+  show: false, onMap: true, speed: true,
+  size: 10, gain: '#2ae47d', loss: '#ea749e', best: '#ffffff',
+  turnSize: 15, turnColor: '#ffd166',
+  pointSize: 11, pointColor: '#ffffff',
+  eventSize: 10, eventColor: '#ffffff',
+};
 
 /** A math channel: one formula for every lap, optionally overridden per lap (key = `${sessionId}:${lapN}`). */
 export interface MathChannelDef {

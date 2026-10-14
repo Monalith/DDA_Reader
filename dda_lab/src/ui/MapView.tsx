@@ -571,8 +571,8 @@ export default function MapView() {
     const ts = turnLabels.turnSize ?? DEFAULT_TURN_LABELS.turnSize!;
     const tc = turnLabels.turnColor ?? DEFAULT_TURN_LABELS.turnColor!;
     const ps = turnLabels.pointSize ?? DEFAULT_TURN_LABELS.pointSize!;
-    const es = turnLabels.eventSize ?? 11;
-    const ec = turnLabels.eventColor ?? '#ffffff';
+    const es = turnLabels.eventSize ?? DEFAULT_TURN_LABELS.eventSize!;
+    const ec = turnLabels.eventColor ?? DEFAULT_TURN_LABELS.eventColor!;
     if (map.getLayer('markers-turn')) {
       map.setLayoutProperty('markers-turn', 'text-size', zoomRadius(Math.max(8, ts - 2), ts + 5));
       map.setPaintProperty('markers-turn', 'text-color', tc);

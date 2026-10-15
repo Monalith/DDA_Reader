@@ -55,6 +55,22 @@ export default function TopBar() {
         {busy ? 'Loading…' : '📂 Open sessions'}
       </button>
       <input ref={fileRef} type="file" multiple accept=".dda,.json,.csv,.lab.json" hidden data-testid="open-files" onChange={(e) => onFiles(e.target.files)} />
+      <button
+        className="btn"
+        data-testid="save-session"
+        disabled={!sessions.some((s) => !s.isSim)}
+        title="Save everything that is open (runs, laps, track, markers, charts, rider settings) as one .lab.json; reopen it with Open sessions"
+        onClick={() => {
+          const st = useLab.getState();
+          const d = new Date();
+          const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}-${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
+          download(`dda-lab-session-${stamp}.lab.json`, st.serializeLabSession());
+          const n = st.sessions.filter((s) => !s.isSim).length;
+          st.setStatus(`Session saved: ${n} run${n === 1 ? '' : 's'}, ${st.selectedLaps.length} workspace lap${st.selectedLaps.length === 1 ? '' : 's'}, ${st.markers.length} marker${st.markers.length === 1 ? '' : 's'}`);
+        }}
+      >
+        💾 Save session
+      </button>
       <div className="chips">
         {sessions.map((s) => (
           <span className="chip" key={s.id} style={{ borderColor: s.color }}>

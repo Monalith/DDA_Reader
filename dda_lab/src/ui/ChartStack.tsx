@@ -29,7 +29,6 @@ export default function ChartStack() {
   const xRange = useLab((s) => s.xRange);
   const setXRange = useLab((s) => s.setXRange);
   const track = useLab(activeTrack);
-  const hasCursor = useLab((s) => s.cursor !== null);
   const nMarkers = useLab((s) => s.markers.length);
   const nSelected = useLab((s) => s.selectedLaps.length);
 
@@ -57,7 +56,13 @@ export default function ChartStack() {
   const placeMarker = (prefer: 'click' | 'hover') => {
     const st = useLab.getState();
     const m = st.addMarkerAtCursor(prefer);
-    st.setStatus(m ? `Marker ${m.name} placed — drag its flag to move it, double-click it for a note` : 'Click a chart or the map first to place a marker');
+    st.setStatus(
+      m
+        ? `Marker ${m.name} placed — drag its flag to move it, double-click it for a note`
+        : prefer === 'click'
+          ? 'Click a point on a chart (or the map) first — the marker goes on the dashed line'
+          : 'Hover a chart or the map first to place a marker',
+    );
   };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -146,9 +151,9 @@ export default function ChartStack() {
         <button
           className="btn-mini marker-btn"
           data-testid="add-marker"
-          disabled={!hasCursor && !hasClick}
+          disabled={!hasClick}
           onClick={() => placeMarker('click')}
-          title={hasClick ? 'Place a marker where you last clicked (M key = under the mouse)' : 'Click a chart or the map, then press this (or M under the mouse)'}
+          title={hasClick ? 'Place a marker on the dashed line (where you last clicked); M key = under the mouse' : 'Click a point on a chart or the map, then press this (or M under the mouse)'}
         >
           📍 Mark{nMarkers ? ` (${nMarkers})` : ''}
         </button>

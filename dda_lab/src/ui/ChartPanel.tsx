@@ -175,8 +175,16 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
   const track = useLab(activeTrack);
   const markers = useLab((s) => s.markers);
   const activeMarkerId = useLab((s) => s.activeMarkerId);
+  const clickPos = useLab((s) => s.clickPos);
 
   const xAxis = panelXAxis(panel, workspace);
+  // the pinned (last clicked) sample: drawn on every chart so the user sees where 📍 Mark will go
+  const clickX = useMemo(
+    () => (clickPos ? markerX(sessions, { id: '', name: '', color: '', sessionId: clickPos.sessionId, idx: clickPos.idx }, xAxis) : null),
+    [clickPos, sessions, xAxis],
+  );
+  const clickXRef = useRef<number | null>(clickX);
+  clickXRef.current = clickX;
   const sharedX = xAxis === workspace.xAxis; // a time panel ignores a distance zoom and vice versa
   const unitMph = workspace.unitMph;
 
@@ -388,7 +396,11 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
         setSelect: [
           (u) => {
             const sel = u.select;
-            if (!sel || sel.width <= 2) return;
+            // a few px of wobble during a click is not a zoom (the click pins the sample instead)
+            if (!sel || sel.width <= 8) {
+              if (sel && sel.width > 0) u.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false);
+              return;
+            }
             const min = u.posToVal(sel.left, 'x');
             const max = u.posToVal(sel.left + sel.width, 'x');
             u.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false);
@@ -460,6 +472,28 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
                 ctx.moveTo(left, y0);
                 ctx.lineTo(left + width, y0);
                 ctx.stroke();
+              }
+            }
+            // ---- the pinned click: dashed white line with a small triangle at the top ----
+            const cx = clickXRef.current;
+            if (cx !== null) {
+              const px = u.valToPos(cx, 'x', true);
+              if (Number.isFinite(px) && px >= left && px <= left + width) {
+                ctx.setLineDash([4 * dpr, 3 * dpr]);
+                ctx.lineWidth = 1.5 * dpr;
+                ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+                ctx.beginPath();
+                ctx.moveTo(px, top);
+                ctx.lineTo(px, top + height);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                ctx.fillStyle = 'rgba(255,255,255,0.95)';
+                ctx.beginPath();
+                ctx.moveTo(px - 5 * dpr, top);
+                ctx.lineTo(px + 5 * dpr, top);
+                ctx.lineTo(px, top + 7 * dpr);
+                ctx.closePath();
+                ctx.fill();
               }
             }
             // ---- user markers: solid vertical line + value dots (the flag is a DOM element) ----
@@ -534,8 +568,12 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
     const onDownPin = (e: MouseEvent) => {
       downAt = e.button === 0 ? [e.clientX, e.clientY] : null;
     };
+    // Pinned on mouseup, not click: after even a few px of movement uPlot swallows the click
+    // (it treats the press as a drag-select), and a hand on a real mouse always wobbles a little.
     const onClickPin = (e: MouseEvent) => {
-      if (!downAt || Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 3) return;
+      const d0 = downAt;
+      downAt = null;
+      if (e.button !== 0 || !d0 || Math.hypot(e.clientX - d0[0], e.clientY - d0[1]) > 8) return;
       const r = u.over.getBoundingClientRect();
       const xv = u.posToVal(e.clientX - r.left, 'x');
       const line = linesRef.current[0];
@@ -546,7 +584,7 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
       useLab.getState().setClickPos({ sessionId: s.id, idx });
     };
     u.over.addEventListener('mousedown', onDownPin);
-    u.over.addEventListener('click', onClickPin);
+    u.over.addEventListener('mouseup', onClickPin);
     const detachX = attachXInteractions(u, {
       get: () => {
         const sc = u.scales.x;
@@ -611,7 +649,7 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
       for (const d of detachYs) d();
       u.over.removeEventListener('dblclick', onDblClick);
       u.over.removeEventListener('mousedown', onDownPin);
-      u.over.removeEventListener('click', onClickPin);
+      u.over.removeEventListener('mouseup', onClickPin);
       u.destroy();
       if (uRef.current === u) uRef.current = null;
     };
@@ -687,7 +725,7 @@ export default function ChartPanel({ panel }: { panel: Panel }) {
   // ---- markers changed: repaint the overlay ----------------------------
   useEffect(() => {
     uRef.current?.redraw(false, true);
-  }, [markerCols, activeMarkerId, turnRows, turnLabels]);
+  }, [markerCols, activeMarkerId, turnRows, turnLabels, clickX]);
 
   legendRefs.current.length = lines.length;
 

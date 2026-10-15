@@ -22,7 +22,8 @@ import { riderFitRunner } from '../ui/panels/simRunners';
 import { ownerOffsets } from '../sim/ownerOffsets';
 import type { Reference } from '../sim/reference';
 import { DERIVED_KEYS, deriveRider } from '../sim/derive';
-import { DEFAULT_SIM_PARAMS, presetById } from '../sim/presets';
+import { clampParams, DEFAULT_SIM_PARAMS, presetById } from '../sim/presets';
+import { serializeLabSession, type LabSessionState } from '../core/labSession';
 import { gripRiskMessage } from '../sim/risk';
 import type { Corner, Corridor, DerivedRiderKey, Line, RiderParams, SimParams, SolverMode } from '../sim/types';
 
@@ -301,6 +302,10 @@ export interface LabState {
 
   addSession(s: Session): void;
   removeSession(id: string): void;
+  /** "Save session" → a `.lab.json` with everything that is open (src/core/labSession.ts). */
+  serializeLabSession(): string;
+  /** Replace everything that is open with a saved lab session. */
+  restoreLabSession(s: LabSessionState): void;
   /** Change a run's colour (map trace, chart lines and lap table); laps with their own colour keep it. */
   setSessionColor(id: string, color: string): void;
   replaceSession(s: Session): void;
@@ -320,8 +325,9 @@ export interface LabState {
   /** Set (or clear with null) the formula of one math channel for one run (session) only. */
   setMathSessionExpr(name: string, sessionId: string, expr: string | null): void;
   /**
-   * Place a marker. `prefer: 'click'` (the 📍 button) uses the last clicked sample and falls
-   * back to the hover cursor; `'hover'` (the M key) the other way round. Null when neither exists.
+   * Place a marker. `prefer: 'click'` (the 📍 button) uses the last clicked sample ONLY — never
+   * the spot the mouse happened to leave the chart at; `'hover'` (the M key) uses the hover
+   * cursor and falls back to the click. Null when the wanted position does not exist.
    */
   addMarkerAtCursor(prefer?: 'click' | 'hover'): DataMarker | null;
   addMarker(sessionId: string, idx: number, patch?: Partial<Pick<DataMarker, 'name' | 'color' | 'note'>>): DataMarker;
@@ -556,6 +562,47 @@ export const useLab = create<LabState>((set, get) => ({
       });
     }
   },
+  serializeLabSession() {
+    return serializeLabSession(get());
+  },
+  restoreLabSession(s) {
+    // close everything that is open, the virtual rider's lap included
+    if (get().simEnabled) get().setSimEnabled(false);
+    for (const x of get().sessions) get().removeSession(x.id);
+    const tracks = s.tracks.length ? s.tracks : get().tracks;
+    const activeTrackId = s.activeTrackId && tracks.some((t) => t.id === s.activeTrackId) ? s.activeTrackId : get().activeTrackId;
+    set({
+      tracks,
+      activeTrackId,
+      trackPackage: s.trackPackage,
+      corridor: s.corridor,
+      workspace: s.workspace,
+      lapMeta: s.lapMeta,
+      refLap: s.refLap,
+      markers: [],
+      activeMarkerId: null,
+      cursor: null,
+      clickPos: null,
+      xRange: null,
+      selectedLaps: [],
+    });
+    // derived + math channels come back from the raw ones
+    set({ sessions: refreshAll({ ...get(), sessions: s.sessions }) });
+    const ids = new Set(get().sessions.map((x) => x.id));
+    set({
+      selectedLaps: s.selectedLaps.filter((l) => ids.has(l.sessionId)),
+      xRange: s.xRange,
+      mapColorBy: s.mapColorBy as LabState['mapColorBy'],
+      markers: s.markers.filter((m) => ids.has(m.sessionId)),
+      activeMarkerId: s.activeMarkerId,
+      clickPos: s.clickPos && ids.has(s.clickPos.sessionId) ? s.clickPos : null,
+      simParams: clampParams(s.simParams),
+      solverMode: s.solverMode,
+      riderFit: { ...RIDER_FIT_IDLE, refLap: s.riderFit.refLap, fittedRider: s.riderFit.fittedRider },
+    });
+    persistMarkers(get().markers, get().sessions);
+    if (s.simEnabled) get().setSimEnabled(true);
+  },
   removeSession(id) {
     set((st) => ({
       sessions: st.sessions.filter((s) => s.id !== id),
@@ -709,7 +756,7 @@ export const useLab = create<LabState>((set, get) => ({
   },
   addMarkerAtCursor(prefer = 'click') {
     const { cursor, clickPos, addMarker } = get();
-    const at = prefer === 'click' ? (clickPos ?? cursor) : (cursor ?? clickPos);
+    const at = prefer === 'click' ? clickPos : (cursor ?? clickPos);
     if (!at) return null;
     return addMarker(at.sessionId, at.idx);
   },

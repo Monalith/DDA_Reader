@@ -118,6 +118,10 @@ describe('store: per-lap formulas and markers', () => {
     const st = useLab.getState();
     expect(st.addMarkerAtCursor()).toBeNull();
     st.setCursor({ sessionId: 's1', idx: 125 });
+    // the 📍 button never uses the hover cursor: only a clicked point
+    expect(useLab.getState().addMarkerAtCursor('click')).toBeNull();
+    useLab.getState().setClickPos({ sessionId: 's1', idx: 125 });
+    useLab.getState().setCursor({ sessionId: 's1', idx: 400 }); // the mouse wandered off; the click wins
     const m = useLab.getState().addMarkerAtCursor()!;
     expect(m.name).toBe('M1');
     expect(useLab.getState().activeMarkerId).toBe(m.id);

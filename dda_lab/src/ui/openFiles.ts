@@ -3,6 +3,7 @@ import { loadBundleFromFile, loadSessionFromFile, isBundle } from '../core/sessi
 import { activeTrack, SESSION_COLORS, useLab } from '../state/store';
 import { ensureTrackForSession, saveTrackLocal } from '../state/trackActions';
 import { parsePistPackage } from '../core/pistPackage';
+import { isLabSessionFile, parseLabSession } from '../core/labSession';
 
 /** Opening real data closes the bundled examples (they are just a demo). */
 export function closeExamples(): void {
@@ -14,6 +15,19 @@ export async function openFiles(files: File[], opts: { example?: boolean; colors
   const { addSession, setStatus } = useLab.getState();
   if (!opts.example) closeExamples();
   for (const f of files) {
+    // a saved lab session ("Save session") replaces everything that is open
+    if (await isLabSessionFile(f)) {
+      setStatus(`Restoring session ${f.name}…`);
+      try {
+        const s = parseLabSession(await f.text());
+        useLab.getState().restoreLabSession(s);
+        const st = useLab.getState();
+        setStatus(`${f.name}: ${s.sessions.length} run${s.sessions.length === 1 ? '' : 's'}, ${st.selectedLaps.length} lap${st.selectedLaps.length === 1 ? '' : 's'} in the workspace, ${st.markers.length} marker${st.markers.length === 1 ? '' : 's'} restored`);
+      } catch (e) {
+        setStatus(`${f.name}: ${(e as Error).message}`);
+      }
+      continue;
+    }
     // a `.pist.json` track model (or any JSON that is one) is not a session:
     // it becomes the track and the rider's corridor
     if (await isPistPackage(f)) {

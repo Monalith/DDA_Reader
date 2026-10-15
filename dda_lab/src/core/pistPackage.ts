@@ -1,7 +1,8 @@
 // `.pist.json` track models (the `pist` tool's package, version 2) inside DDA Lab.
 //
 // A package carries a refined 1 m-station centreline, the left/right asphalt
-// edges with per-station confidence, detected corners and a start/finish gate.
+// edges with per-station confidence, detected corners, a start/finish gate and
+// (since 2026-10-15) the sector gates set in the pist tool.
 // Here it becomes (a) the active `TrackModel` — so every loaded lap is
 // projected onto a surveyed centreline instead of one averaged from GPS —
 // and (b) the `Corridor` the virtual rider's line is generated inside, so the
@@ -25,13 +26,17 @@ export interface PistCorner {
   apices: LngLat[];
 }
 
+export interface PistGate { at: LngLat; bearingDeg: number; halfWidthM: number }
+
 export interface PistPackage {
   version: 2;
   name: string;
   center: LngLat;
   lengthM: number;
   direction: 'cw' | 'ccw';
-  startFinish: { at: LngLat; bearingDeg: number; halfWidthM: number } | null;
+  startFinish: PistGate | null;
+  /** split gates in travel order; empty when the package carries none (the lab then splits evenly) */
+  sectors: PistGate[];
   centerline: LngLat[];
   cumDistM: number[];
   leftEdge: (LngLat | null)[];
@@ -59,6 +64,8 @@ export function parsePistPackage(text: string): PistPackage {
     throw new Error('pist package has no usable centerline');
   }
   const n = p.centerline.length;
+  const isGate = (g: unknown): g is PistGate =>
+    !!g && typeof g === 'object' && isLngLat((g as PistGate).at) && Number.isFinite((g as PistGate).bearingDeg);
   if (!Array.isArray(p.cumDistM) || p.cumDistM.length !== n) throw new Error('pist package cumDistM does not match the centerline');
   for (const key of ['leftEdge', 'rightEdge'] as const) {
     const e = p[key];
@@ -77,6 +84,9 @@ export function parsePistPackage(text: string): PistPackage {
       p.startFinish && isLngLat(p.startFinish.at) && Number.isFinite(p.startFinish.bearingDeg)
         ? { at: p.startFinish.at, bearingDeg: p.startFinish.bearingDeg, halfWidthM: p.startFinish.halfWidthM || 15 }
         : null,
+    sectors: Array.isArray(p.sectors)
+      ? p.sectors.filter(isGate).map((g) => ({ at: g.at, bearingDeg: g.bearingDeg, halfWidthM: g.halfWidthM > 0 ? g.halfWidthM : 15 }))
+      : [],
     centerline: p.centerline,
     cumDistM: p.cumDistM.map(Number),
     leftEdge: p.leftEdge as (LngLat | null)[],
@@ -102,7 +112,7 @@ function bearingDeg(a: LngLat, b: LngLat): number {
 /**
  * The lab `TrackModel` for a package: the centreline subsampled to
  * `LAB_STEP_M`, the package gate (or the first station when it has none),
- * three default sector gates and the package corners as turns. `id` is stable
+ * the package's sector gates (three even ones when it has none) and the package corners as turns. `id` is stable
  * per package name so re-applying the same model replaces, not duplicates.
  */
 export function trackFromPist(p: PistPackage): TrackModel {
@@ -144,7 +154,9 @@ export function trackFromPist(p: PistPackage): TrackModel {
     cumDistM,
     lengthM,
     startFinish: sf,
-    sectors: defaultSectorGates(centerline, cumDistM, sf),
+    sectors: p.sectors.length
+      ? p.sectors.map((g, k) => ({ id: `split${k + 1}`, name: `S${k + 1}`, type: 'split' as const, at: g.at, bearingDeg: g.bearingDeg, halfWidthM: g.halfWidthM }))
+      : defaultSectorGates(centerline, cumDistM, sf),
     turns,
   };
 }

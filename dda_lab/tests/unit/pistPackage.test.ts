@@ -33,6 +33,28 @@ describe('pist package → track model + corridor', () => {
     for (let i = 1; i < t.cumDistM.length; i++) expect(t.cumDistM[i]).toBeGreaterThan(t.cumDistM[i - 1]);
   });
 
+  it('uses the package sector gates when it has them, else splits evenly', () => {
+    const obj = JSON.parse(TEXT);
+    const i1 = Math.floor(obj.centerline.length * 0.4), i2 = Math.floor(obj.centerline.length * 0.7);
+    obj.sectors = [
+      { at: obj.centerline[i1], bearingDeg: 12.5, halfWidthM: 9 },
+      { at: obj.centerline[i2], bearingDeg: 200, halfWidthM: 9 },
+      { at: [1, 'x'], bearingDeg: 1, halfWidthM: 9 }, // malformed: dropped
+    ];
+    const withS = parsePistPackage(JSON.stringify(obj));
+    expect(withS.sectors.length).toBe(2);
+    const t = trackFromPist(withS);
+    expect(t.sectors.map((g) => [g.id, g.name, g.type])).toEqual([['split1', 'S1', 'split'], ['split2', 'S2', 'split']]);
+    expect(t.sectors[0]!.at).toEqual(obj.centerline[i1]);
+    expect(t.sectors[0]!.bearingDeg).toBe(12.5);
+    expect(t.sectors[1]!.halfWidthM).toBe(9);
+    // no sectors field (older package) → the even default, as before
+    delete obj.sectors;
+    const noS = parsePistPackage(JSON.stringify(obj));
+    expect(noS.sectors).toEqual([]);
+    expect(trackFromPist(noS).sectors.length).toBe(2);
+  });
+
   it('turns the package edges into a corridor on its own track', () => {
     const t = trackFromPist(p);
     const c = corridorFromPist(p, t)!;

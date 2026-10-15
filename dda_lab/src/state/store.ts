@@ -25,6 +25,7 @@ import { DERIVED_KEYS, deriveRider } from '../sim/derive';
 import { clampParams, DEFAULT_SIM_PARAMS, presetById } from '../sim/presets';
 import { serializeLabSession, type LabSessionState } from '../core/labSession';
 import { gripRiskMessage } from '../sim/risk';
+import type { VideoSync } from '../video/sync';
 import type { Corner, Corridor, DerivedRiderKey, Line, RiderParams, SimParams, SolverMode } from '../sim/types';
 
 /** "Fit to lap" progress, as the worker reports it. */
@@ -312,7 +313,8 @@ export interface LabState {
   toggleLap(sessionId: string, lap: number): void;
   selectOnlyLap(sessionId: string, lap: number): void;
   setRefLap(sel: LapRef | undefined): void;
-  setCursor(c: CursorPos | null): void;
+  /** `source` 'video' marks a cursor driven by video playback (the player ignores it when following). */
+  setCursor(c: CursorPos | null, source?: 'user' | 'video'): void;
   setXRange(r: [number, number] | null): void;
   setWorkspace(patch: Partial<Workspace>): void;
   setChannelProc(sessionId: string, ch: string, proc: ChannelProc): void;
@@ -349,6 +351,21 @@ export interface LabState {
   applyTurnHints(sessionId: string): boolean;
   setMapColorBy(c: LabState['mapColorBy']): void;
   setMapMaximized(v: boolean): void;
+
+  // ---- onboard video (src/ui/VideoPanel.tsx, src/video/) ----
+  /** Who set `cursor` last: the video player drives it while playing ('video'), everything else is 'user'. */
+  cursorSource: 'user' | 'video';
+  /** What the right pane shows: the map, the video, or the map with the video as picture-in-picture. */
+  videoView: 'map' | 'video' | 'both';
+  /** Video ⇔ session sync: video_time = session.t[idx] − offsetS. Null until a video is opened. */
+  videoSync: VideoSync | null;
+  /** What moves the video: the chart/map hover cursor, the last click, or nothing. */
+  videoFollow: 'hover' | 'click' | 'off';
+  /** A restored lab session referenced this video file: the panel asks the user to re-open it. */
+  videoReopenName: string | null;
+  setVideoView(v: LabState['videoView']): void;
+  setVideoSync(s: VideoSync | null): void;
+  setVideoFollow(f: LabState['videoFollow']): void;
   setBottomTab(t: LabState['bottomTab']): void;
   setStatus(msg: string | null): void;
 }
@@ -538,6 +555,20 @@ export const useLab = create<LabState>((set, get) => ({
   fitCorner: null,
   riderFit: RIDER_FIT_IDLE,
   simLineOptLapTimeS: undefined,
+  cursorSource: 'user',
+  videoView: 'map',
+  videoSync: null,
+  videoFollow: 'hover',
+  videoReopenName: null,
+  setVideoView(v) {
+    set({ videoView: v });
+  },
+  setVideoSync(s) {
+    set({ videoSync: s, videoReopenName: s && get().videoReopenName === s.fileName ? null : get().videoReopenName });
+  },
+  setVideoFollow(f) {
+    set({ videoFollow: f });
+  },
 
   addSession(s) {
     const { workspace, sessions } = get();
@@ -563,7 +594,8 @@ export const useLab = create<LabState>((set, get) => ({
     }
   },
   serializeLabSession() {
-    return serializeLabSession(get());
+    const v = get().videoSync;
+    return serializeLabSession({ ...get(), video: v ? { fileName: v.fileName, offsetS: v.offsetS, sessionId: v.sessionId } : undefined });
   },
   restoreLabSession(s) {
     // close everything that is open, the virtual rider's lap included
@@ -601,6 +633,12 @@ export const useLab = create<LabState>((set, get) => ({
       riderFit: { ...RIDER_FIT_IDLE, refLap: s.riderFit.refLap, fittedRider: s.riderFit.fittedRider },
     });
     persistMarkers(get().markers, get().sessions);
+    // the video file itself is not in the session: keep its sync and ask for the file again
+    if (s.video && ids.has(s.video.sessionId)) {
+      const cur = get().videoSync;
+      const same = cur?.fileName === s.video.fileName;
+      set({ videoSync: { ...s.video }, videoReopenName: same ? null : s.video.fileName, videoView: get().videoView === 'map' ? 'video' : get().videoView });
+    }
     if (s.simEnabled) get().setSimEnabled(true);
   },
   removeSession(id) {
@@ -659,8 +697,8 @@ export const useLab = create<LabState>((set, get) => ({
     set({ refLap: sel });
     set({ sessions: refreshAll(get()) });
   },
-  setCursor(c) {
-    set({ cursor: c });
+  setCursor(c, source = 'user') {
+    set({ cursor: c, cursorSource: source });
   },
   setXRange(r) {
     set({ xRange: r });

@@ -38,6 +38,15 @@ export interface LabSessionState {
   simEnabled: boolean;
   solverMode: SolverMode;
   riderFit: { refLap: { sessionId: string; lapN: number } | null; fittedRider: RiderParams | null };
+  /** Onboard video sync. The video file itself is not stored: only its name and offset. */
+  video?: LabSessionVideo;
+}
+
+/** Video ⇔ session sync carried by a lab session: video_time = session.t[idx] − offsetS. */
+export interface LabSessionVideo {
+  fileName: string;
+  offsetS: number;
+  sessionId: string;
 }
 
 // ---- typed-array tagging ----------------------------------------------------
@@ -196,6 +205,7 @@ export interface LabSessionFile {
   simEnabled: boolean;
   solverMode: SolverMode;
   riderFit: { refLap: { sessionId: string; lapN: number } | null; fittedRider: unknown };
+  video?: LabSessionVideo;
 }
 
 export function serializeLabSession(st: LabSessionState): string {
@@ -224,6 +234,7 @@ export function serializeLabSession(st: LabSessionState): string {
     simEnabled: st.simEnabled,
     solverMode: st.solverMode,
     riderFit: { refLap: st.riderFit.refLap, fittedRider: st.riderFit.fittedRider ? toPlain(st.riderFit.fittedRider) : null },
+    video: st.video && ids.has(st.video.sessionId) && Number.isFinite(st.video.offsetS) ? { fileName: st.video.fileName, offsetS: st.video.offsetS, sessionId: st.video.sessionId } : undefined,
   };
   return JSON.stringify(file);
 }
@@ -266,6 +277,7 @@ const FileZ = z.object({
   simEnabled: z.boolean(),
   solverMode: z.enum(['rider', 'freeTrajectory', 'ocp']),
   riderFit: z.object({ refLap: z.object({ sessionId: z.string(), lapN: z.number() }).nullable(), fittedRider: z.unknown().nullable() }),
+  video: z.object({ fileName: z.string(), offsetS: z.number(), sessionId: z.string() }).optional(),
 });
 
 /** Parse a lab session file back into the state slice (derived/math channels NOT yet computed). */
@@ -292,5 +304,6 @@ export function parseLabSession(json: string): LabSessionState {
     simEnabled: f.simEnabled,
     solverMode: f.solverMode,
     riderFit: { refLap: f.riderFit.refLap, fittedRider: f.riderFit.fittedRider ? (fromPlain(f.riderFit.fittedRider) as RiderParams) : null },
+    video: f.video,
   };
 }

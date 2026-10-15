@@ -1,0 +1,309 @@
+/* Onboard video panel (src/ui/VideoPanel.tsx). Reads the :root theme tokens only. */
+
+.right-pane .map-host {
+  position: absolute;
+  inset: 0;
+}
+.right-pane.view-video .map-host {
+  visibility: hidden;
+}
+
+.video-panel {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  background: #000;
+  color: var(--fg);
+  font-size: 11px;
+  outline: none;
+}
+.video-panel.view-map {
+  display: none;
+}
+.video-panel.view-both {
+  inset: auto 8px 36px auto;
+  width: min(55%, 620px);
+  height: min(52%, 400px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+}
+/* picture-in-picture: the picture, the bar and play only */
+.video-panel.view-both .video-top,
+.video-panel.view-both .video-sync-row,
+.video-panel.view-both .video-cache-row,
+.video-panel.view-both .video-hint,
+.video-panel.view-both .video-transport > :not([data-testid='video-play']):not(.video-tc):not([data-testid='video-overlay-toggle']):not([data-testid='video-fullscreen']):not(.video-spacer) {
+  display: none;
+}
+.video-panel.view-both .video-overlay {
+  transform: scale(0.8);
+  transform-origin: top left;
+}
+.video-panel:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--accent-2);
+}
+.video-panel.drag-over {
+  box-shadow: inset 0 0 0 3px var(--accent);
+}
+.video-panel:fullscreen {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.video-top,
+.video-sync-row,
+.video-transport,
+.video-cache-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.video-top {
+  padding-right: 180px; /* the Map / Video switch sits in this corner */
+}
+.video-bottom {
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+}
+.video-transport,
+.video-cache-row {
+  border-bottom: none;
+}
+
+.vbtn {
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--fg);
+}
+.vbtn:hover:not(:disabled) {
+  border-color: var(--fg-dim);
+}
+.vbtn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.vbtn.small {
+  padding: 1px 6px;
+}
+.vbtn.accent {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.vbtn.active {
+  background: var(--accent-2);
+  border-color: var(--accent-2);
+  color: #000;
+}
+
+.vfield {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--fg-dim);
+}
+.vfield select,
+.vfield input,
+.video-cache-row select {
+  font-size: 11px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  padding: 1px 3px;
+}
+.vfield input[type='number'] {
+  width: 76px;
+}
+.video-speed-fine {
+  width: 70px;
+}
+.video-name {
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.video-name .dim,
+.video-panel .dim {
+  color: var(--fg-dim);
+  font-weight: 400;
+}
+
+.video-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: #000;
+}
+.video-stage video,
+.video-stage .video-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.video-stage .video-canvas {
+  z-index: 1;
+}
+
+.video-empty {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+  padding: 16px;
+  color: var(--fg-dim);
+  border: 2px dashed var(--border);
+  margin: 12px;
+  border-radius: 10px;
+  font-size: 12px;
+}
+.video-reopen-name {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.video-overlay {
+  position: absolute;
+  z-index: 3;
+  left: 10px;
+  top: 10px;
+  padding: 6px 10px;
+  min-width: 150px;
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 6px;
+  pointer-events: none;
+  font-size: 12px;
+  line-height: 1.35;
+}
+.vo-big {
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+.vo-unit {
+  font-size: 11px;
+  font-weight: 400;
+  margin-left: 4px;
+  color: var(--fg-dim);
+}
+.vo-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.vo-tc {
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--fg-dim);
+}
+.video-warn,
+.video-hint {
+  position: absolute;
+  z-index: 3;
+  right: 10px;
+  bottom: 10px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+.video-warn {
+  color: var(--accent);
+}
+
+.video-seek {
+  display: block;
+  width: calc(100% - 12px);
+  margin: 4px 6px 0;
+  accent-color: var(--accent);
+}
+.video-tc {
+  min-width: 70px;
+  text-align: center;
+  color: var(--fg-dim);
+}
+.video-spacer {
+  flex: 1 1 auto;
+}
+
+.video-cache-progress {
+  position: relative;
+  flex: 1 1 140px;
+  height: 16px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+.video-cache-progress .bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: color-mix(in srgb, var(--good) 45%, transparent);
+  transition: width 0.15s linear;
+}
+.video-cache-progress span {
+  position: relative;
+  padding-left: 6px;
+  line-height: 14px;
+  font-size: 10px;
+}
+
+/* the Map / Video / Both switch (Layout.tsx), above both the map and the video */
+.map-video-toggle {
+  position: absolute;
+  z-index: 20;
+  top: 6px;
+  right: 8px;
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--panel);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+.map-video-toggle button {
+  font-size: 11px;
+  padding: 3px 9px;
+  border: none;
+  background: transparent;
+  color: var(--fg-dim);
+}
+.map-video-toggle button + button {
+  border-left: 1px solid var(--border);
+}
+.map-video-toggle button.active {
+  background: var(--accent);
+  color: #000;
+  font-weight: 600;
+}
+
+.video-reopen-banner {
+  position: absolute;
+  z-index: 4;
+  left: 50%;
+  top: 10px;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.75);
+}

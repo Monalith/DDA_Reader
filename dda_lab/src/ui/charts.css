@@ -389,3 +389,27 @@ table.lap-table tbody tr.out td, table.lap-table tbody tr.in td { color: var(--f
 .labels-pop { left: 0; right: auto; top: 24px; width: 300px; }
 .label-preview { font-weight: 800; padding: 1px 6px; -webkit-text-stroke: 0; text-shadow: -1px -1px 0 #080a0e, 1px -1px 0 #080a0e, -1px 1px 0 #080a0e, 1px 1px 0 #080a0e, 0 0 4px #080a0e; }
 .labels-pop input[type='color'] { width: 34px; height: 22px; padding: 0; border: 1px solid var(--border); background: transparent; }
+
+/* ---- panel reorder: grip, ▲/▼, drop indicator ---- */
+.chart-panel { position: relative; }
+.panel-grip {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 18px; margin-right: 1px;
+  color: var(--fg-dim); font-size: 12px; line-height: 1; letter-spacing: -3px;
+  cursor: grab; user-select: none; touch-action: none; border-radius: 3px;
+}
+.panel-grip:hover { color: var(--accent); background: var(--panel-2); }
+.panel-grip:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; color: var(--accent); }
+.chart-panel.dragging .panel-grip { cursor: grabbing; color: var(--accent); }
+.chart-panel.dragging { opacity: 0.55; }
+.panel-order { display: inline-flex; gap: 1px; }
+.panel-order .btn-mini { padding: 1px 4px; font-size: 9px; line-height: 14px; }
+.panel-order .btn-mini:disabled { opacity: 0.3; cursor: default; }
+.panel-order .btn-mini:disabled:hover { border-color: var(--border); color: var(--fg); }
+.chart-panel.drop-before::before,
+.chart-panel.drop-after::after {
+  content: ''; position: absolute; left: 0; right: 0; height: 3px; z-index: 40;
+  background: var(--accent); box-shadow: 0 0 6px var(--accent); pointer-events: none;
+}
+.chart-panel.drop-before::before { top: -2px; }
+.chart-panel.drop-after::after { bottom: -2px; }

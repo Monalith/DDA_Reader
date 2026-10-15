@@ -5,10 +5,12 @@ import LapTable from './LapTable';
 import ChartStack from './ChartStack';
 import MapView from './MapView';
 import BottomPanels from './panels/BottomPanels';
+import VideoPanel, { MapVideoToggle } from './VideoPanel';
 
 export default function Layout() {
   const splitPct = useLab((s) => s.workspace.splitPct);
   const mapMax = useLab((s) => s.mapMaximized);
+  const videoView = useLab((s) => s.videoView);
   const setWorkspace = useLab((s) => s.setWorkspace);
   const dragging = useRef(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -58,8 +60,13 @@ export default function Layout() {
             document.body.style.cursor = 'col-resize';
           }}
         />
-        <section className="right-pane" aria-label="Map">
-          <MapView />
+        <section className={`right-pane view-${videoView}`} aria-label="Map">
+          {/* the map stays mounted (hidden, not unmounted) while the video is shown */}
+          <div className="map-host">
+            <MapView />
+          </div>
+          <VideoPanel />
+          <MapVideoToggle />
         </section>
       </div>
     </div>

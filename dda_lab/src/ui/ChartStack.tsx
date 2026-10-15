@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import 'uplot/dist/uPlot.min.css';
 import './charts.css';
 import { DEFAULT_TURN_LABELS, type Workspace } from '../core/types';
@@ -20,6 +21,23 @@ import MapTextControls from './MapTextControls';
 import { focusRangeLabel, stepTurnIndex, turnFocusRange, turnOptionLabel } from './focus';
 
 type Panel = Workspace['panels'][number];
+
+/** Move the panel at `from` to index `to` (both in the current array); a copy is returned. */
+function movePanel(panels: Panel[], from: number, to: number): Panel[] {
+  if (from === to || from < 0 || to < 0 || from >= panels.length || to >= panels.length) return panels;
+  const next = panels.slice();
+  const [p] = next.splice(from, 1);
+  next.splice(to, 0, p);
+  return next;
+}
+
+/** Drag state of the grip: which panel, and the insertion slot (0..n, "before panel slot") under the pointer. */
+interface PanelDrag {
+  id: string;
+  from: number;
+  slot: number | null;
+  pointerId: number;
+}
 
 export default function ChartStack() {
   const sessions = useLab((s) => s.sessions);
@@ -111,6 +129,64 @@ export default function ChartStack() {
     update([...panels, { id: `p${Date.now()}`, channels: [{ name: 'speed', axis: 'L' }] }]);
 
   const removePanel = (id: string) => update(panels.filter((p) => p.id !== id));
+
+  // ---- reorder: ▲/▼ buttons, grip drag, Alt+↑/↓ on the grip --------------
+  const move = (id: string, dir: -1 | 1) => {
+    const cur = useLab.getState().workspace.panels;
+    const from = cur.findIndex((p) => p.id === id);
+    if (from < 0) return;
+    update(movePanel(cur, from, from + dir));
+  };
+  const panelEls = useRef(new Map<string, HTMLDivElement>());
+  const [drag, setDrag] = useState<PanelDrag | null>(null);
+  /** Insertion slot for a pointer at clientY: before the first panel whose vertical midpoint is below it. */
+  const slotAt = (clientY: number): number => {
+    const cur = useLab.getState().workspace.panels;
+    for (let i = 0; i < cur.length; i++) {
+      const el = panelEls.current.get(cur[i].id);
+      if (!el) continue;
+      const r = el.getBoundingClientRect();
+      if (clientY < r.top + r.height / 2) return i;
+    }
+    return cur.length;
+  };
+  const onGripDown = (e: ReactPointerEvent<HTMLSpanElement>, id: string) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const from = panels.findIndex((p) => p.id === id);
+    if (from < 0) return;
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    e.currentTarget.focus();
+    setDrag({ id, from, slot: null, pointerId: e.pointerId });
+  };
+  const onGripMove = (e: ReactPointerEvent<HTMLSpanElement>) => {
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    const slot = slotAt(e.clientY);
+    // slots right before/after the dragged panel would leave it where it is
+    const effective = slot === drag.from || slot === drag.from + 1 ? null : slot;
+    if (effective !== drag.slot) setDrag({ ...drag, slot: effective });
+  };
+  const onGripUp = (e: ReactPointerEvent<HTMLSpanElement>) => {
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    e.currentTarget.releasePointerCapture?.(e.pointerId);
+    const { from, slot } = drag;
+    setDrag(null);
+    if (slot == null) return;
+    const cur = useLab.getState().workspace.panels;
+    update(movePanel(cur, from, slot > from ? slot - 1 : slot));
+  };
+  const onGripKey = (e: ReactKeyboardEvent<HTMLSpanElement>, id: string) => {
+    if (e.key === 'Escape' && drag) {
+      setDrag(null);
+      return;
+    }
+    if (!e.altKey || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    move(id, e.key === 'ArrowUp' ? -1 : 1);
+    // React moves the node, focus stays on the grip
+  };
   const [settingsFor, setSettingsFor] = useState<string | null>(null);
   const [labelsOpen, setLabelsOpen] = useState(false);
   const turnLabels = useLab((s) => s.workspace.turnLabels ?? DEFAULT_TURN_LABELS);
@@ -313,12 +389,41 @@ export default function ChartStack() {
         </span>
       </div>
 
-      {panels.map((panel) => {
+      {panels.map((panel, idx) => {
         const free = names.filter((n) => !panel.channels.some((c) => c.name === n));
         const axis = axisFor[panel.id] ?? 'L';
+        const dropBefore = drag?.slot === idx;
+        const dropAfter = drag?.slot === panels.length && idx === panels.length - 1;
+        const cls = ['chart-panel', drag?.id === panel.id ? 'dragging' : '', dropBefore ? 'drop-before' : '', dropAfter ? 'drop-after' : '']
+          .filter(Boolean)
+          .join(' ');
         return (
-          <div className="chart-panel" key={panel.id}>
+          <div
+            className={cls}
+            key={panel.id}
+            data-testid={`chart-panel-${panel.id}`}
+            data-panel-id={panel.id}
+            ref={(el) => {
+              if (el) panelEls.current.set(panel.id, el);
+              else panelEls.current.delete(panel.id);
+            }}
+          >
             <div className="chart-panel-head">
+              <span
+                className="panel-grip"
+                data-testid={`panel-grip-${panel.id}`}
+                role="button"
+                tabIndex={0}
+                aria-label={`Move panel ${idx + 1} of ${panels.length} (drag, or Alt+Arrow keys)`}
+                title="Drag to reorder · Alt+↑/↓ when focused"
+                onPointerDown={(e) => onGripDown(e, panel.id)}
+                onPointerMove={onGripMove}
+                onPointerUp={onGripUp}
+                onPointerCancel={() => setDrag(null)}
+                onKeyDown={(e) => onGripKey(e, panel.id)}
+              >
+                ⋮⋮
+              </span>
               {panel.title && <span className="panel-title">{panel.title}</span>}
               {panel.channels.map((c) => (
                 <button
@@ -364,6 +469,28 @@ export default function ChartStack() {
               >
                 ⚙
               </button>
+              <span className="panel-order">
+                <button
+                  className="btn-mini"
+                  data-testid={`panel-up-${panel.id}`}
+                  disabled={idx === 0}
+                  onClick={() => move(panel.id, -1)}
+                  title="Move panel up"
+                  aria-label="Move panel up"
+                >
+                  ▲
+                </button>
+                <button
+                  className="btn-mini"
+                  data-testid={`panel-down-${panel.id}`}
+                  disabled={idx === panels.length - 1}
+                  onClick={() => move(panel.id, 1)}
+                  title="Move panel down"
+                  aria-label="Move panel down"
+                >
+                  ▼
+                </button>
+              </span>
               <button className="btn-mini" onClick={() => removePanel(panel.id)} title="Remove panel">
                 ⨉
               </button>

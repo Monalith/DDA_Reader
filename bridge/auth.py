@@ -228,6 +228,10 @@ def _session_id(request: Request) -> str | None:
 
 
 def current_user(request: Request) -> User | None:
+    # On a hosted deployment (DDA_LAB_HOSTED=1) the synthetic local admin must never
+    # apply: without Google credentials nobody is signed in, nobody is admin.
+    if not auth_enabled() and os.environ.get("DDA_LAB_HOSTED") == "1":
+        return None
     if not auth_enabled():
         return LOCAL_USER
     sid = _session_id(request)

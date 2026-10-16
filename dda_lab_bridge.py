@@ -330,7 +330,7 @@ else:
     )
 
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 def health() -> dict:
     return {"ok": True, "claude": shutil.which("claude") is not None}
 

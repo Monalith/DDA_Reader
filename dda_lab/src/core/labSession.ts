@@ -236,7 +236,7 @@ export function serializeLabSession(st: LabSessionState): string {
     simEnabled: st.simEnabled,
     solverMode: st.solverMode,
     riderFit: { refLap: st.riderFit.refLap, fittedRider: st.riderFit.fittedRider ? toPlain(st.riderFit.fittedRider) : null },
-    video: st.video && ids.has(st.video.sessionId) && Number.isFinite(st.video.offsetS) ? { fileName: st.video.fileName, offsetS: st.video.offsetS, sessionId: st.video.sessionId } : undefined,
+    video: st.video && ids.has(st.video.sessionId) && Number.isFinite(st.video.offsetS) ? { fileName: st.video.fileName, offsetS: st.video.offsetS, sessionId: st.video.sessionId, ...(st.video.startVideoS != null && Number.isFinite(st.video.startVideoS) ? { startVideoS: st.video.startVideoS } : {}) } : undefined,
   };
   return JSON.stringify(file);
 }
@@ -279,7 +279,7 @@ const FileZ = z.object({
   simEnabled: z.boolean(),
   solverMode: z.enum(['rider', 'freeTrajectory', 'ocp']),
   riderFit: z.object({ refLap: z.object({ sessionId: z.string(), lapN: z.number() }).nullable(), fittedRider: z.unknown().nullable() }),
-  video: z.object({ fileName: z.string(), offsetS: z.number(), sessionId: z.string() }).optional(),
+  video: z.object({ fileName: z.string(), offsetS: z.number(), sessionId: z.string(), startVideoS: z.number().optional() }).optional(),
 });
 
 /** Parse a lab session file back into the state slice (derived/math channels NOT yet computed). */

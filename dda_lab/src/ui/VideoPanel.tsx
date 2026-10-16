@@ -14,6 +14,7 @@ import { DEFAULT_CACHE_OPTIONS, FrameCache, fileCacheKey, probeFps, type CachePr
 import { syncIdxForCursor, syncedWorkspaceLap, xRangeIdxRange } from '../video/follow';
 import {
   fmtTimecode,
+  frameIndexAt,
   idxForVideoTime,
   lapAtIdx,
   lapsVideoRange,
@@ -125,6 +126,30 @@ function VideoOverlay({ session }: { session: Session | undefined }) {
   );
 }
 
+/**
+ * 🏁 START badge on the picture: the displayed frame is within one frame of the start line;
+ * before it a dim "before start" hint. Shown with or without the HUD.
+ */
+function StartLineBadge({ startS, fps }: { startS: number | undefined; fps: number }) {
+  const info = useSyncExternalStore(subscribeLive, getLive);
+  if (startS === undefined) return null;
+  const frame = 1 / (fps > 0 ? fps : 30);
+  const d = info.vt - startS;
+  if (Math.abs(d) < frame - 1e-6)
+    return (
+      <div className="video-start-badge" data-testid="video-start-badge">
+        🏁 START
+      </div>
+    );
+  if (d < 0)
+    return (
+      <div className="video-before-start dim num" data-testid="video-before-start">
+        before start · −{fmtTimecode(-d)}
+      </div>
+    );
+  return null;
+}
+
 /** Text lines drawn on an exported frame. */
 function overlayLines(session: Session | undefined, idx: number | null, vt: number): string[] {
   const o = overlayValues(session, idx);
@@ -201,6 +226,7 @@ export default function VideoPanel() {
   const session = useMemo(() => sessions.find((s) => s.id === sync?.sessionId), [sessions, sync?.sessionId]);
   const realSessions = useMemo(() => sessions.filter((s) => !s.isSim), [sessions]);
   const effFps = fps ?? 30;
+  const startVideoS = useLab((s) => s.videoSync?.startVideoS);
 
   // latest values for the long-lived callbacks
   const ctl = useRef({ session, sync, meta, playing, loop, effFps, view, file });
@@ -605,7 +631,7 @@ export default function VideoPanel() {
       const sid = sessionId ?? sy.sessionId;
       setVideoSync({ ...sy, sessionId: sid, offsetS });
       const sess = useLab.getState().sessions.find((x) => x.id === sid) ?? s;
-      storeSync(typeof localStorage === 'undefined' ? undefined : localStorage, sy.fileName, { offsetS, sessionName: sess?.name });
+      storeSync(typeof localStorage === 'undefined' ? undefined : localStorage, sy.fileName, { offsetS, sessionName: sess?.name, startVideoS: sy.startVideoS });
       // show the same sample under the new offset
       const idx = lastIdx.current;
       if (sess && idx != null && !ctl.current.playing) {
@@ -637,6 +663,28 @@ export default function VideoPanel() {
     setOffset(s.t[lap.startIdx] - currentVideoT());
     setStatus(`Synced: L${lap.n} start = video ${fmtTimecode(currentVideoT())}`);
   }, [lapPick, currentVideoT, setOffset, setStatus]);
+
+  // ---------------------------------------------------------------- start line
+  const setStartLine = useCallback(() => {
+    if (!ctl.current.meta) return;
+    const vt = currentVideoT();
+    const lapN = lapPick === '' ? undefined : lapPick;
+    useLab.getState().setVideoStartLine(vt, lapN);
+    emitLive({ idx: live.idx, vt }); // the badge appears on this very frame
+    setStatus(`Start line = video ${fmtTimecode(vt)} (frame ${frameIndexAt(vt, ctl.current.effFps)}${lapN !== undefined ? `, L${lapN} start` : ''})`);
+  }, [currentVideoT, lapPick, setStatus]);
+
+  const goToStartLine = useCallback(() => {
+    const st = useLab.getState().videoSync?.startVideoS;
+    if (st === undefined) return;
+    seekExact(st);
+    emitLive({ idx: live.idx, vt: st });
+  }, [seekExact]);
+
+  const clearStartLine = useCallback(() => {
+    useLab.getState().setVideoStartLine(null);
+    setStatus('Start line cleared');
+  }, [setStatus]);
 
   // ---------------------------------------------------------------- export
   const frameCanvas = useCallback((): HTMLCanvasElement | null => {
@@ -705,13 +753,14 @@ export default function VideoPanel() {
       else if (e.key === '.') seekExact(stepFrames(t, ctl.current.effFps, 1, ctl.current.meta.duration));
       else if (e.key === 'ArrowLeft') seekExact(t - (e.shiftKey ? 5 : 1));
       else if (e.key === 'ArrowRight') seekExact(t + (e.shiftKey ? 5 : 1));
+      else if ((e.key === 's' || e.key === 'S') && !e.metaKey && !e.ctrlKey && !e.altKey) setStartLine();
       else handled = false;
       if (handled) {
         e.preventDefault();
         e.stopPropagation();
       }
     },
-    [currentVideoT, seekExact, togglePlay],
+    [currentVideoT, seekExact, setStartLine, togglePlay],
   );
 
   const onFullscreen = useCallback(() => {
@@ -819,6 +868,30 @@ export default function VideoPanel() {
           >
             ⇔ Sync here
           </button>
+          <span className={`video-start-line ${startVideoS !== undefined ? 'set' : ''}`}>
+            <button
+              className="vbtn accent"
+              data-testid="video-start-line"
+              onClick={setStartLine}
+              disabled={!meta}
+              title="This video frame is the start line (S). Pick a lap first to say which lap starts here."
+            >
+              🏁 Start line
+            </button>
+            {startVideoS !== undefined && (
+              <>
+                <span className="video-start-line-tc num" data-testid="video-start-line-tc" title={`Start line at video ${fmtTimecode(startVideoS)} (frame ${frameIndexAt(startVideoS, effFps)})`}>
+                  {fmtTimecode(startVideoS)}
+                </span>
+                <button className="vbtn small" data-testid="video-start-line-go" onClick={goToStartLine} title="Go to the start-line frame">
+                  ⤓
+                </button>
+                <button className="vbtn small" data-testid="video-start-line-clear" onClick={clearStartLine} title="Clear the start line">
+                  ✕
+                </button>
+              </>
+            )}
+          </span>
           <label className="vfield" title="video_time = session_time − offset (s)">
             offset
             <input
@@ -905,6 +978,7 @@ export default function VideoPanel() {
         />
         <canvas ref={canvasRef} data-testid="video-canvas" className="video-canvas" style={{ visibility: 'hidden' }} onClick={togglePlay} />
         {file && overlay && <VideoOverlay session={session} />}
+        {file && <StartLineBadge startS={startVideoS} fps={effFps} />}
         {file && reopen && reopen !== file.name && (
           <button className="vbtn accent video-reopen-banner" data-testid="video-reopen" onClick={() => inputRef.current?.click()}>
             The restored session is synced to {reopen}: re-open it
@@ -918,6 +992,7 @@ export default function VideoPanel() {
 
       {file && (
         <div className="video-bottom">
+          <div className="video-seek-wrap">
           <input
             className="video-seek"
             data-testid="video-seek"
@@ -932,6 +1007,19 @@ export default function VideoPanel() {
               showAt(t, { fromData: false, t0: performance.now() });
             }}
           />
+          {startVideoS !== undefined && meta && meta.duration > 0 && (
+            <button
+              type="button"
+              className="video-seek-flag"
+              data-testid="video-seek-start-flag"
+              style={{ ['--f' as string]: String(Math.max(0, Math.min(1, startVideoS / meta.duration))) }}
+              onClick={goToStartLine}
+              title={`Start line ${fmtTimecode(startVideoS)} — click to go there`}
+            >
+              🏁
+            </button>
+          )}
+          </div>
           <div className="video-transport">
             <button className="vbtn" data-testid="video-play" onClick={togglePlay} title="Play / pause (Space)" disabled={!meta}>
               {playing ? '⏸' : '▶'}

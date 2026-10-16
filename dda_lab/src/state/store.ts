@@ -25,7 +25,8 @@ import { DERIVED_KEYS, deriveRider } from '../sim/derive';
 import { clampParams, DEFAULT_SIM_PARAMS, presetById } from '../sim/presets';
 import { serializeLabSession, type LabSessionState } from '../core/labSession';
 import { gripRiskMessage } from '../sim/risk';
-import type { VideoSync } from '../video/sync';
+import { fmtTimecode, loadStoredSyncs, storeSync, type VideoSync } from '../video/sync';
+import { applyStartLine, pickStartLap } from '../video/startSync';
 import type { Corner, Corridor, DerivedRiderKey, Line, RiderParams, SimParams, SolverMode } from '../sim/types';
 
 /** "Fit to lap" progress, as the worker reports it. */
@@ -525,6 +526,42 @@ export function lapMetaOf(st: Pick<LabState, 'sessions' | 'lapMeta'>, sessionId:
   return st.lapMeta[lapKey(sessionId, lap)] ?? defaultLapMeta(st, sessionId, lap);
 }
 
+function videoStorage(): Pick<Storage, 'getItem' | 'setItem'> | undefined {
+  try {
+    return typeof localStorage === 'undefined' ? undefined : localStorage;
+  } catch {
+    return undefined;
+  }
+}
+
+function persistVideoSync(st: Pick<LabState, 'sessions'>, sy: VideoSync): void {
+  storeSync(videoStorage(), sy.fileName, {
+    offsetS: sy.offsetS,
+    sessionName: st.sessions.find((x) => x.id === sy.sessionId)?.name,
+    ...(sy.startVideoS != null ? { startVideoS: sy.startVideoS } : {}),
+  });
+}
+
+/** The lap the video start line is currently aligned to (nearest start under the current offset). */
+function alignedStartLap(st: Pick<LabState, 'sessions' | 'videoSync'>): { sessionId: string; lap: Lap } | undefined {
+  const vs = st.videoSync;
+  if (vs?.startVideoS == null) return undefined;
+  const session = st.sessions.find((x) => x.id === vs.sessionId);
+  const lap = session && pickStartLap(session, { currentOffsetS: vs.offsetS, startVideoS: vs.startVideoS });
+  return session && lap ? { sessionId: session.id, lap } : undefined;
+}
+
+/** Re-sync the start line only when the lap it would pick now gives a different offset. */
+function resyncStartLineIfChanged(get: () => LabState): void {
+  const st = get();
+  const vs = st.videoSync;
+  if (vs?.startVideoS == null) return;
+  const session = st.sessions.find((x) => x.id === vs.sessionId && !x.isSim);
+  if (!session) return;
+  const res = applyStartLine(vs, session, vs.startVideoS, undefined, st.refLap);
+  if (res && res.sync.offsetS !== vs.offsetS) st.syncVideoToStartLine();
+}
+
 export const useLab = create<LabState>((set, get) => ({
   sessions: [],
   tracks: [],
@@ -572,18 +609,54 @@ export const useLab = create<LabState>((set, get) => ({
     set({ videoView: v });
   },
   setVideoSync(s) {
-    set({ videoSync: s, videoReopenName: s && get().videoReopenName === s.fileName ? null : get().videoReopenName });
+    let next = s;
+    if (s && s.startVideoS == null) {
+      // callers that only know the offset (video re-open, manual sync) keep the start line
+      const cur = get().videoSync;
+      const startVideoS = cur && cur.fileName === s.fileName ? cur.startVideoS : loadStoredSyncs(videoStorage())[s.fileName]?.startVideoS;
+      if (startVideoS != null && Number.isFinite(startVideoS)) next = { ...s, startVideoS };
+    }
+    set({ videoSync: next, videoReopenName: next && get().videoReopenName === next.fileName ? null : get().videoReopenName });
   },
   setVideoStartLine(videoS, lapN) {
-    // TODO(agent 2): real implementation in src/video/startSync.ts
     const sy = get().videoSync;
-    if (!sy) return;
-    set({ videoSync: { ...sy, startVideoS: videoS ?? undefined } });
-    void lapN;
+    if (!sy) {
+      set({ statusMessage: 'Open a video first — the start line is a video frame.' });
+      return;
+    }
+    if (videoS == null || !Number.isFinite(videoS)) {
+      const next: VideoSync = { sessionId: sy.sessionId, fileName: sy.fileName, offsetS: sy.offsetS };
+      set({ videoSync: next, statusMessage: `Start line cleared — offset kept (${sy.offsetS.toFixed(4)} s)` });
+      persistVideoSync(get(), next);
+      return;
+    }
+    const next: VideoSync = { ...sy, startVideoS: videoS };
+    set({ videoSync: next });
+    persistVideoSync(get(), next);
+    get().syncVideoToStartLine(lapN);
   },
   syncVideoToStartLine(lapN) {
-    // TODO(agent 2)
-    void lapN;
+    const st = get();
+    const sy = st.videoSync;
+    if (!sy || sy.startVideoS == null || !Number.isFinite(sy.startVideoS)) {
+      set({ statusMessage: 'No start line set — mark the start-line frame in the video first (🏁).' });
+      return;
+    }
+    const session = st.sessions.find((x) => x.id === sy.sessionId && !x.isSim);
+    if (!session) {
+      set({ statusMessage: `Start line set at video ${fmtTimecode(sy.startVideoS)} — open / pick a session to sync the data.` });
+      return;
+    }
+    const res = applyStartLine(sy, session, sy.startVideoS, lapN, st.refLap);
+    if (!res) {
+      set({ statusMessage: `Start line set at video ${fmtTimecode(sy.startVideoS)} — ${session.name} has no laps to sync to (set the start/finish on the map).` });
+      return;
+    }
+    set({
+      videoSync: res.sync,
+      statusMessage: `Start line synced: L${res.lap.n} start = video ${fmtTimecode(sy.startVideoS)} (offset ${res.sync.offsetS.toFixed(4)} s)`,
+    });
+    persistVideoSync(get(), res.sync);
   },
   setVideoFollow(f) {
     set({ videoFollow: f });
@@ -715,6 +788,8 @@ export const useLab = create<LabState>((set, get) => ({
   setRefLap(sel) {
     set({ refLap: sel });
     set({ sessions: refreshAll(get()) });
+    // a start line follows the reference lap when it belongs to the synced session
+    resyncStartLineIfChanged(get);
   },
   setCursor(c, source = 'user') {
     set({ cursor: c, cursorSource: source });
@@ -907,6 +982,7 @@ export const useLab = create<LabState>((set, get) => ({
     if (!session) return;
     const gone = session.laps.find((l) => l.n === lap);
     if (!gone) return;
+    const aligned = alignedStartLap(st);
     session.deletedRanges = [...(session.deletedRanges ?? []), [gone.startIdx, gone.endIdx]];
     session.laps = withoutDeletedLaps(session.laps.filter((l) => l !== gone), session.deletedRanges);
     const meta = { ...st.lapMeta };
@@ -934,6 +1010,8 @@ export const useLab = create<LabState>((set, get) => ({
       cursor: st.cursor?.sessionId === sessionId ? null : st.cursor,
       sessions: st.sessions.map((s) => (s.id === sessionId ? refreshSession(s, track, mathChannels, refOf({ ...st, refLap }), st.sessions) : s)),
     });
+    // the start line keeps its sample when its own lap is deleted; otherwise re-pick
+    if (!(aligned && aligned.sessionId === sessionId && aligned.lap.n === gone.n)) resyncStartLineIfChanged(get);
   },
   removeLapFromWorkspace(sessionId, lap) {
     set((st) => {
@@ -974,6 +1052,13 @@ export const useLab = create<LabState>((set, get) => ({
     // keep workspace laps whose number still exists
     const selectedLaps = st.selectedLaps.filter((r) => sessions.find((s) => s.id === r.sessionId)?.laps.some((l) => l.n === r.lap));
     set({ tracks, activeTrackId: next.id, sessions, selectedLaps, cursor: null, corridor: undefined });
+    // laps were re-detected: re-align the video start line to the (renumbered) lap nearest to it
+    const vs = get().videoSync;
+    if (vs?.startVideoS != null) {
+      const sess = sessions.find((x) => x.id === vs.sessionId);
+      const lap = sess && pickStartLap(sess, { currentOffsetS: vs.offsetS, startVideoS: vs.startVideoS });
+      if (lap) get().syncVideoToStartLine(lap.n);
+    }
     void get().loadCorridor();
   },
   updateTurns(turns) {

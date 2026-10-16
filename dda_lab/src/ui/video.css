@@ -307,3 +307,80 @@
   transform: translateX(-50%);
   background: rgba(0, 0, 0, 0.75);
 }
+
+/* ---- 🏁 start line ---- */
+.video-start-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding-left: 6px;
+  margin-left: 2px;
+  border-left: 1px solid var(--border);
+}
+.video-start-line.set [data-testid='video-start-line'] {
+  background: var(--accent);
+  color: #000;
+}
+.video-start-line-tc {
+  font-size: 11px;
+  color: var(--accent);
+  font-weight: 600;
+}
+.video-start-badge {
+  position: absolute;
+  z-index: 4;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 14px;
+  border: 2px solid #fff;
+  border-radius: 6px;
+  background: repeating-conic-gradient(rgba(0, 0, 0, 0.85) 0 25%, rgba(40, 40, 40, 0.85) 0 50%) 0 0 / 12px 12px;
+  color: #fff;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  box-shadow: 0 0 0 2px var(--accent), 0 4px 16px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+.video-before-start {
+  position: absolute;
+  z-index: 3;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.5);
+  font-size: 11px;
+  pointer-events: none;
+}
+.video-seek-wrap {
+  position: relative;
+}
+/* the flag sits over the start-line position of the bar (thumb travel = width − ~13px) */
+.video-seek-flag {
+  position: absolute;
+  z-index: 2;
+  top: -12px;
+  left: calc(6px + 6.5px + (100% - 12px - 13px) * var(--f, 0));
+  transform: translateX(-50%);
+  height: 14px;
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.video-seek-flag::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 13px;
+  width: 2px;
+  height: 14px;
+  margin-left: -1px;
+  background: var(--accent);
+  pointer-events: none;
+}

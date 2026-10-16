@@ -59,3 +59,17 @@ footer a { color: var(--fg-dim); text-decoration: underline; }
 .serres p { max-width: 820px; font-size: 17px; color: #c6ced8; }
 .serres-list { font-size: 16px; max-width: 820px; }
 .serres-list li { margin: 6px 0; }
+
+/* ---- content pages ---- */
+.article { max-width: 860px; margin: 0 auto; padding: 40px 24px 60px; }
+.article h1 { font-size: clamp(30px, 4.2vw, 46px); margin-bottom: .5em; }
+.article h2 { margin-top: 1.6em; }
+.article h3 { color: var(--accent); margin-top: 1.2em; }
+.article p, .article li { color: #c6ced8; font-size: 16.5px; }
+.article .lead { font-size: 18px; }
+.article table.data, .article table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 15px; }
+.article th, .article td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; }
+.article th { background: var(--panel); color: var(--fg-dim); }
+.article code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+.article pre { background: var(--panel); border: 1px solid var(--border); padding: 12px; border-radius: 8px; overflow: auto; }
+.article .actions { margin: 22px 0; }

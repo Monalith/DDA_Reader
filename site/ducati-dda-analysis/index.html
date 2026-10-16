@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ducati DDA Data Analysis — open .dda files free in your browser | MotoRaceLaps</title>
+<meta name="description" content="Analyse Ducati DDA and DDA+ GPS files (.dda) without the Ducati software: speed, rpm, throttle, lean angle, gear, DTC, GPS track map, laps and sector times. Merge sessions, compare laps, export CSV. Free, in the browser, files never uploaded.">
+<meta name="keywords" content="motorcycle race data analysis, track data, lap data analysis, Serres Racing Circuit, Serres track data, learn the track, Ducati DDA, DDA+ GPS, RaceChrono, motorcycle telemetry, lap time analysis, braking points, apex speed, track day data, MoTeC alternative free, Panigale data analysis, S1000RR lap data, R6 lap data">
+<link rel="canonical" href="https://motoracelaps.com/ducati-dda-analysis/">
+<meta name="robots" content="index, follow, max-image-preview:large">
+<meta name="theme-color" content="#0e1116">
+<meta property="og:title" content="Ducati DDA Data Analysis — open .dda files free in your browser | MotoRaceLaps">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:description" content="Analyse Ducati DDA and DDA+ GPS files (.dda) without the Ducati software: speed, rpm, throttle, lean angle, gear, DTC, GPS track map, laps and sector times. Merge sessions, compare laps, export CSV. Free, in the browser, files never uploaded.">
+<meta property="og:image" content="https://motoracelaps.com/img/app-examples.jpg">
+<meta property="og:url" content="https://motoracelaps.com/ducati-dda-analysis/">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%230e1116'/%3E%3Cpath d='M9 22 L13 9 L19 18 L23 10' fill='none' stroke='%23ff6a00' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css">
+
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="/"><span class="dda">MOTO</span><span class="lab">RACELAPS</span></a>
+  <nav>
+    <a href="/#features">Features</a>
+    <a href="/serres-racing-circuit/">Serres</a>
+    <a href="/ducati-dda-analysis/">Ducati DDA</a>
+    <a href="/guide/">Guide</a>
+    <a href="/faq/">FAQ</a>
+    <a class="cta" href="/lab/">Open DDA Lab →</a>
+  </nav>
+</header>
+<main class="article">
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "MotoRaceLaps", "item": "https://motoracelaps.com/"}, {"@type": "ListItem", "position": 2, "name": "Ducati DDA analysis", "item": "https://motoracelaps.com/ducati-dda-analysis/"}]}</script><script type="application/ld+json">{"@context": "https://schema.org", "@type": "HowTo", "name": "How to analyse a Ducati DDA file in the browser", "step": [{"@type": "HowToStep", "text": "Copy the .dda files from the DDA logger (or the Ducati Data Analyzer export folder)."}, {"@type": "HowToStep", "text": "Open motoracelaps.com/lab and click Open sessions; select one or many .dda files."}, {"@type": "HowToStep", "text": "Laps are detected from GPS; tick the laps to compare and pick a reference lap."}, {"@type": "HowToStep", "text": "Read speed, rpm, throttle, lean, DTC and \u0394 time on the charts and the satellite map; export CSV or a .lab.json bundle."}]}</script>
+<h1>Ducati DDA data analysis in your browser</h1>
+<p class="lead">The Ducati Data Analyser (DDA, DDA+ with GPS) records speed, rpm, throttle, gear, lean angle, torque reduction (DTC) and GPS at up to 100 Hz into <code>.dda</code> files. <strong>DDA Lab opens those files directly</strong> — no Windows software, no installation — and turns them into a professional lap analysis workspace.</p>
+<p class="actions"><a class="btn primary" href="/lab/">Open your .dda files</a></p>
+
+<h2>What is in a .dda file</h2>
+<table class="data">
+<tr><th>Channel</th><th>Rate</th><th>Notes</th></tr>
+<tr><td>Speed</td><td>10 Hz</td><td>wheel speed, km/h</td></tr>
+<tr><td>RPM</td><td>50 Hz</td><td>engine speed</td></tr>
+<tr><td>Throttle (GAS)</td><td>20 Hz</td><td>% opening</td></tr>
+<tr><td>Gear</td><td>10 Hz</td><td>0–6</td></tr>
+<tr><td>Lean angle</td><td>20 Hz</td><td>degrees, left negative</td></tr>
+<tr><td>Torque reduction (DTC fast / slow)</td><td>20 Hz</td><td>traction-control intervention</td></tr>
+<tr><td>GPS lat / lon / altitude</td><td>10 Hz</td><td>DDA+ GPS versions</td></tr>
+<tr><td>Lap / intermediate markers</td><td>1 Hz</td><td>beacon or GPS laps</td></tr>
+</table>
+<p>DDA Lab decodes the format in the browser (the file format was reverse-engineered and documented in the open-source <a href="https://github.com/Monalith/DDA_Reader" rel="noopener">DDA_Reader</a> project). Your file is never uploaded.</p>
+
+<h2>What you can do with it</h2>
+<ul>
+<li><strong>Merge a whole day</strong> of Run0xx.dda files into one session and see every lap in one table with sector times and best-lap highlighting.</li>
+<li><strong>Satellite map</strong> of the track vectorised from your own GPS, with turns, apexes, braking and throttle points; colour the trace by speed, lean, throttle or braking.</li>
+<li><strong>Lap comparison</strong>: pick a reference lap and read Δ time, Δ speed, Δ lean and Δ throttle corner by corner (stock-chart style, green = gained, red = lost).</li>
+<li><strong>Math channels</strong>: ~60 functions, filters, integrals, formulas per lap or per run, <code>ref()</code> / <code>run()</code> to subtract one run from another.</li>
+<li><strong>Markers &amp; notes</strong>, per-panel zoom, templates, reports, CSV and bundle export, onboard-video sync.</li>
+<li><strong>Virtual rider</strong>: a parametric lap-time simulator on your track to test "what if I braked 0.1 g harder".</li>
+</ul>
+
+<h2>Supported bikes and files</h2>
+<p>Any Ducati with the DDA or DDA+ GPS kit (Panigale V2/V4, 1199/1299, 899/959, Streetfighter, Monster, Multistrada, Hypermotard…). Also opens DDA_Reader .json/.csv exports, RaceChrono and onboard-video telemetry JSON, and DDA Lab .lab.json bundles.</p>
+<p class="actions"><a class="btn primary" href="/lab/">Open DDA Lab</a> <a class="btn" href="/serres-racing-circuit/">See it on the Serres example laps</a></p>
+
+</main>
+<footer>
+  <span>© <span id="y"></span> MotoRaceLaps · DDA Lab is built on <a href="https://github.com/slowfastguy/DDA_Reader" rel="noopener">DDA_Reader</a> (MIT) · Not affiliated with Ducati Motor Holding S.p.A.</span>
+  <span>Map imagery © Esri, Maxar, Earthstar Geographics · © OpenStreetMap contributors</span>
+</footer>
+<script>document.getElementById('y').textContent = new Date().getFullYear();</script>
+</body>
+</html>

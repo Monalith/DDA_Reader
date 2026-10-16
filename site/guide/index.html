@@ -1,0 +1,528 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DDA Lab Guide — math channels, filters, lap comparison, markers | MotoRaceLaps</title>
+<meta name="description" content="Complete guide to DDA Lab: channel names, operators, ~60 math functions, filters, integrals, per-lap formulas, Δ vs reference channels, chart templates, markers, exports and the virtual rider.">
+<meta name="keywords" content="motorcycle race data analysis, track data, lap data analysis, Serres Racing Circuit, Serres track data, learn the track, Ducati DDA, DDA+ GPS, RaceChrono, motorcycle telemetry, lap time analysis, braking points, apex speed, track day data, MoTeC alternative free, Panigale data analysis, S1000RR lap data, R6 lap data">
+<link rel="canonical" href="https://motoracelaps.com/guide/">
+<meta name="robots" content="index, follow, max-image-preview:large">
+<meta name="theme-color" content="#0e1116">
+<meta property="og:title" content="DDA Lab Guide — math channels, filters, lap comparison, markers | MotoRaceLaps">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:description" content="Complete guide to DDA Lab: channel names, operators, ~60 math functions, filters, integrals, per-lap formulas, Δ vs reference channels, chart templates, markers, exports and the virtual rider.">
+<meta property="og:image" content="https://motoracelaps.com/img/app-examples.jpg">
+<meta property="og:url" content="https://motoracelaps.com/guide/">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%230e1116'/%3E%3Cpath d='M9 22 L13 9 L19 18 L23 10' fill='none' stroke='%23ff6a00' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css">
+
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="/"><span class="dda">MOTO</span><span class="lab">RACELAPS</span></a>
+  <nav>
+    <a href="/#features">Features</a>
+    <a href="/serres-racing-circuit/">Serres</a>
+    <a href="/ducati-dda-analysis/">Ducati DDA</a>
+    <a href="/guide/">Guide</a>
+    <a href="/faq/">FAQ</a>
+    <a class="cta" href="/lab/">Open DDA Lab →</a>
+  </nav>
+</header>
+<main class="article">
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "MotoRaceLaps", "item": "https://motoracelaps.com/"}, {"@type": "ListItem", "position": 2, "name": "Guide", "item": "https://motoracelaps.com/guide/"}]}</script><h1 class="guide-title">DDA Lab — Math channels &amp; filters guide</h1>
+<p>Math channels are new channels computed from existing ones with a short formula. They
+behave like any other channel: plot them, put them on the map colour ramp, use them in
+reports or in other formulas.</p>
+<h2>1. Quick start</h2>
+<ol>
+<li>Open the <strong>Math</strong> tab (bottom panel).</li>
+<li>Either click a <strong>preset</strong> (one click, done) or type a formula:<ul>
+<li><strong>Name</strong>: <code>gear_ratio</code> (letters, digits, <code>_</code>; this becomes the channel name)</li>
+<li><strong>Unit</strong>: <code>rpm/kmh</code></li>
+<li><strong>Expression</strong>: <code>where(speed &gt; 30, rpm / speed, 0)</code></li>
+</ul>
+</li>
+<li>The green ✓ confirms the formula parses. <strong>Add / Update</strong> creates the channel.</li>
+<li>Add it to a chart panel with “+ channel”.</li>
+</ol>
+<p>Formulas are recalculated automatically when you change a filter, the start line, the
+reference lap or import a new session. They are saved in the workspace.</p>
+<h2>2. Channel names you can use</h2>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Unit</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>speed</code></td>
+<td>km/h</td>
+<td>wheel speed (after its filter / source setting)</td>
+</tr>
+<tr>
+<td><code>gps_speed</code></td>
+<td>km/h</td>
+<td>ground speed from GPS</td>
+</tr>
+<tr>
+<td><code>rpm</code></td>
+<td>rpm</td>
+<td>engine speed</td>
+</tr>
+<tr>
+<td><code>tps</code></td>
+<td>%</td>
+<td>throttle opening</td>
+</tr>
+<tr>
+<td><code>gear</code></td>
+<td>–</td>
+<td>0..6</td>
+</tr>
+<tr>
+<td><code>lean</code></td>
+<td>deg</td>
+<td>lean angle, left negative / right positive</td>
+</tr>
+<tr>
+<td><code>tq_fast</code>, <code>tq_slow</code></td>
+<td>%</td>
+<td>torque reduction (traction control)</td>
+</tr>
+<tr>
+<td><code>dist</code></td>
+<td>m</td>
+<td>ECU odometer</td>
+</tr>
+<tr>
+<td><code>gps_lat</code>, <code>gps_lon</code>, <code>gps_alt</code></td>
+<td>deg, m</td>
+<td>GPS position / altitude</td>
+</tr>
+<tr>
+<td><code>long_g</code>, <code>lat_g</code>, <code>total_g</code></td>
+<td>g</td>
+<td>accelerations (derived)</td>
+</tr>
+<tr>
+<td><code>curvature</code>, <code>radius</code></td>
+<td>1/m, m</td>
+<td>corner geometry from GPS (derived)</td>
+</tr>
+<tr>
+<td><code>slip</code></td>
+<td>%</td>
+<td>wheel vs GPS speed (derived)</td>
+</tr>
+<tr>
+<td><code>phase</code></td>
+<td>–</td>
+<td>0 coast, 1 brake, 2 throttle (derived)</td>
+</tr>
+<tr>
+<td><code>time</code></td>
+<td>s</td>
+<td>seconds since the start of the file (derived)</td>
+</tr>
+<tr>
+<td><code>lap_time</code></td>
+<td>s</td>
+<td>seconds since the lap start, NaN outside laps (derived)</td>
+</tr>
+<tr>
+<td><code>lap_dist</code></td>
+<td>m</td>
+<td>distance since the start line (derived)</td>
+</tr>
+<tr>
+<td><code>total_dist</code></td>
+<td>m</td>
+<td>distance covered over the laps still in the file, continuous lap after lap; deleting a lap removes its metres (derived)</td>
+</tr>
+<tr>
+<td><code>delta_t</code></td>
+<td>s</td>
+<td>time gained/lost vs the reference lap (derived)</td>
+</tr>
+<tr>
+<td><code>delta_d</code></td>
+<td>m</td>
+<td>metres ahead (+) / behind (−) the reference lap at the same lap time (derived)</td>
+</tr>
+<tr>
+<td><code>pi</code>, <code>e</code>, <code>g</code></td>
+<td>–</td>
+<td>constants 3.14159…, 2.71828…, 9.80665</td>
+</tr>
+</tbody></table>
+<p>Any math or imported CSV channel can be used by its name as well.</p>
+<h2>3. Operators</h2>
+<p><code>+ - * / ^</code> arithmetic · <code>&lt; &lt;= &gt; &gt;= == !=</code> comparisons (result 1 or 0) · <code>&amp;&amp; || !</code> logic ·
+parentheses for grouping. Numbers are plain: <code>3.6</code>, <code>0.25</code>.</p>
+<h2>4. Functions</h2>
+<h3>Elementwise</h3>
+<p><code>abs(x)</code>, <code>sqrt(x)</code>, <code>sign(x)</code>, <code>floor(x)</code>, <code>ceil(x)</code>, <code>round(x)</code>, <code>exp(x)</code>, <code>log(x)</code>, <code>log10(x)</code>,
+<code>sin cos tan asin acos atan</code>, <code>atan2(y, x)</code>, <code>min(a,b)</code>, <code>max(a,b)</code>, <code>pow(a,b)</code>, <code>mod(a,b)</code>,
+<code>hypot(a,b)</code>, <code>clamp(x, lo, hi)</code>, <code>where(cond, a, b)</code>, <code>isnan(x)</code>, <code>nanfill(x, v)</code>,
+<code>deg2rad(x)</code>, <code>rad2deg(x)</code>, <code>kmh2ms(x)</code>, <code>ms2kmh(x)</code>.</p>
+<h3>Calculus &amp; time</h3>
+<ul>
+<li><code>deriv(ch)</code> — rate of change per second. <code>deriv(speed)</code> = km/h per second.</li>
+<li><code>accel_g(speed)</code> — longitudinal acceleration in <strong>g</strong> straight from a km/h channel.</li>
+<li><code>integ(ch)</code> — running integral over time; <code>integ(kmh2ms(speed))</code> = distance in m.</li>
+<li><code>integ_x(y, x)</code> — integral with <strong>your own x channel</strong> (trapezoid rule): <code>integ_x(long_g, lap_dist)</code> integrates g over
+metres, <code>integ_x(rpm, lap_time)</code> over lap time (<code>time</code> / <code>lap_time</code> are channels). A wrap of x (lap distance going back to 0) is skipped.</li>
+<li><code>lap_integ(y)</code>, <code>lap_integ_x(y, x)</code> — the same integrals restarting from 0 at every lap start.</li>
+<li><code>deriv_x(y, x)</code> — dy/dx with your own x channel: <code>deriv_x(speed, lap_dist)</code> = km/h per metre.</li>
+<li>The <strong>∫ Integral</strong> builder in the Math editor writes these for you: pick y, pick dx (time or any channel), tick
+“restart every lap”, press <strong>Build formula</strong>.</li>
+<li><code>cumsum(ch)</code>, <code>diff(ch)</code> — running sum / sample difference.</li>
+<li><code>shift(ch, seconds)</code> moves a channel later (negative = earlier); <code>lag(ch, samples)</code> same in samples (10 per second).</li>
+</ul>
+<h3>Rolling windows (window <code>n</code> in samples; 10 samples = 1 s)</h3>
+<p><code>smooth(ch, n)</code> / <code>rolling_mean</code>, <code>rolling_min</code>, <code>rolling_max</code>, <code>rolling_std</code>, <code>median(ch, n)</code>.</p>
+<h3>Filters</h3>
+<ul>
+<li><code>lowpass(ch, hz)</code> — zero-phase Butterworth low-pass. Typical: speed 1 Hz, lean 2 Hz, rpm 3 Hz.</li>
+<li><code>highpass(ch, hz)</code> — what the low-pass removed (vibration, chatter, slip).</li>
+<li><code>sg(ch, n)</code> — Savitzky-Golay: smooth but keeps peaks (odd <code>n</code>, e.g. 7–15).</li>
+</ul>
+<h3>Statistics</h3>
+<ul>
+<li>Whole channel: <code>mean(ch)</code>, <code>std(ch)</code>, <code>cmin(ch)</code>, <code>cmax(ch)</code> (constant across the session).</li>
+<li>Per lap: <code>lap_min</code>, <code>lap_max</code>, <code>lap_mean</code>, <code>lap_sum</code>, <code>lap_first</code>, <code>lap_last</code> (constant within each lap).</li>
+<li><code>lap_time(ch)</code> seconds since the lap start, <code>lap_progress(ch)</code> 0–1 through the lap.</li>
+</ul>
+<h3>Events</h3>
+<ul>
+<li><code>rising(cond)</code> / <code>falling(cond)</code> — 1 on the sample where the condition turns true / false.</li>
+<li><code>hold(cond, seconds)</code> — 1 for N seconds after the condition was true.</li>
+</ul>
+<h2>5. Recipes</h2>
+<table>
+<thead>
+<tr>
+<th>Goal</th>
+<th>Formula</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Braking force in g</td>
+<td><code>accel_g(lowpass(speed, 1.5))</code> (negative = braking)</td>
+</tr>
+<tr>
+<td>Brake marker</td>
+<td><code>rising(accel_g(lowpass(speed,1.5)) &lt; -0.3)</code></td>
+</tr>
+<tr>
+<td>Trail braking</td>
+<td><code>where(long_g &lt; -0.2 &amp;&amp; abs(lean) &gt; 25, 1, 0)</code></td>
+</tr>
+<tr>
+<td>Throttle while leaned</td>
+<td><code>where(abs(lean) &gt; 30, tps, 0)</code></td>
+</tr>
+<tr>
+<td>Lean rate (flick speed)</td>
+<td><code>deriv(lowpass(lean, 2))</code></td>
+</tr>
+<tr>
+<td>Gear ratio / wheelspin check</td>
+<td><code>where(speed &gt; 30, rpm / speed, 0)</code></td>
+</tr>
+<tr>
+<td>Upshift markers</td>
+<td><code>rising(diff(gear) &gt; 0)</code></td>
+</tr>
+<tr>
+<td>Wheel slip %</td>
+<td><code>(speed - gps_speed) / gps_speed * 100</code></td>
+</tr>
+<tr>
+<td>Speed relative to lap average</td>
+<td><code>speed - lap_mean(speed)</code></td>
+</tr>
+<tr>
+<td>Corner speed only</td>
+<td><code>where(abs(lean) &gt; 20, speed, 0)</code></td>
+</tr>
+<tr>
+<td>Time at full throttle per lap (s)</td>
+<td><code>lap_sum(where(tps &gt;= 95, 1, 0)) / 10</code></td>
+</tr>
+<tr>
+<td>Lateral g from geometry</td>
+<td><code>kmh2ms(speed)^2 / clamp(radius, 5, 2000) / g</code></td>
+</tr>
+</tbody></table>
+<h2>5b. A different formula for one run or one lap</h2>
+<p>Every math channel has a default formula. In the editor, <strong>Formula applies to</strong> lets you pick
+<strong>one run</strong> (session: all its laps) or <strong>one lap</strong> instead of “all runs and laps”. The formula you save
+then replaces the channel’s values there only; everything else keeps the default. Typical use: one
+bike needs an offset or a different correction (<code>speed + 3</code>, <code>rpm * 1.02</code>) while the others stay as
+they are, on the same plot. Run and lap formulas are listed under the channel (badges <strong>run</strong> / <strong>lap</strong>);
+✕ returns to the default. Removing the run or lap removes its formula.</p>
+<h3>Editing on the cards</h3>
+<p>Math channels are cards: change the unit, colour or <strong>formula right on the card</strong> (Enter saves,
+Esc reverts). Preset cards are editable too: adjust the formula or the channel name, then <strong>Add</strong>.</p>
+<h3>Your own templates</h3>
+<p><strong>★ Save as preset</strong> in the editor (or ★ on any channel/preset card) keeps a formula under
+<strong>Presets → My presets</strong>, stored in this browser. Your presets can be edited and saved on their
+card, or deleted with ✕.</p>
+<h2>5b-ter. Reading another run or the reference lap in a formula</h2>
+<ul>
+<li><code>ref(ch)</code> — channel <code>ch</code> of the <strong>reference lap</strong> (◉) at the same lap distance. <code>speed - ref(speed)</code>
+is the speed delta, <code>speed / ref(speed)</code> the ratio, <code>rpm - ref(rpm)</code> the rpm delta.</li>
+<li><code>ref_t(ch)</code> — the same aligned by <strong>lap time</strong>: <code>lap_dist - ref_t(lap_dist)</code> = metres ahead of the
+reference at the same moment (that is the built-in <code>delta_d</code>).</li>
+<li><code>run(ch, n)</code> / <code>run_t(ch, n)</code> — channel <code>ch</code> of the <strong>n-th loaded run</strong> (1 = first chip in the top
+bar) at its best lap. <code>run(speed, 2) - speed</code>, <code>tps / run(tps, 1)</code>.</li>
+<li>Built-in deltas need no formula: <code>delta_t</code>, <code>delta_d</code>, <code>d_speed</code>, <code>d_rpm</code>, <code>d_tps</code>, <code>d_lean</code>…</li>
+</ul>
+<p>Every chart panel can have its <strong>own x axis</strong> (⚙ → X axis → distance / lap time); the shared zoom
+only applies to panels on the workspace axis. The <strong>Templates…</strong> menu has <em>Δ lap time vs distance</em>,
+<em>Δ distance vs lap time</em> and the combined view ready-made.</p>
+<h2>5c. Markers (fixed data points)</h2>
+<p>Hover a chart (or click the map) and press <strong>M</strong> or <strong>📍 Mark</strong>: a marker is pinned to that sample.
+Markers draw as a coloured vertical line with a flag on every chart, as a pin on the map, and their
+values appear <strong>fixed</strong> under each chart (one chip per marker, one number per plotted line) and in
+the <strong>Markers</strong> tab (every channel × every selected lap at that point). In other laps a marker is read
+at the same lap distance / lap time, so you compare laps at exactly one spot. Rename, recolour, jump
+to or delete markers in the Markers tab.</p>
+<p>Markers are <strong>saved automatically</strong> per file (reopen a file of the same name and they come back),
+travel inside .lab.json bundles, and can be exported/imported as a JSON file in the Markers tab.
+Markers can be <strong>dragged</strong> left/right by their flag on any chart; <strong>double-click</strong> the flag (or ✎)
+to write a <strong>note</strong>, ✕ on the flag or on the value chip removes it. The <strong>📍 Mark</strong> button places the
+marker where you <strong>last clicked</strong> (chart or map); the <strong>M</strong> key places it under the mouse.</p>
+<h2>5c-bis. Δ vs reference channels and chart templates</h2>
+<p>With a reference lap chosen (◉), every lap gets <code>d_speed</code>, <code>d_gps_speed</code>, <code>d_rpm</code>, <code>d_tps</code>,
+<code>d_lean</code>, <code>d_long_g</code>, <code>d_lat_g</code>, <code>d_gear</code>: the lap’s value <strong>minus the reference lap at the same
+lap distance</strong> (0 on the reference itself). Together with <code>delta_t</code> they drive the <strong>Templates…</strong>
+menu above the charts: <em>Δ vs reference (stock style)</em> draws them with a zero line and green/red
+fill (gain/loss; for <code>delta_t</code> red = slower), plus <em>Speed vs reference</em>, <em>Braking</em>, <em>Cornering</em>,
+<em>Engine &amp; traction</em>, <em>GPS vs wheel</em> and <em>Default</em>. A template replaces the panels; edit them freely afterwards.</p>
+<h2>5c-ter. Time won or lost in every turn</h2>
+<p>With a track model, every turn line on the charts shows, for each plotted lap, how much time
+that lap <strong>won (−, green) or lost (+, red) in that turn against the best loaded lap in the same
+turn</strong> (<code>best</code> marks the fastest). The Reports → Turns table has the same as <em>Turn time s</em> and
+<em>vs best lap in turn (s)</em>. The best is searched over every plausible flying lap of every open file.</p>
+<h2>5d. Exports show what you see</h2>
+<p>Every export follows the workspace: deleted laps are gone for good and only the laps listed in the
+<strong>Laps</strong> tab are written. <strong>⤓ Export visible</strong> (above the charts) writes one CSV with exactly the
+plotted lines, resampled every 1 m (or 0.1 s), limited to the zoomed x range. The Laps tab’s
+<strong>Export CSV</strong> has a “visible range only” switch when a zoom is active. Reports use the same laps.</p>
+<h2>5e. Missing channels are estimated</h2>
+<p>A run that lacks a channel gets an estimate on import, marked <strong>estimated</strong> in the Channels tab:
+<code>speed</code> from GPS ground speed, <code>dist</code> by integrating speed, <code>lean</code> from GPS curvature (v²κ/g).
+Real channels in the file are never replaced.</p>
+<h2>5f. Zooming the Y axis</h2>
+<p>Drag the Y axis up to zoom in, down to zoom out (around the value you grabbed); shift+drag pans;
+the mouse wheel over the axis zooms; double-click returns to automatic. The range is stored per
+panel (also editable in the panel ⚙ settings).</p>
+<h2>6. Channel filters (Channels tab)</h2>
+<p>Each raw channel has a ⚙ editor: <strong>source</strong> (speed: wheel / GPS / blend), <strong>scale + offset</strong>
+(<code>y = a·x + b</code>), <strong>filter</strong> (none, moving average <code>n</code>, Savitzky-Golay <code>n</code>, Butterworth cutoff Hz),
+<strong>GPS lag</strong> (auto = cross-correlation of wheel vs GPS speed) and <strong>invert</strong>. The <strong>Presets</strong> row
+applies the common choices with one click; <strong>Apply to all sessions</strong> copies the setting.</p>
+<p>Derived channels (<code>long_g</code>, <code>delta_t</code> …) and math channels are recomputed from the filtered
+value, so filtering <code>speed</code> also cleans every formula that uses it.</p>
+<h2>6b. Virtual rider v2 — the model behind the Sim tab</h2>
+<p>The <strong>Sim</strong> tab drives a virtual lap round the active track. The result is an ordinary session
+(<code>Virtual rider</code>, plus <code>Ideal line</code> / <code>Physics limit</code> for the optimal modes), so every chart,
+map colour, Δ channel and formula above works on it. Units inside the solver are metres,
+seconds, m/s and radians; the session carries km/h and degrees like any recording.
+Design: <code>docs/superpowers/specs/2026-10-11-virtual-rider-design-v2.md</code>; research R1-R4 under
+<code>docs/superpowers/research/</code>. Every coefficient marked <em>öneri</em> is a proposal awaiting
+calibration on the owner&#39;s laps.</p>
+<h3>The line and the envelope</h3>
+<p>The κ-line (C↔V line style slider) is built from the centerline and the extracted corridor as
+before. The quasi-steady-state (QSS) solver then finds the fastest speed profile on that line
+that no limit below forbids; in v2 that envelope is an <strong>upper bound</strong>, and the rider&#39;s events
+(below) decide where under it the lap actually runs: <code>v = min(v_event, v_QSS)</code>.</p>
+<h3>Below-peak tyre: the scaled friction ellipse (R2 §3.4-3.5)</h3>
+<p>The rider never uses the tyre&#39;s peak. Each axis keeps the share the allowed slip <code>s</code> (a fraction
+of the slip at peak force) gives, through a normalised Magic Formula:</p>
+<pre><code>g(s, C) = sin( C · atan( tan(π/(2C)) · s ) )         g(0) = 0, g(1) = 1, monotone
+μ_brake = μx · gripScale · g(sBrake, 1.6)            front, braking
+μ_drive = μx · gripScale · g(sDrive, 1.6)            rear, drive
+μ_lat   = μy · gripScale · g(sLat,   1.3)            lateral
+(a_x / (μ_long·g̃))² + (a_y / (μ_lat·g̃))² ≤ 1
+</code></pre>
+<p>Control values: g(0.5; 1.6) = 0.856, g(0.6; 1.6) = 0.92, g(0.8; 1.6) = 0.985. The curve is flat
+near the peak, which is why riding under the limit costs little lap time and buys a lot of
+margin. <code>grip_use</code> is now measured against the rider&#39;s own ceiling (μ_eff): 1.0 means &quot;the
+rider&#39;s margin is used up&quot;, not &quot;the tyre is gone&quot;; <code>gripUsePeak</code> is the same demand against
+μ_peak. The banner fires above 1.05 on the first and says whether the second still holds.</p>
+<h3>Load transfer: wheelie and stoppie (R1 §3.1)</h3>
+<p>With <code>b</code> = rear contact → CG (<code>cgRearM</code>), <code>p</code> the wheelbase, <code>h</code> the CG height and <code>t</code> the tyre
+crown radius, the CG height at bike lean φ and the two pitch limits are</p>
+<pre><code>h_φ        = t + (h − t)·cos φ
+a_wheelie  = g·b/h_φ − F_D·h/(m·h_φ)                 drive cap (front lifts)
+a_stoppie  = g·(p − b)/h_φ                           tyre braking cap (rear lifts); drag adds on top
+braking (tyre share) = min(μ_brake·g·ellipse, a_stoppie, brakingG·g)
+</code></pre>
+<p>v1 used <code>g·p/(2h)</code>, i.e. <code>b = p/2</code> and no drag term. Presets carry <code>b/p ≈ 0.49</code> (R1&#39;s S1000RR +
+rider estimate 0.70/1.44), <em>öneri</em>.</p>
+<h3>Bike lean vs ideal lean: crown and hang-off (R1 §3.2)</h3>
+<p>The ideal lean is <code>tan φ_i = a_y/g̃</code>. The motorcycle leans further because the contact patch
+rolls round the tyre crown, and less when the rider hangs off (rider mass <code>m_r</code> moved <code>d_r</code>
+inside, combined offset <code>e = m_r·d_r/m</code>):</p>
+<pre><code>φ_bike = φ_i + asin( t·sin φ_i / R ) − atan2(e, h − t),     R = √((h − t)² + e²)
+</code></pre>
+<p>The tyre&#39;s lean limit applies to <code>φ_bike</code>, so the corner-speed limit is the ideal lean that
+inverts it (bisection, monotone). With t = 0.08 m and no hang-off a 58° tyre limit is only ~51°
+ideal (≈ 1.24 g); 0.25 m of hang-off gives most of it back. The <code>lean</code> channel is the bike lean,
+comparable with an IMU. Presets: <code>tyreCrownM</code> 0.06-0.08, <code>hangOffM</code> 0.2-0.25 m, <code>riderMassKg</code>
+75 kg (<em>öneri</em>).</p>
+<h3>3D road budget (R1 §3.5, no data yet)</h3>
+<p>With slope σ, banking β and normal curvature ν the tyres see</p>
+<pre><code>ã_x = a_x + g·sin σ      ã_y = v²κ − g·cos σ·sin β      g̃ = g·cos σ·cos β + v²·ν
+</code></pre>
+<p>and the ellipse, the lean and the pitch limits use <code>g̃</code>, <code>ã_x</code>, <code>ã_y</code>. All three channels are
+zero until a DEM reader exists, and then the model reproduces v1 bit for bit.</p>
+<h3>Roll rate (R1 §3.3, Biniewicz)</h3>
+<p><code>φ̇_max(V, φ) = rollRateFrac · (β0 + β1·V)/g · cos²φ</code>, β0 = 23.5 m/s³, β1 = −0.31 s⁻²
+(thesis values; the paper&#39;s 32.56 is <em>doğrulanmadı</em>). The envelope adds <code>v ≤ φ̇_max / |dφ/ds|</code>,
+iterated 2-3 times; this is what makes S-bends and chicanes cost time.</p>
+<h3>Corner events: one brake, one throttle per corner (R3 §3)</h3>
+<p>Corners are found on the speed profile, not the geometry: local minima of <code>v_QSS</code> whose
+prominence is at least <code>max(8 km/h, 5 % · v)</code>; two minima with no room to accelerate between them
+(<code>gap &lt; v²/(2·a_drive)</code>) are ONE corner (a chicane, with its lean flips listed). Per corner:</p>
+<pre><code>A  speed apex (min v)          Ageo  max |κ|
+T  turn-in: |κ| rises past 0.25·|κ|max      E  exit: |κ| falls below it, or the next B
+B  brake point (from the template)          P  throttle pick-up = A + throttleDelayS
+hasBrake = v_entry &gt; v_A + 8 km/h            (a flat-out kink gets no brake event)
+</code></pre>
+<p>The event template integrates backward from A for braking — tyre deceleration builds at
+<code>brakeRiseGps</code>, plateaus at the braking cap and releases with <code>brakeShare(latUse, depth, profile)</code>
+as lean comes on; B is where that curve meets the previous corner&#39;s drive curve — and forward
+from A for the drive: maintenance throttle (<code>a_x ≈ 0</code>) until P, a smooth roll-on over <code>rollOnS</code>
+to the drive cap, then full throttle until the next B. <code>brake</code> and <code>tps</code> come straight from the
+template; the header shows the corner count and how many of them are braked for, and
+<code>cornerEventsGeoJson</code> gives the B/T/A/P/E points for the map.</p>
+<h3>Aggressiveness and Risk (R3 §5; all <em>öneri</em>)</h3>
+<p>Two sliders produce every other rider number (<code>src/sim/derive.ts</code>, <code>DERIVE_TABLE</code>).
+<strong>A</strong> (aggressiveness) is timing; <strong>R</strong> (risk) is force level.</p>
+<table>
+<thead>
+<tr>
+<th>Derived</th>
+<th>Formula</th>
+<th>A/R = 0 → 1</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>sBrake</td>
+<td>0.30 + 0.65·R</td>
+<td>0.30 → 0.95</td>
+</tr>
+<tr>
+<td>sDrive</td>
+<td>0.50 + 0.45·R</td>
+<td>0.50 → 0.95</td>
+</tr>
+<tr>
+<td>sLat</td>
+<td>0.55 + 0.42·R</td>
+<td>0.55 → 0.97</td>
+</tr>
+<tr>
+<td>brakingG</td>
+<td>μx · gripScale · g(sBrake, 1.6)</td>
+<td>via the tyre curve</td>
+</tr>
+<tr>
+<td>leanUsage</td>
+<td>g(sLat, 1.3)</td>
+<td>~0.78 → ~0.99</td>
+</tr>
+<tr>
+<td>trailBrakeDepth</td>
+<td>0.3 + 0.6·R</td>
+<td>0.3 → 0.9</td>
+</tr>
+<tr>
+<td>trailBrakeProfile</td>
+<td>R</td>
+<td>0 → 1</td>
+</tr>
+<tr>
+<td>brakeRiseGps</td>
+<td>(0.6 + 0.4·A) · 2.8 g/s</td>
+<td>1.7 → 2.8 g/s (2.8 measured on both reference laps)</td>
+</tr>
+<tr>
+<td>throttleDelayS</td>
+<td>1.6 − 1.4·A</td>
+<td>1.6 → 0.2 s</td>
+</tr>
+<tr>
+<td>rollOnS</td>
+<td>1.2 − 0.8·A</td>
+<td>1.2 → 0.4 s</td>
+</tr>
+<tr>
+<td>rollRateFrac</td>
+<td>0.5 + 0.5·A</td>
+<td>50 → 100 % of the bound</td>
+</tr>
+<tr>
+<td>tcThreshold</td>
+<td>0.5</td>
+<td>constant</td>
+</tr>
+</tbody></table>
+<p>Open <strong>Gelişmiş</strong> to see the derived values. Moving one pins it (lock icon, orange): it then
+ignores the sliders until you click the lock. The two parameters are separable in data: A shows
+in roll rate, brake build, pick-up time and roll-on; R in braking g, lean and slip percentiles.</p>
+<h3>Solver modes</h3>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>What</th>
+<th>When it runs</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Sürücü</strong></td>
+<td>the model above, the human rider</td>
+<td>live, on every slider (&lt; 50 ms)</td>
+</tr>
+<tr>
+<td><strong>Serbest yörünge</strong></td>
+<td>line offsets and speed optimised together for the IDEAL rider (s = 1, full roll rate, braking at μx)</td>
+<td>in a Web Worker, on <strong>Hesapla</strong></td>
+</tr>
+<tr>
+<td><strong>Tam OCP</strong></td>
+<td>minimum-time optimal control (CasADi) on the lab server</td>
+<td>on <strong>Hesapla</strong>, minutes; greyed when the bridge is unreachable</td>
+</tr>
+</tbody></table>
+<p>All three can be loaded at once (<code>sim</code>, <code>sim-opt</code>, <code>sim-ocp</code>): rider vs ideal line vs physics
+limit, compared with the usual Δ tools. A slider never starts an optimal run; after a machine or
+tyre change an optimal lap is shown struck through as out of date until you press Hesapla again.</p>
+<h2>7. Tips</h2>
+<ul>
+<li>Compare <code>deriv(speed)</code> on raw vs <code>lowpass(speed, 1)</code>: differentiation amplifies noise, so filter first.</li>
+<li>Flags (0/1) are easiest to read on their own chart panel or as a map colour.</li>
+<li>A formula that references a channel which does not exist in a session evaluates to NaN there; the Math tab shows the error text in the channel list.</li>
+<li>Names must be unique; re-adding with the same name updates the formula.</li>
+</ul>
+
+</main>
+<footer>
+  <span>© <span id="y"></span> MotoRaceLaps · DDA Lab is built on <a href="https://github.com/slowfastguy/DDA_Reader" rel="noopener">DDA_Reader</a> (MIT) · Not affiliated with Ducati Motor Holding S.p.A.</span>
+  <span>Map imagery © Esri, Maxar, Earthstar Geographics · © OpenStreetMap contributors</span>
+</footer>
+<script>document.getElementById('y').textContent = new Date().getFullYear();</script>
+</body>
+</html>

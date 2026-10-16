@@ -42,6 +42,14 @@ MIGRATIONS: list[str] = [
         event TEXT NOT NULL,
         props TEXT
     )""",
+    "CREATE INDEX IF NOT EXISTS otp_codes_email ON otp_codes(email)",
+    """CREATE TABLE IF NOT EXISTS sessions (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+        expires_at TEXT NOT NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id)",
     "CREATE INDEX IF NOT EXISTS usage_events_ts ON usage_events(ts)",
     "CREATE INDEX IF NOT EXISTS usage_events_event ON usage_events(event)",
 ]

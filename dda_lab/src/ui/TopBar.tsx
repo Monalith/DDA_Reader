@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { parseWorkspace, serializeWorkspace } from '../core/workspace';
 import { activeTrack, useLab } from '../state/store';
 import { openFiles } from './openFiles';
+import UserChip from '../auth/UserChip';
 
 function download(name: string, text: string, mime = 'application/json') {
   const a = document.createElement('a');
@@ -121,6 +122,7 @@ export default function TopBar() {
       </button>
       <input ref={wsRef} type="file" accept=".json" hidden onChange={(e) => onWorkspaceFile(e.target.files)} />
       {status && <span className="status">{status}</span>}
+      <UserChip />
     </header>
   );
 }

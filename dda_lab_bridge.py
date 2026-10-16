@@ -306,15 +306,28 @@ app.include_router(_auth.router)
 app.include_router(_stats.router)
 _auth.install(app)
 
-# Bound to 127.0.0.1 only, and `file://` pages send Origin: null, so a wildcard
-# is acceptable here (ALLOWED_ORIGINS documents the intended callers).
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Local / desktop (auth disabled): bound to 127.0.0.1 only, and `file://` pages send
+# Origin: null, so a wildcard is acceptable (ALLOWED_ORIGINS documents the callers).
+# Hosted (auth enabled): the session cookie needs credentialed CORS, for which a
+# wildcard origin is invalid — allow only APP_URL.
+if _auth.auth_enabled():
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[os.environ.get("APP_URL", "").rstrip("/")] if os.environ.get("APP_URL") else [],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    # local use: the app is same-origin (/lab/), the vite dev server (:5190) is the only
+    # cross-origin caller that needs cookies; anything else (file://, other pages) gets no credentials.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
 @app.get("/health")

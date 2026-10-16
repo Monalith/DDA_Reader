@@ -298,6 +298,14 @@ def _parse_schema_text(text: str) -> SchemaResult:
 
 app = FastAPI(title="DDA Lab bridge", version="1")
 
+# ---- auth + usage stats (bridge/*.py) ----------------------------------------
+from bridge import auth as _auth, db as _db, stats as _stats  # noqa: E402
+
+_db.configure(DATA_DIR / "dda_lab.db")
+app.include_router(_auth.router)
+app.include_router(_stats.router)
+_auth.install(app)
+
 # Bound to 127.0.0.1 only, and `file://` pages send Origin: null, so a wildcard
 # is acceptable here (ALLOWED_ORIGINS documents the intended callers).
 app.add_middleware(

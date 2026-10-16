@@ -28,7 +28,9 @@ if [ "$BUILD" = 1 ]; then
 fi
 ssh "$HOST" 'mkdir -p /opt/dda-lab/viewer_lab'
 rsync -az --delete viewer_lab/ "$HOST":/opt/dda-lab/viewer_lab/
-rsync -az dda_lab_bridge.py dda_lab_bridge_prompt.txt "$HOST":/opt/dda-lab/
+rsync -az dda_lab_bridge.py dda_lab_bridge_prompt.txt requirements-lab.txt "$HOST":/opt/dda-lab/
+rsync -az --delete --exclude __pycache__ bridge/ "$HOST":/opt/dda-lab/bridge/
+ssh "$HOST" '/opt/dda-lab/.venv/bin/pip install -q -r /opt/dda-lab/requirements-lab.txt'
 ssh "$HOST" 'systemctl restart dda-lab && sleep 2 && systemctl is-active dda-lab && curl -s http://127.0.0.1:8777/health'
 echo
 echo "Tamam → https://dda.kitchenonstage.com"

@@ -365,6 +365,14 @@ export interface LabState {
   videoReopenName: string | null;
   setVideoView(v: LabState['videoView']): void;
   setVideoSync(s: VideoSync | null): void;
+  /**
+   * Mark (or clear with null) the video time of the start line. Implemented in
+   * src/video/startSync.ts (agent 2): persists it with the sync and, when a session is
+   * synced, re-aligns the data so that the chosen lap's start sample shows at that frame.
+   */
+  setVideoStartLine(videoS: number | null, lapN?: number): void;
+  /** Re-align data ⇔ video using the stored start line (after laps / start gate change). */
+  syncVideoToStartLine(lapN?: number): void;
   setVideoFollow(f: LabState['videoFollow']): void;
   setBottomTab(t: LabState['bottomTab']): void;
   setStatus(msg: string | null): void;
@@ -566,6 +574,17 @@ export const useLab = create<LabState>((set, get) => ({
   setVideoSync(s) {
     set({ videoSync: s, videoReopenName: s && get().videoReopenName === s.fileName ? null : get().videoReopenName });
   },
+  setVideoStartLine(videoS, lapN) {
+    // TODO(agent 2): real implementation in src/video/startSync.ts
+    const sy = get().videoSync;
+    if (!sy) return;
+    set({ videoSync: { ...sy, startVideoS: videoS ?? undefined } });
+    void lapN;
+  },
+  syncVideoToStartLine(lapN) {
+    // TODO(agent 2)
+    void lapN;
+  },
   setVideoFollow(f) {
     set({ videoFollow: f });
   },
@@ -595,7 +614,7 @@ export const useLab = create<LabState>((set, get) => ({
   },
   serializeLabSession() {
     const v = get().videoSync;
-    return serializeLabSession({ ...get(), video: v ? { fileName: v.fileName, offsetS: v.offsetS, sessionId: v.sessionId } : undefined });
+    return serializeLabSession({ ...get(), video: v ? { fileName: v.fileName, offsetS: v.offsetS, sessionId: v.sessionId, startVideoS: v.startVideoS } : undefined });
   },
   restoreLabSession(s) {
     // close everything that is open, the virtual rider's lap included

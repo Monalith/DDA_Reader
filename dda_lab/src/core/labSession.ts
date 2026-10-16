@@ -47,6 +47,8 @@ export interface LabSessionVideo {
   fileName: string;
   offsetS: number;
   sessionId: string;
+  /** Video time (s) marked as the start line, when the user set one. */
+  startVideoS?: number;
 }
 
 // ---- typed-array tagging ----------------------------------------------------

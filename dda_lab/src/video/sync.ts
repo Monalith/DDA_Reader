@@ -7,6 +7,8 @@ export interface VideoSync {
   sessionId: string;
   fileName: string;
   offsetS: number;
+  /** Video time (s) the user marked as the start line (🏁 Start line button); undefined until set. */
+  startVideoS?: number;
 }
 
 /** Video time (s) of a session sample. */
@@ -245,6 +247,7 @@ export const VIDEO_SYNC_KEY = 'dda-lab-video-sync';
 export interface StoredSync {
   offsetS: number;
   sessionName?: string;
+  startVideoS?: number;
 }
 
 type KV = Pick<Storage, 'getItem' | 'setItem'>;
